@@ -1,2 +1,4 @@
 __pycache__/
 *.pyc
+# notes and archives that stay on this machine (never committed, never pushed)
+/private/
