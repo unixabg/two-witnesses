@@ -54,8 +54,9 @@ tw_chain_end() {
 # ~/tw-data/scene-now.txt is the standing scene (which cars, what changed: "board 2:
 # new adapter"). At a keyboard, Enter keeps it and anything typed replaces it; with
 # nobody there (cron) it is used as it is. SCENE="..." gives a scene for this run
-# only. ~/tw-data/boards.csv (the layout, see tw_map.py) is copied in as boards.csv,
-# so each run keeps the layout it had even after boards move.
+# only. The layout (see tw_map.py), the kit's private/boards.csv or else
+# ~/tw-data/boards.csv, is copied in as boards.csv, so each run keeps the layout
+# it had even after boards move.
 # Usage: tw_scene_and_layout FOLDER "question"
 tw_scene_and_layout() {
   local dir=$1 prompt=$2 standing="$TW_DATA/scene-now.txt" now_scene="" scene="" src=""
@@ -74,6 +75,9 @@ tw_scene_and_layout() {
     scene=$now_scene; src="standing scene, nobody at the keyboard"
   fi
   [ -n "$scene" ] && printf '%s  %s   [%s]\n' "$(date '+%Y-%m-%d %H:%M')" "$scene" "$src" >> "$dir/scene.txt"
-  [ -r "$TW_DATA/boards.csv" ] && cp "$TW_DATA/boards.csv" "$dir/boards.csv"
+  local layout
+  for layout in "${KIT:-.}/private/boards.csv" "$TW_DATA/boards.csv"; do
+    if [ -r "$layout" ]; then cp "$layout" "$dir/boards.csv"; break; fi
+  done
   return 0
 }

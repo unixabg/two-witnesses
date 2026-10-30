@@ -14,5 +14,8 @@ fi
 FW=$(sha256sum "$KIT/tw_node-s3-ch11.bin" 2>/dev/null | cut -c1-16)
 echo "firmware: tw_node-s3-ch11.bin ${FW:-missing}... (the boards say theirs in tw_setid.py / TWH lines)"
 D=${TW_DATA:-$HOME/tw-data}
-[ -r "$D/boards.csv" ] && echo "layout:   $D/boards.csv ($(grep -c '^[0-9]' "$D/boards.csv") boards)" || echo "layout:   no $D/boards.csv (map view off)"
+L=""
+for f in "$KIT/private/boards.csv" "$D/boards.csv"; do [ -r "$f" ] && { L=$f; break; }; done
+[ -n "$L" ] && echo "layout:   $L ($(grep -c '^[0-9]' "$L") boards)" || echo "layout:   none (private/boards.csv or $D/boards.csv; map view off)"
+[ -L "$KIT" ] && echo "install:  $KIT is a link to $(readlink -f "$KIT") (a git clone: git pull updates it)"
 [ -r "$D/scene-now.txt" ] && echo "scene:    $(head -c 120 "$D/scene-now.txt")" || echo "scene:    no standing scene yet ($D/scene-now.txt)"

@@ -3,7 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # setup_once.sh - run once on the persistent USB (Debian). Safe to run again.
 #
-#   tar xzf two-witnesses-kit-v4.tar.gz && cd two-witnesses-kit && ./setup_once.sh
+#   git clone https://github.com/unixabg/two-witnesses && cd two-witnesses && ./setup_once.sh
+#   (or from a downloaded copy: cd into it and ./setup_once.sh)
 #
 # It: installs chrony ffmpeg v4l-utils tmux rsync python3-venv; sets the
 # timezone (America/Chicago unless TZ_WANT says otherwise) and starts chrony;
@@ -11,8 +12,10 @@
 # you to the dialout group (serial ports without sudo, after logging in
 # again); lets run.sh block and unblock sleep without a password (one exact
 # systemctl command, in /etc/sudoers.d/tw-sleep, so the block undoes itself
-# when the run ends); copies the kit to ~/tw-kit after checking its
-# fingerprints; makes ~/tw-data and checks that it really lands on the USB,
+# when the run ends); installs the kit as ~/tw-kit after checking its
+# fingerprints (from a git clone: ~/tw-kit becomes a link to the clone, so
+# git pull updates it and the clone's private/ folder is the kit's; from a
+# downloaded copy: the files are copied); puts a board layout in place; makes ~/tw-data and checks that it really lands on the USB,
 # not in RAM.
 set -u
 TZ_WANT=${TZ_WANT:-America/Chicago}
@@ -68,15 +71,39 @@ fi
 rm -f "$RULE"
 
 echo "7. kit -> $KIT"
-mkdir -p "$KIT"
-if [ "$SRC" != "$KIT" ]; then cp -a "$SRC"/. "$KIT"/; fi
-chmod +x "$KIT"/*.sh "$KIT"/*.py
-ok "$(ls "$KIT" | wc -l) files"
+LINKED=0
+if [ -e "$SRC/.git" ]; then
+  # a git clone: ~/tw-kit points at it, so the clone is the installed kit
+  if [ -L "$KIT" ] || [ ! -e "$KIT" ]; then
+    ln -sfn "$SRC" "$KIT" && LINKED=1
+  elif [ "$(cd "$KIT" && pwd -P)" = "$(cd "$SRC" && pwd -P)" ]; then
+    LINKED=1
+  else
+    OLD="$KIT.before-link-$(date +%Y%m%d-%H%M)"
+    mv "$KIT" "$OLD" && ln -sfn "$SRC" "$KIT" && LINKED=1 && ok "the earlier copy of the kit is kept as $OLD"
+  fi
+  [ $LINKED = 1 ] && ok "$KIT -> $SRC (git pull there updates the kit)" || bad "could not link $KIT to $SRC"
+else
+  mkdir -p "$KIT"
+  if [ "$SRC" != "$KIT" ]; then
+    rsync -a --exclude .git --exclude /private/ "$SRC"/ "$KIT"/ 2>/dev/null \
+      || (cd "$SRC" && tar cf - --exclude=./.git --exclude=./private .) | (cd "$KIT" && tar xf -)
+  fi
+  ok "$(ls "$KIT" | wc -l) files copied"
+fi
+chmod +x "$KIT"/*.sh "$KIT"/*.py "$KIT"/tools/*.sh 2>/dev/null
 
 echo "8. data folder $DATA"
 mkdir -p "$DATA/runs" "$DATA/short" "$DATA/watch"
-if [ ! -e "$DATA/boards.csv" ] && [ -r "$KIT/boards-example.csv" ]; then
-  cp "$KIT/boards-example.csv" "$DATA/boards.csv"; ok "board layout: $DATA/boards.csv (edit it when a board moves)"
+if [ -r "$KIT/private/boards.csv" ]; then
+  ok "board layout: $KIT/private/boards.csv"
+elif [ -r "$DATA/boards.csv" ]; then
+  ok "board layout: $DATA/boards.csv"
+elif [ $LINKED = 1 ] && [ -r "$KIT/boards-example.csv" ]; then
+  mkdir -p "$KIT/private" && cp "$KIT/boards-example.csv" "$KIT/private/boards.csv"
+  ok "board layout: $KIT/private/boards.csv from the example (edit it to match your boards; git ignores private/)"
+elif [ -r "$KIT/boards-example.csv" ]; then
+  cp "$KIT/boards-example.csv" "$DATA/boards.csv"; ok "board layout: $DATA/boards.csv from the example (edit it to match your boards)"
 fi
 "$VENV/bin/python" -c "import sys; sys.path.insert(0,'$KIT'); import listen as L; r,w=L.ram_check('$DATA'); print('  ' + w); sys.exit(1 if r else 0)" \
   && ok "on real storage" || bad "$DATA is in RAM: persistence is not on, files would vanish at shutdown"

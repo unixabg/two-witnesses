@@ -186,12 +186,29 @@ d leaves it running; `~/tw-kit/live.sh stop` from another terminal. Sleep is
 not blocked. It holds the board's port, so it cannot run beside run.sh,
 watch.sh or survey.sh (they say so).
 
+## What changed in v5.4-next (work in progress, on the next branch)
+
+- **One firmware image** (`tw_node-s3-ch11.bin`); the two-board images and
+  their guide are in release v5.3. `FLASH-README.md` is the one flashing guide.
+- **`VERSION`** is the one place for the version; `tools/sums.sh` refreshes
+  SHA256SUMS after a change.
+- **Install from a git clone:** `git clone https://github.com/unixabg/two-witnesses`,
+  then `./setup_once.sh` inside it makes `~/tw-kit` a link to the clone, so
+  `git pull` there updates the installed kit (a copied `~/tw-kit` from before
+  is moved aside to `~/tw-kit.before-link-<date>`, not deleted). From a
+  downloaded copy (no `.git`), setup copies the files as before, without
+  `.git` and `private/`.
+- **Your own files in `private/`** (ignored by git, never committed or pushed):
+  the kit reads the board layout from `private/boards.csv` first, then
+  `~/tw-data/boards.csv`. Setup puts the example layout there if you have
+  none; `version.sh` says which layout is in use.
+
 ## What changed in v5.3 (2026-10-30): map, fast readout, standing scene (no reflashing)
 
 - **`version.sh`**: `~/tw-kit/version.sh` prints the kit version (from
   `VERSION`), checks every file against SHA256SUMS, and shows the board
   layout and the standing scene in use.
-- **The board layout, `~/tw-data/boards.csv`** (setup_once.sh copies
+- **The board layout, `~/tw-data/boards.csv`** (from v5.4: `private/boards.csv` first; setup_once.sh copies
   `boards-example.csv` there if there is none): one row per board (number,
   x and y in feet, facing N/S/E/W, a note) and landmarks such as a big metal cabinet.
   Edit it when a board moves; each run copies it into its folder, so old runs

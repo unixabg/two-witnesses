@@ -8,6 +8,9 @@ moment in across.txt). Run it alone to check a boards.csv:
 
     ~/scratch-esp/bin/python tw_map.py ~/tw-data/boards.csv
 
+Where: the kit's private/ folder (private/boards.csv, kept out of git), or
+~/tw-data/boards.csv. Each run copies the one it used into its folder.
+
 boards.csv: one row per board, and optionally landmarks:
     id,x_ft,y_ft,facing,label
     1,0,-15,N,cushion
@@ -31,9 +34,12 @@ FACING = {"N": "^", "S": "v", "E": ">", "W": "<"}
 
 
 def find_boards(*folders):
-    """the first boards.csv found in these folders, then in TW_DATA (~/tw-data)"""
+    """the first boards.csv found in these folders (a run keeps a copy of its layout),
+    then in the kit's private/ folder (ignored by git: the owner's own layout), then
+    in TW_DATA (~/tw-data)"""
     data = os.environ.get("TW_DATA", os.path.expanduser("~/tw-data"))
-    for d in [f for f in folders if f] + [data]:
+    private = os.path.join(os.path.dirname(os.path.abspath(__file__)), "private")
+    for d in [f for f in folders if f] + [private, data]:
         p = os.path.join(d, "boards.csv")
         if os.path.exists(p):
             return p
