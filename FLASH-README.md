@@ -1,78 +1,91 @@
-# CSI board-to-board firmware for the Hosyond ESP32-S3 boards
+# Flashing tw_node: one firmware for every board
 
-> **Corrected 2026-10-26 (kit v4.5).** The jobs and settings below are the
-> ones in use: one sender, one receiver with **v2** firmware, about
-> **91 packets/s**. **The receiver is read on the board's
-> native USB port** (lsusb `303a:1001 Espressif USB JTAG/serial`,
-> `/dev/ttyACM0`), not the COM/UART port: the firmware copies its output
-> there, and the baud setting is ignored on that port. It gives 87/s with
-> 4% loss (A/B of 2026-10-25); keep it there so runs stay comparable. The
-> first receiver image (921600 baud) is kept only for reference.
-
-Built 2026-10-22 from Espressif's own examples (the sender and the first
-receiver unchanged; v2 receiver: UART 2,000,000 baud and log level WARN):
-
-- esp-csi commit `8633d67152db2808f141cc1595970aa9cf406045` (2026-04-22),
-  `examples/get-started/csi_send` and `csi_recv`
-- ESP-IDF v5.5.6, target esp32s3
-- Each file is one merged image: flash it at address 0x0.
+All boards are equal and run the same image, `tw_node-s3-ch11.bin`. Every board
+both sends and listens; each frame it sends is the sounding packet the others
+measure, and it carries the board's own measurements of the others. The board
+cabled to a computer prints everything (its own measurements and those relayed
+to it), so the other boards need only a power bank.
 
 ```
-febf998d0bddbb79c1df1131e35294662d33cb4c83ea160d696ef055458bbb3b  csi_send-s3-ch11.bin
-f97b93aac6377334b16192473d6c02a0435ad9d2540784756653e2090f710e1a  csi_recv-s3-ch11-v2.bin   (in use)
-d52018928909ce5451cb27a30392c4240cffe5b5b6537fcf857c3fb28c0732e2  csi_recv-s3-ch11.bin      (first, 921600)
+59f33538843bdae51d7992a615a34ab5aa52d0a156f4521e7b5467dfed8b1acd  tw_node-s3-ch11.bin
 ```
+Built from Espressif's esp-csi examples (csi_send / csi_recv at commit
+8633d67, the same as the earlier images) with ESP-IDF v5.5.6: same channel
+(11, 40 MHz, secondary below), same ESP-NOW rate (HT40 MCS0), same CSI
+settings and gain compensation as the v2 receiver, so its measurements stay
+comparable with the recordings so far. Source: `firmware/tw_node/`.
 
 ## What it does
 
-- **Sender** (one board): broadcasts one small ESP-NOW packet about 91
-  times a second (the example asks for 100) on **channel 11**, 40 MHz wide (channels 7-11; an access point on channel 1
-  is clear of it). Each packet carries a counting number. It uses a made-up
-  address, 1a:00:00:00:00:00.
-- **Receiver** (another board, v2): listens on channel 11, keeps only packets
-  from that address, and prints one line per packet (on the COM/UART port
-  at 2,000,000 baud, and the same on the native USB port, which is the one
-  in use):
-  `CSI_DATA,id,mac,rssi,rate,...,local_timestamp,...,len,first_word,"[raw CSI]"`
-  - `id` = the sender's counting number (gaps = lost packets)
-  - `local_timestamp` = receiver's clock in microseconds
-  - `rssi` = signal in dBm; the bracket = raw CSI bytes (pairs of numbers
-    per subcarrier)
-- Habits to expect: it sets its gain baseline from the first 100 packets,
-  so skip the first ~10 s of every run (analyze_csi.py does). The first
-  receiver also printed `compensate_gain ...` lines; v2 does not.
+| | |
+|---|---|
+| board number | 1-16, set once per board with `tw_setid.py` (kept in the board's flash); until then a board says it is board 16 |
+| address on the air | `1a:00:00:00:00:NN` (NN = board number), so every measurement says who sent the frame |
+| time slots | board N sends in its own 3 ms slot, (N-1) x 3 ms into each period; the period is 20 ms (50 frames/s per board) up to board 6, then 3 ms per board (48 ms with 16) |
+| timekeeper | the lowest-numbered board heard in the last 2 s; if it goes quiet, the next takes over within about 2 s |
+| exit | any board with a computer reading its native USB port; plug a second board into a second computer for a hot standby |
+| records | each measurement goes out in two frames (redundancy) while there are 6 boards or fewer; above that, one copy, and records shrink to the 52 L-LTF subcarriers (as esp-radar uses) to keep the air under ~25% |
+| de-duplication | records carry (measuring board, boot number, record number) and a hop count (0 today; ready for multi-hop outdoors) |
+
+Desk-tested in a simulator running the same protocol code (`firmware/sim/`):
+3 boards 99.5-100% of measurements reach the computer at 5% random loss;
+the timekeeper dying for 20 s and coming back 99.6%; 8 boards 94%; 16 boards
+93.5% at 25% airtime; 30% loss 89%; a 25-minute run across the 71-minute clock
+wrap 99.8%; boards switched on late are heard and given slots within about a
+second; with a second listener on another board the two computers together had
+100%. **Not tested: real radios.** The first flash is the first real test.
 
 ## Flash (each board, once)
 
-```
-cd ~/Downloads
-sha256sum csi_send-s3-ch11.bin csi_recv-s3-ch11-v2.bin     # compare with above
-```
-Board in download mode (hold BOOT, tap RST, release BOOT), then:
-```
-sudo ~/scratch-esp/bin/esptool --chip esp32s3 --port /dev/ttyACM0 erase-flash
-sudo ~/scratch-esp/bin/esptool --chip esp32s3 --port /dev/ttyACM0 write-flash 0x0 csi_send-s3-ch11.bin
-```
-(Repeat erase then write for the receiver with `csi_recv-s3-ch11-v2.bin`.)
-Tap RST afterwards to start the new program.
+One image for every board. (For the record: the earlier two-board firmware (one sender, one receiver) is kept in release
+v5.3: download it from the v5.3 tag, or in a clone
+`git checkout v5.3 -- csi_send-s3-ch11.bin csi_recv-s3-ch11-v2.bin`; its guide:
+`git show v5.3:FLASH-README.md`.)
 
-## First look
-
-1. Sender: plug into any USB power (either port).
-2. Receiver: plug its **native USB** port into the Chromebook, directly
-   (a 10 ft passive extension lost 63% of the packets).
-3. Watch it live (Ctrl-] to quit):
-   ```
-   sudo ~/scratch-esp/bin/python -m serial.tools.miniterm /dev/ttyACM0 2000000
-   ```
-   You should see `CSI_DATA,...` lines scrolling about 90 per second.
-
-## Record
-
-Set the clock first (chrony), then:
 ```
-sudo ~/scratch-esp/bin/python record_csi.py /dev/ttyACM0 shakedown-01 60
+cd ~/tw-kit
+sha256sum -c --ignore-missing SHA256SUMS          # tw_node-s3-ch11.bin: OK
 ```
-It writes `shakedown-01.csv` (each line starts with the Linux time in
-nanoseconds) and ends with a count of lost packets. For real runs use
-`short_run.sh` and `run.sh` (see README.md).
+Board on the native USB port, in download mode (hold BOOT, tap RST, release BOOT):
+```
+~/scratch-esp/bin/esptool --chip esp32s3 --port /dev/ttyACM0 erase-flash
+~/scratch-esp/bin/esptool --chip esp32s3 --port /dev/ttyACM0 write-flash 0x0 tw_node-s3-ch11.bin
+```
+Tap RST. Then check who it is (it says hello every 10 s):
+```
+~/scratch-esp/bin/python tw_setid.py /dev/ttyACM0
+# -> board 16, factory address 30:30:f9:xx:xx:xx, firmware tw_node 1.0
+```
+A new board says it is board 16 and needs a number:
+`~/scratch-esp/bin/python tw_setid.py /dev/ttyACM0 1` (then 2, 3, ... for the
+others, one at a time on the cable). Every board needs its own.
+
+## First test, on the bench (10 minutes)
+
+1. Board 1 on the computer's native USB port. Boards 2 and 3 on
+   power banks (or chargers), a metre or two away.
+2. `~/tw-kit/survey.sh` - the dashboard should show, within a few seconds:
+   `exit board 1   timekeeper board 1   period 20 ms`, boards 2 and 3 `ok`,
+   and six links (`1→2 1→3 2→1 2→3 3→1 3→2`) at about 45-50 packets/s each.
+3. The health line at the bottom shows the board's `frames=` count. It must
+   grow. If `csi=` grows but `frames=` stays 0, measurements are made but the
+   relayed ones do not arrive (only links ending at board 1 would show): tell
+   me, the fix is known.
+4. Unplug board 2's power bank: its four links say NO DATA within 5 s; plug it
+   back: they return. Unplug board 1 from the computer and plug board 3 in
+   instead: board 3 becomes the exit and prints everything.
+
+Things I could not check here and you will see at once: whether the power
+banks switch themselves off (an ESP32-S3 draws about 100 mA; some banks cut
+out below that), and the real loss and RSSI between the boards.
+
+## Then
+
+- Place the boards (walk them with `survey.sh` and the `m` key), then a quiet
+  run and a watch day as before. `watch.py` judges every link and names the
+  one that moved; `view.py` and `radar_replay.py` work per link after
+  `split_links.py RUN_FOLDER --view`.
+- To go back to two boards (one sender, one receiver): the earlier two-board firmware (one sender, one receiver) is kept in release
+  v5.3: download it from the v5.3 tag, or in a clone
+  `git checkout v5.3 -- csi_send-s3-ch11.bin csi_recv-s3-ch11-v2.bin`; its guide:
+  `git show v5.3:FLASH-README.md`.

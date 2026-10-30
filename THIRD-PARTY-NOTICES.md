@@ -12,8 +12,8 @@ project's own license, Apache-2.0 (LICENSE, NOTICE).
 | zig compiler_rt soft-float routines | inside `radar_c3.elf` (linked by `zig cc`) | the Zig project | MIT |
 | radar_c3.elf as a whole | kit root | radar_c3_harness.c (this project) + the two rows above | the harness under the project license; Espressif's part Apache-2.0; compiler_rt MIT |
 | ESP-IDF v5.5.6, including Espressif's precompiled Wi-Fi/PHY libraries | inside every `.bin` firmware image | Espressif Systems | Apache-2.0 |
-| esp_csi_gain_ctrl 0.1.5 | inside `tw_node-s3-ch11.bin` and `csi_recv-s3-ch11-v2.bin` | Espressif Systems | Apache-2.0 |
-| esp-csi examples csi_send / csi_recv (commit 8633d67) | the old images `csi_send-s3-ch11.bin`, `csi_recv-s3-ch11*.bin`; `firmware/tw_node/main/main.c` is built on them | Espressif Systems | example code: public domain / CC0 (their header), within the Apache-2.0 esp-csi repository |
+| esp_csi_gain_ctrl 0.1.5 | inside `tw_node-s3-ch11.bin` | Espressif Systems | Apache-2.0 |
+| esp-csi examples csi_send / csi_recv (commit 8633d67) | `firmware/tw_node/main/main.c` is built on them (the two-board images built from them are in release v5.3) | Espressif Systems | example code: public domain / CC0 (their header), within the Apache-2.0 esp-csi repository |
 | cmake_utilities | build tool only (fetched at build time, not shipped) | Espressif Systems | not distributed |
 
 The esp-radar algorithm that `radar_replay.py` reproduces in Python was worked

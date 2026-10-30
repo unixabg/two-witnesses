@@ -380,7 +380,7 @@ static void work_task(void *arg)
             next_hello = now + 10000000u;
             hello();
             /* TWF: health. csi = CSI measurements made, frames = ESP-NOW frames received: if csi
-               grows and frames stays 0, relaying is not arriving (see FLASH-README-v5) */
+               grows and frames stays 0, relaying is not arriving (see FLASH-README.md) */
             int k = snprintf(line, sizeof(line), "TWF,%u,usb_drops=%lu,queue_full=%lu,send_err=%lu,heap=%lu,"
                              "queue=%lu,csi=%lu,frames=%lu\n", s_id, (unsigned long)s_usb_drops,
                              (unsigned long)s_q_full, (unsigned long)s_send_err,

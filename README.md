@@ -1,4 +1,4 @@
-# two-witnesses kit, v5.3 (2026-10-30)
+# two-witnesses
 
 **Seeing movement with Wi-Fi.** A few cheap ESP32-S3 boards send radio frames
 to each other; each board measures how every frame arrived (its channel state
@@ -16,9 +16,11 @@ the code; the "What changed" sections below keep the reasoning.
 - **Hardware**: 2-16 ESP32-S3 boards (the tested ones have the built-in
   antenna), USB power for each; one is cabled to a Linux computer.
 - **Firmware**: `tw_node-s3-ch11.bin`, one image for every board: all boards
-  send and listen, roles move by themselves. Start with **FLASH-README-v5.md**.
-  (The older two-board images, one sender and one receiver, are kept too:
-  FLASH-README.md.)
+  send and listen, roles move by themselves. Start with **FLASH-README.md**.
+  (The earlier two-board images, one sender and one receiver, are in release
+  v5.3.)
+- **Version**: the file `VERSION` (`~/tw-kit/version.sh` prints it); releases
+  are tagged `vX.Y`, and `next` carries `X.Y-next` between them.
 - **License**: Apache-2.0 (LICENSE, NOTICE); third-party parts in
   THIRD-PARTY-NOTICES.md.
 - Written by Richard Nelson with Claude (Anthropic) as co-author.
@@ -121,7 +123,7 @@ is posted.
 
 ## Many boards (v5.0): tw_node
 
-Read **FLASH-README-v5.md** first: flashing, board numbers, the first bench
+Read **FLASH-README.md** first: flashing, board numbers, the first bench
 test, and how to go back to the two-board images.
 
 - Boards are numbered 1-16: give each board its number once with
@@ -492,13 +494,14 @@ The three things owed from the nights before, and what a read-through of the cod
 |---|---|
 | `run.sh` | a long run: the routine above |
 | `dash.sh`, `dash.py` | the live dashboard of whatever is running |
-| `tw_node-s3-ch11.bin` | v5.0 firmware for every board; see FLASH-README-v5.md; source and simulator in `firmware/` |
+| `tw_node-s3-ch11.bin` | the firmware for every board; see FLASH-README.md; source and simulator in `firmware/` |
 | `tw_setid.py` | give a tw_node board its number (or show which it is) |
 | `split_links.py` | a many-board recording into one folder per link, for view.py / radar_replay.py; `--view`, `--view-only` |
 | `links_report.py` | the links of a many-board run side by side: `links/across.txt` |
 | `after_run.sh` | the views of a finished run folder, one link or many (run.sh and watch.sh call it) |
 | `live.sh` | the dashboard with nothing saved |
 | `version.sh`, `VERSION` | which kit this is, and whether every file is intact |
+| `tools/sums.sh` | refresh SHA256SUMS after a change (before each commit) |
 | `tw_map.py`, `boards-example.csv` | the board layout drawn to scale (dashboard map, maps in across.txt) |
 | `tw_lib.sh` | shared by the .sh scripts (sessions that close themselves) |
 | `ROADMAP.md` | what is planned and what is being looked into |
