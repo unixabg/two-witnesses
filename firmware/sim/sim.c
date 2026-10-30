@@ -1,0 +1,292 @@
+/* SPDX-FileCopyrightText: 2026 Richard Nelson
+ * SPDX-License-Identifier: Apache-2.0 */
+/*
+ * sim.c - a pretend garage for tw_proto.c: N boards with their own drifting
+ * clocks, one shared radio channel (frames that overlap in time collide and
+ * are lost; others are lost at random), boards that die and come back, and
+ * any board(s) cabled to a "computer" (exit). The exit boards print exactly
+ * the lines the firmware prints; the summary of what really happened goes to
+ * stderr as JSON, for check_sim.py.
+ *
+ *   sim --nodes 3 --seconds 60 [--loss 0.05] [--exit 1[,2]] [--kill 1@20-40]
+ *       [--seed 7] [--realtime] [--out FILE]
+ *
+ * In --realtime mode the exit's lines are written as they happen (for a pty
+ * feeding listen.py and the dashboard); otherwise simulated time runs flat out
+ * and each line is prefixed with the simulated host time in ns, as listen.py
+ * writes its files.
+ */
+#define _DEFAULT_SOURCE
+#include "../tw_node/main/tw_proto.h"
+
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <unistd.h>
+
+#define MAXN TW_MAX_NODES
+#define CSI_LEN 384
+
+typedef struct {
+    tw_node_t st;
+    double drift;               /* clock rate error */
+    double off0;                /* clock offset at t = 0 (us) */
+    double next_tx;             /* true time of the next send */
+    int alive, exit;
+    double dead_from, dead_to;
+    double last_status;
+    double node_last[MAXN + 1];
+    int8_t node_rssi[MAXN + 1];
+    tw_hdr_t node_hdr[MAXN + 1];
+    long made[MAXN + 1];        /* ground truth: measurements made of each sender */
+} simnode_t;
+
+static simnode_t N_[MAXN + 1];
+static int n_nodes = 3, realtime = 0, exits[MAXN + 1];
+static double seconds = 60, p_loss = 0.05, t0_unix;
+static double walk_a = 30e6, walk_b = 40e6;    /* planted walk across the 1-2 link (--walk A-B seconds) */
+static long collisions = 0, frames = 0, lost_random = 0;
+static double air_used_us = 0;
+static FILE *out;
+static unsigned rng_state = 7;
+
+static double urand(void)
+{
+    rng_state = rng_state * 1103515245u + 12345u;
+    return ((rng_state >> 8) & 0xffffff) / (double)0x1000000;
+}
+
+static uint32_t local_us(simnode_t *s, double t) { return (uint32_t)(int64_t)llround(t * (1.0 + s->drift) + s->off0); }
+
+static double true_after(simnode_t *s, double t, uint32_t now_local, uint32_t target_local)
+{
+    return t + (double)(uint32_t)(target_local - now_local) / (1.0 + s->drift);
+}
+
+static void emit(double t, const char *line)
+{
+    if (realtime) {
+        fputs(line, out);
+        fflush(out);
+    } else {
+        fprintf(out, "%lld,%s", (long long)llround((t0_unix + t / 1e6) * 1e9), line);
+    }
+}
+
+/* the CSI a board measures from a sender: a fixed pattern per link, a slow drift,
+   noise, and a "walk" across the 1-2 link between 30 and 40 s of simulated time */
+static void make_csi(int rx, int tx, double t, int8_t *buf)
+{
+    for (int b = 0; b < CSI_LEN / 2; b++) {
+        int live = (b >= 6 && b < 59 && b != 32) || (b >= 66 && b < 186);
+        double base = live ? 20 + 12 * sin(0.37 * b + rx * 1.3 + tx * 0.7) : 0;
+        double motion = 0;
+        if (t > walk_a && t < walk_b && ((rx == 1 && tx == 2) || (rx == 2 && tx == 1))) {
+            motion = 0.25 * sin(0.9 * b + t / 1e5);
+        }
+        double a = base * (1 + 0.03 * (urand() - 0.5) + motion);
+        double ph = urand() * 6.283;
+        int i = (int)lround(a * cos(ph)), q = (int)lround(a * sin(ph));
+        buf[2 * b] = (int8_t)(i > 127 ? 127 : i < -128 ? -128 : i);
+        buf[2 * b + 1] = (int8_t)(q > 127 ? 127 : q < -128 ? -128 : q);
+    }
+}
+
+typedef struct {
+    simnode_t *self;
+    double t;
+} rctx_t;
+
+static void on_record(void *ctx, const tw_rec_t *r)
+{
+    rctx_t *c = ctx;
+    if (!c->self->exit) {
+        return;
+    }
+    if (!tw_seen(&c->self->st, r->rx, r->boot, r->recseq)) {
+        char line[600];
+        if (tw_format_record(r, line, sizeof(line)) > 0) {
+            emit(c->t, line);
+        }
+    }
+}
+
+static int parse_args(int argc, char **argv, char *kill_spec, char *exit_spec, unsigned *seed, char **outpath)
+{
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "--nodes") && i + 1 < argc) n_nodes = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--seconds") && i + 1 < argc) seconds = atof(argv[++i]);
+        else if (!strcmp(argv[i], "--loss") && i + 1 < argc) p_loss = atof(argv[++i]);
+        else if (!strcmp(argv[i], "--exit") && i + 1 < argc) strncpy(exit_spec, argv[++i], 63);
+        else if (!strcmp(argv[i], "--kill") && i + 1 < argc) strncpy(kill_spec, argv[++i], 255);
+        else if (!strcmp(argv[i], "--seed") && i + 1 < argc) *seed = (unsigned)atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--realtime")) realtime = 1;
+        else if (!strcmp(argv[i], "--walk") && i + 1 < argc) {
+            char *e; walk_a = strtod(argv[++i], &e) * 1e6; walk_b = (*e == '-' ? strtod(e + 1, NULL) : walk_a / 1e6 + 10) * 1e6;
+        }
+        else if (!strcmp(argv[i], "--out") && i + 1 < argc) *outpath = argv[++i];
+        else { fprintf(stderr, "unknown argument %s\n", argv[i]); return -1; }
+    }
+    if (n_nodes < 1 || n_nodes > MAXN) { fprintf(stderr, "--nodes 1..%d\n", MAXN); return -1; }
+    return 0;
+}
+
+int main(int argc, char **argv)
+{
+    char kill_spec[256] = "", exit_spec[64] = "1";
+    unsigned seed = 7;
+    char *outpath = NULL;
+    if (parse_args(argc, argv, kill_spec, exit_spec, &seed, &outpath) < 0) return 2;
+    rng_state = seed;
+    out = outpath ? fopen(outpath, "w") : stdout;
+    if (!out) { perror(outpath); return 2; }
+    t0_unix = (double)time(NULL);
+    for (char *p = exit_spec; *p;) {
+        int id = (int)strtol(p, &p, 10);
+        if (id >= 1 && id <= MAXN) exits[id] = 1;
+        if (*p == ',') p++; else break;
+    }
+    for (int id = 1; id <= n_nodes; id++) {
+        simnode_t *s = &N_[id];
+        s->drift = (urand() - 0.5) * 40e-6;                 /* +-20 ppm */
+        s->off0 = urand() * 4e9;                            /* booted at different times */
+        s->alive = 1;
+        s->exit = exits[id];
+        s->dead_from = s->dead_to = -1;
+        s->next_tx = urand() * 20000;
+        s->last_status = -1e9;
+        tw_init(&s->st, (uint8_t)id, (uint8_t)s->exit, seed * 31u + (unsigned)id);
+    }
+    /* kills: "id@from-to,id@from-to" in seconds */
+    for (char *p = kill_spec; *p;) {
+        int id = (int)strtol(p, &p, 10);
+        double a = -1, b = -1;
+        if (*p == '@') { a = strtod(p + 1, &p); if (*p == '-') b = strtod(p + 1, &p); }
+        if (id >= 1 && id <= n_nodes) { N_[id].dead_from = a * 1e6; N_[id].dead_to = b * 1e6; }
+        if (*p == ',') p++; else break;
+    }
+
+    double t = 0, end = seconds * 1e6;
+    double busy_until = 0;      /* the channel: end of the frame on the air */
+    int busy_src = 0;
+    uint8_t frame[TW_MAX_PAYLOAD], last_frame[TW_MAX_PAYLOAD];
+    int last_len = 0, last_collided = 0;
+    double last_start = 0;
+    long leader_changes_total = 0;
+    struct timespec wall0;
+    clock_gettime(CLOCK_MONOTONIC, &wall0);
+
+    while (t < end) {
+        /* next sender */
+        int who = 0;
+        for (int id = 1; id <= n_nodes; id++) {
+            if (!who || N_[id].next_tx < N_[who].next_tx) who = id;
+        }
+        simnode_t *s = &N_[who];
+        double tx_t = s->next_tx + urand() * 300;         /* queueing delay before the air */
+        /* deliver the previous frame if it ended before this one starts */
+        if (last_len && busy_until <= tx_t) {
+            /* receivers */
+            for (int id = 1; id <= n_nodes; id++) {
+                simnode_t *r = &N_[id];
+                int dead = r->dead_from >= 0 && busy_until >= r->dead_from && (r->dead_to < 0 || busy_until < r->dead_to);
+                if (id == busy_src || dead || last_collided) continue;
+                if (urand() < p_loss) { lost_random++; continue; }
+                uint32_t now_l = local_us(r, busy_until);
+                tw_hdr_t h;
+                if (tw_peek_header(last_frame, last_len, &h) < 0) { r->st.n_bad_frames++; continue; }
+                tw_note_frame(&r->st, &h, now_l);
+                int8_t csi[CSI_LEN];
+                make_csi(id, h.src, busy_until, csi);
+                int compact = __builtin_popcount(tw_active(&r->st, now_l)) > TW_FULL_MAX_ACTIVE;
+                uint8_t phy = (uint8_t)(1 | (1 << 3) | (2 << 5));   /* HT40, HT, secondary below */
+                int8_t rssi = (int8_t)(-50 - 3 * abs(id - h.src));
+                const tw_rec_t *rec = tw_add_measurement(&r->st, now_l, h.src, h.seq, now_l, rssi, -92, 30, 0,
+                                                         phy, 0, csi, CSI_LEN, 1.0f, compact);
+                r->made[h.src]++;
+                rctx_t c = { r, busy_until };
+                if (r->exit) {
+                    char line[600];
+                    if (tw_format_record(rec, line, sizeof(line)) > 0) emit(busy_until, line);
+                    r->node_hdr[h.src] = h;
+                    r->node_rssi[h.src] = rssi;
+                }
+                if (tw_parse_frame(last_frame, last_len, &h, on_record, &c) < 0) r->st.n_bad_frames++;
+            }
+            last_len = 0;
+        }
+        if (tx_t >= end) break;
+        /* realtime pacing */
+        if (realtime) {
+            struct timespec now;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            double wall = (now.tv_sec - wall0.tv_sec) * 1e6 + (now.tv_nsec - wall0.tv_nsec) / 1e3;
+            if (tx_t > wall) usleep((useconds_t)(tx_t - wall));
+        }
+        int dead = s->dead_from >= 0 && tx_t >= s->dead_from && (s->dead_to < 0 || tx_t < s->dead_to);
+        uint32_t lnow = local_us(s, tx_t);
+        if (!dead) {
+            int len = tw_build_frame(&s->st, lnow, frame, TW_MAX_PAYLOAD);
+            double air = 40 + (len + 30) * 8 / 13.5;
+            air_used_us += air;
+            frames++;
+            if (last_len && tx_t < busy_until) {             /* overlaps the frame still on the air */
+                collisions++;
+                last_collided = 1;                           /* both lost */
+            } else {
+                memcpy(last_frame, frame, (size_t)len);
+                last_len = len;
+                last_collided = 0;
+                last_start = tx_t;
+                busy_until = tx_t + air;
+                busy_src = who;
+            }
+        } else if (s->st.n_rx_frames || s->st.n_tx) {
+            /* a dead board forgets everything: it reboots when it comes back */
+            int was_exit = s->exit;
+            tw_init(&s->st, (uint8_t)who, (uint8_t)was_exit, (unsigned)(t + who));
+        }
+        (void)last_start;
+        s->next_tx = true_after(s, tx_t, lnow, tw_next_tx_local(&s->st, lnow));
+        if (dead) s->next_tx = tx_t + 20000;
+        t = tx_t;
+        /* once a second, each exit prints its status and the boards it hears */
+        for (int id = 1; id <= n_nodes; id++) {
+            simnode_t *r = &N_[id];
+            int rdead = r->dead_from >= 0 && t >= r->dead_from && (r->dead_to < 0 || t < r->dead_to);
+            if (!r->exit || rdead || t - r->last_status < 1e6) continue;
+            r->last_status = t;
+            char line[300];
+            uint32_t lr = local_us(r, t);
+            tw_update_roles(&r->st, lr);
+            tw_format_status(&r->st, lr, line, sizeof(line));
+            emit(t, line);
+            for (int k = 1; k <= n_nodes; k++) {
+                if (k != id && r->st.heard[k] && (uint32_t)(lr - r->st.heard_us[k]) < TW_ACTIVE_US) {
+                    tw_format_node(&r->node_hdr[k], r->node_rssi[k], line, sizeof(line));
+                    emit(t, line);
+                }
+            }
+        }
+    }
+    for (int id = 1; id <= n_nodes; id++) leader_changes_total += N_[id].st.leader_changes;
+    /* ground truth for check_sim.py */
+    fprintf(stderr, "{\"nodes\": %d, \"seconds\": %.1f, \"loss\": %.3f, \"frames\": %ld, \"collisions\": %ld, "
+                    "\"lost_random\": %ld, \"airtime_pct\": %.2f, \"leader_changes\": %ld, \"made\": {",
+            n_nodes, seconds, p_loss, frames, collisions, lost_random, 100 * air_used_us / end, leader_changes_total);
+    int first = 1;
+    for (int rx = 1; rx <= n_nodes; rx++)
+        for (int tx = 1; tx <= n_nodes; tx++)
+            if (N_[rx].made[tx]) {
+                fprintf(stderr, "%s\"%d-%d\": %ld", first ? "" : ", ", tx, rx, N_[rx].made[tx]);
+                first = 0;
+            }
+    fprintf(stderr, "}, \"dropped\": {");
+    for (int id = 1; id <= n_nodes; id++)
+        fprintf(stderr, "%s\"%d\": %lu", id > 1 ? ", " : "", id, (unsigned long)N_[id].st.n_dropped);
+    fprintf(stderr, "}}\n");
+    if (out != stdout) fclose(out);
+    return 0;
+}

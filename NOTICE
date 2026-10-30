@@ -1,0 +1,8 @@
+two-witnesses
+Copyright 2026 Richard Nelson, with Claude (Anthropic) as co-author.
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This project includes or builds on software by Espressif Systems
+(ESP-IDF, esp-csi, esp_csi_gain_ctrl, esp_radar_motion_dec), licensed under
+the Apache License 2.0, and Zig's compiler_rt (MIT). See
+THIRD-PARTY-NOTICES.md for each part.

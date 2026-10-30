@@ -1,0 +1,4 @@
+## IDF Component Manager Manifest File (as Espressif's csi_recv example)
+dependencies:
+  idf: ">=5.4"
+  esp_csi_gain_ctrl: ">=0.1.4"
