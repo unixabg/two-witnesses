@@ -475,7 +475,9 @@ class Screen:
             txt = (f"board {bid}{tag}: " + (f"{age:.0f} s ago" if age > 2 else "ok")
                    + (f" {b['rssi']} dBm" if b.get("rssi") is not None else "")
                    + (f", reports home {home:.0f}%" if home is not None else "")
-                   + (f", tx {b['power_q'] / 4:g} dBm" if b.get("power_q") else ""))
+                   + (f", heard {b['heard']}%" if b.get("heard") is not None and b["heard"] < 90 else "")
+                   + (f", tx {b['power_q'] / 4:g} dBm" if b.get("power_q") else "")
+                   + (", relay OFF" if b.get("relay") == 0 else ""))
             if x + len(txt) > w - 2:
                 y += 1
                 x = 1
@@ -731,6 +733,8 @@ def run(scr, a):
                                  leader=int(f[2]) == int(f[0]))
                         if len(f) >= 10:            # tw_node 1.1+: ,set_seq,set_power (quarter dBm)
                             b["power_q"] = int(f[9])
+                        if len(f) >= 12:            # tw_node 2.0+: ,relay on/off,% the exit hears it
+                            b["relay"], b["heard"] = int(f[10]), int(f[11])
                     elif kind == "TWS":         # id,ver,leader,flags,active,period,slot,offset,...
                         boards["status"] = dict(id=int(f[0]), leader=int(f[2]), period=int(f[5]),
                                                 leader_changes=int(f[14]))
@@ -738,6 +742,8 @@ def run(scr, a):
                         b.update(t=time.time(), rssi=None, exit=True, leader=int(f[2]) == int(f[0]))
                         if len(f) >= 19:            # tw_node 1.1+: ...,set_seq,set_power,radio's power
                             b["power_q"] = int(f[18]) or int(f[17])
+                        if len(f) >= 20:            # tw_node 2.0+: ...,relay on/off,relayed,no room
+                            b["relay"] = int(f[19])
                     elif kind == "TWF":
                         boards["health"] = f[1:]
                 except (ValueError, IndexError):

@@ -18,10 +18,10 @@
 # Each run gets its own folder, ~/tw-data/runs/YYYY-MM-DD_HHMM (the date and
 # clock time it started), so a day run and a night run on the same date never mix.
 # The scene (which cars, doors, people, what changed) goes in the folder's
-# scene.txt, shown at the top of view.txt: ~/tw-data/scene-now.txt is the
-# standing scene (Enter keeps it, typing replaces it; cron uses it as it is);
-# SCENE="..." gives one for this run only. ~/tw-data/boards.csv (the layout)
-# is copied into the folder.
+# scene.txt, shown at the top of view.txt: the kit's private/scene-now.txt (or
+# else ~/tw-data/scene-now.txt) is the standing scene (Enter keeps it, typing
+# replaces it; cron uses it as it is); SCENE="..." gives one for this run only.
+# The layout (private/boards.csv, or ~/tw-data/boards.csv) is copied into the folder.
 # Sleep is blocked with systemctl mask; setup_once.sh allows that one command
 # without a password, so the block is undone by itself when the run ends.
 # Without that, sudo asks once here, and the end of the run asks you to unmask.

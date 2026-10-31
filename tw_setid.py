@@ -3,36 +3,78 @@
 # SPDX-License-Identifier: Apache-2.0
 """tw_setid.py - talk to the board on the computer's USB port (tw_node firmware).
 
-    ~/scratch-esp/bin/python tw_setid.py PORT                 who is it (board number, firmware, power)
+    ~/scratch-esp/bin/python tw_setid.py PORT                 who is it; each board's power and relaying
     ~/scratch-esp/bin/python tw_setid.py PORT N               give it board number N (1-16), once
     ~/scratch-esp/bin/python tw_setid.py PORT power DBM       set the transmit power of EVERY board
     ~/scratch-esp/bin/python tw_setid.py PORT power default   back to full power (20 dBm)
+    ~/scratch-esp/bin/python tw_setid.py PORT relay off       relaying off on every board (a comparison run)
+    ~/scratch-esp/bin/python tw_setid.py PORT relay on        back on (the default)
     e.g. ~/scratch-esp/bin/python tw_setid.py /dev/ttyACM0 power 11
 
 Board number: the board stores it in its flash and restarts; erase-flash clears it.
 New boards have no number until it is set here (or listed in the firmware's
 table); until then they say they are board 16. Every board needs its own.
 
-Power (firmware tw_node 1.1 or later): 2-20 dBm, in quarter-dBm steps. The board
-on the cable passes the setting to all the others in its frames; each keeps it
-in flash, and a board that was off picks it up when it comes back. This command
-then listens for a few seconds and shows the power each board reports. Only one
-program can use the port: stop live.sh or a run first (and change one thing per
-run, as always: each run records the power its boards used).
+Power and relaying (network settings): 2-20 dBm, in quarter-dBm steps; relaying
+on or off. The board on the cable passes the setting to all the others in its
+frames; each keeps it in flash, and a board that was off picks it up when it
+comes back. Only one program can use the port: stop live.sh or a run first (and
+change one thing per run, as always: each run records the settings it used).
+
+The board's USB line can drop a command or an answer when it is busy, so this
+tries up to three times and only says "done" when the board itself reports the
+new number or setting.
 """
 import sys
 import time
 
 import serial
 
+TRIES = 3
 
-def lines(s, seconds):
-    end, buf = time.time() + seconds, b""
-    while time.time() < end:
-        buf += s.read(4096)
-        *got, buf = buf.split(b"\n")
-        for raw in got:
-            yield raw.decode(errors="replace").strip()
+
+class Port:
+    """the serial port, reopened if the board restarts (its USB port vanishes for a moment)"""
+
+    def __init__(self, path):
+        self.path = path
+        self.s = None
+        self.open(5)
+
+    def open(self, seconds):
+        end = time.time() + seconds
+        while True:
+            try:
+                self.s = serial.Serial(self.path, 115200, timeout=0.2)
+                self.s.reset_input_buffer()
+                return
+            except (serial.SerialException, OSError):
+                if time.time() > end:
+                    sys.exit(f"cannot open {self.path} (is something else using it, or is the board unplugged?)")
+                time.sleep(0.3)
+
+    def send(self, text):
+        # a newline first: ends anything half-received on the board's side
+        self.s.write(f"\n{text}\n".encode())
+        self.s.flush()
+
+    def lines(self, seconds):
+        end, buf = time.time() + seconds, b""
+        while time.time() < end:
+            try:
+                buf += self.s.read(4096)
+            except (serial.SerialException, OSError):
+                try:
+                    self.s.close()
+                except Exception:
+                    pass
+                time.sleep(0.5)
+                self.open(max(end - time.time(), 1))
+                buf = b""
+                continue
+            *got, buf = buf.split(b"\n")
+            for raw in got:
+                yield raw.decode(errors="replace").strip()
 
 
 def dbm(q):
@@ -40,55 +82,99 @@ def dbm(q):
     return "full power (never set)" if q == 0 else f"{q / 4:.2f} dBm"
 
 
-def show_power(s, seconds=6):
-    """the power every board reports: TWS for the board on the cable, TWN for each board it hears"""
+def status(p, seconds):
+    """what every board reports: TWS for the board on the cable, TWN for each board it hears.
+    -> {board: dict(set_seq, power_q, relay, heard, cable)}"""
     seen = {}
-    for line in lines(s, seconds):
+    for line in p.lines(seconds):
         f = line.split(",")
-        if f[0] == "TWS" and len(f) >= 20:
-            seen[int(f[1])] = f"board {f[1]} (on the cable): setting {f[17]}, {dbm(f[18])}; radio reports {dbm(f[19])}"
-        elif f[0] == "TWN" and len(f) >= 11:
-            seen[int(f[1])] = f"board {f[1]}: setting {f[9]}, {dbm(f[10])}"
-        elif f[0] == "TWN" and len(f) >= 9 and int(f[1]) not in seen:
-            seen[int(f[1])] = f"board {f[1]}: older firmware (no power setting; stays at full power)"
+        try:
+            if f[0] == "TWS" and len(f) >= 20:
+                seen[int(f[1])] = dict(cable=True, set_seq=int(f[17]), power_q=int(f[18]), radio_q=int(f[19]),
+                                       relay=int(f[20]) if len(f) >= 21 else None, heard=None,
+                                       relayed=int(f[21]) if len(f) >= 22 else None)
+            elif f[0] == "TWN" and len(f) >= 11:
+                seen[int(f[1])] = dict(cable=False, set_seq=int(f[9]), power_q=int(f[10]),
+                                       relay=int(f[11]) if len(f) >= 12 else None,
+                                       heard=int(f[12]) if len(f) >= 13 else None)
+        except (ValueError, IndexError):
+            pass
+    return seen
+
+
+def show(seen):
     for k in sorted(seen):
-        print("  " + seen[k])
+        b = seen[k]
+        relay = "" if b["relay"] is None else f", relaying {'on' if b['relay'] else 'OFF'}"
+        if b["cable"]:
+            print(f"  board {k} (on the cable): setting {b['set_seq']}, {dbm(b['power_q'])}{relay}; "
+                  f"radio reports {dbm(b['radio_q'])}"
+                  + (f"; records it relayed: {b['relayed']}" if b.get("relayed") is not None else ""))
+        else:
+            heard = "" if b["heard"] is None else f"; the board on the cable hears {b['heard']}% of its frames"
+            print(f"  board {k}: setting {b['set_seq']}, {dbm(b['power_q'])}{relay}{heard}")
     if not seen:
         print("  no status lines heard (is it running tw_node?)")
+
+
+def set_network(p, command, check, what):
+    """send a network setting until the board on the cable reports it (check(status) -> bool)"""
+    for attempt in range(1, TRIES + 1):
+        p.send(command)
+        if attempt == 1:
+            print(f"asked the board on {p.path} to set {what} on every board ...")
+        answered = False
+        for line in p.lines(3):
+            if line.startswith("TWERR"):
+                sys.exit(line)
+            if line.startswith("TWOK"):
+                print(line)
+                answered = True
+                break
+        seen = status(p, 3)
+        cable = [b for b in seen.values() if b["cable"]]
+        if cable and check(cable[0]):
+            if not answered:
+                print("(its answer was lost on the way, but it reports the new setting)")
+            print("each board takes it within a second; what they report now:")
+            show(status(p, 4) or seen)
+            return
+        if cable and cable[0].get("relay") is None and what.startswith("relaying"):
+            sys.exit("this board's firmware has no relaying: it needs tw_node 2.0 or later")
+        print(f"  no confirmation yet (try {attempt} of {TRIES})")
+    sys.exit("the board did not take the setting: is it running tw_node 1.1 or later "
+             "(tw_setid.py PORT shows the firmware), and is nothing else using the port?")
 
 
 def main():
     a = sys.argv[1:]
     if not a or len(a) > 3:
         sys.exit(__doc__)
-    port = a[0]
-    s = serial.Serial(port, 115200, timeout=0.2)
-    s.reset_input_buffer()
+    p = Port(a[0])
 
     if len(a) >= 2 and a[1] == "power":
         if len(a) != 3:
             sys.exit("power wants a value: 2..20 (dBm) or default")
         val = a[2]
-        if val != "default":
+        if val == "default":
+            want = 80
+        else:
             try:
                 v = float(val)
             except ValueError:
                 sys.exit("power must be a number of dBm (2..20) or default")
             if not 2 <= v <= 20:
                 sys.exit("power must be 2..20 dBm")
-        s.write(f"TWSET power {val}\n".encode())
-        s.flush()
-        print(f"asked the board on {port} to set every board's power to {val} ...")
-        for line in lines(s, 4):
-            if line.startswith("TWOK power"):
-                print(line)
-                print("each board takes it within a second; what they report now:")
-                show_power(s)
-                return
-            if line.startswith("TWERR"):
-                sys.exit(line)
-        sys.exit("no answer to the power command: this needs firmware tw_node 1.1 or later "
-                 "(tw_setid.py PORT shows the firmware)")
+            want = int(v * 4 + 0.5)
+        set_network(p, f"TWSET power {val}", lambda b: b["power_q"] == want, f"transmit power {val}")
+        return
+
+    if len(a) >= 2 and a[1] == "relay":
+        if len(a) != 3 or a[2] not in ("on", "off"):
+            sys.exit("relay on, or relay off")
+        want = 1 if a[2] == "on" else 0
+        set_network(p, f"TWSET relay {a[2]}", lambda b: b.get("relay") == want, f"relaying {a[2]}")
+        return
 
     if len(a) == 2:
         try:
@@ -97,21 +183,32 @@ def main():
             sys.exit(__doc__)
         if not 1 <= n <= 16:
             sys.exit("board number must be 1..16")
-        s.write(f"TWSET id {n}\n".encode())
-        s.flush()
-        print(f"asked the board on {port} to become board {n} ...")
+        for attempt in range(1, TRIES + 1):
+            p.send(f"TWSET id {n}")
+            if attempt == 1:
+                print(f"asked the board on {p.path} to become board {n} ...")
+            # it answers TWOK and restarts; it says hello (TWH) as soon as it is back
+            for line in p.lines(12):
+                if line.startswith("TWOK"):
+                    print(line)
+                if line.startswith("TWH"):
+                    f = line.split(",")
+                    if f[1] == str(n):
+                        print(line)
+                        print(f"done: it is board {n} (firmware {f[3]})")
+                        return
+                    break           # still the old number: the command did not get through
+            print(f"  no confirmation yet (try {attempt} of {TRIES})")
+        sys.exit("no confirmation: is it running tw_node, and is this its native USB port? "
+                 "(check with: tw_setid.py PORT)")
 
-    for line in lines(s, 12):
-        if line.startswith("TWH") and len(a) == 1:
+    for line in p.lines(12):
+        if line.startswith("TWH"):
             f = line.split(",")
             print(line)
             print(f"board {f[1]}, factory address {f[2]}, firmware {f[3]}")
-            print("power:")
-            show_power(s, 3)
-            return
-        if line.startswith("TWOK"):
-            print(line)
-            print("done: it restarts with the new number (unplug and replug if the port vanished)")
+            print("every board:")
+            show(status(p, 3))
             return
     sys.exit("no answer: is it running tw_node, and is this its native USB port? (it says hello every 10 s)")
 

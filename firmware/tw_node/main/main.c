@@ -25,6 +25,11 @@
  * The setting spreads in every frame (tw_proto.h), is kept in each board's flash,
  * and is reported per board (TWN, TWS lines; the dashboard shows it).
  *
+ * Relaying (on by default): when the exit hears a board badly, the boards that
+ * hear it well carry its records too (tw_proto.h). For a comparison run:
+ *   tw_setid.py /dev/ttyACM0 relay off      (relay on: back to the default)
+ * a network setting like the power.
+ *
  * Output on the native USB port (text lines; listen.py adds the computer's time):
  *   TWR,...  one measurement record   TWN,...  a board heard (once a second)
  *   TWS,...  this board's status      TWH,...  hello: board number, MAC, version
@@ -52,7 +57,7 @@
 
 #include "tw_proto.h"
 
-#define FW_VERSION              "tw_node 1.1"
+#define FW_VERSION              "tw_node 2.0"
 #define TW_CHANNEL              11
 #define TW_PHYMODE              WIFI_PHY_MODE_HT40
 #define TW_RATE                 WIFI_PHY_RATE_MCS0_LGI
@@ -127,15 +132,17 @@ static uint8_t board_id(void)
 static void load_settings(void)
 {
     nvs_handle_t h;
-    uint8_t seq = 0, pwr = 0;
+    uint8_t seq = 0, pwr = 0, flg = 0;
     if (nvs_open("tw", NVS_READONLY, &h) == ESP_OK) {
         nvs_get_u8(h, "pseq", &seq);
         nvs_get_u8(h, "pwr", &pwr);
+        nvs_get_u8(h, "rflg", &flg);
         nvs_close(h);
     }
     if (pwr >= TW_POWER_MIN_Q && pwr <= TW_POWER_MAX_Q) {
         s_node.set_seq = seq;
         s_node.set_power = pwr;
+        s_node.set_flags = flg;
         s_node.set_pending = 1;
     }
 }
@@ -153,6 +160,7 @@ static void apply_settings(void)
             if (nvs_open("tw", NVS_READWRITE, &h) == ESP_OK) {
                 nvs_set_u8(h, "pseq", s_node.set_seq);
                 nvs_set_u8(h, "pwr", s_node.set_power);
+                nvs_set_u8(h, "rflg", s_node.set_flags);
                 nvs_commit(h);
                 nvs_close(h);
             }
@@ -184,6 +192,14 @@ static void out(const char *s, int len)
     }
     if (usb_serial_jtag_write_bytes(s, (size_t)len, 0) < len) {
         s_usb_drops++;                  /* never wait: the radio work comes first */
+    }
+}
+
+/* answers to the computer's commands: wait (briefly) for room rather than lose them */
+static void out_wait(const char *s, int len)
+{
+    if (len > 0 && usb_up() && usb_serial_jtag_write_bytes(s, (size_t)len, pdMS_TO_TICKS(200)) < len) {
+        s_usb_drops++;
     }
 }
 
@@ -304,10 +320,19 @@ static void csi_init(void)
 }
 
 /* ---------------- the work loop: one task owns the protocol state ---------------- */
+typedef struct {
+    uint8_t  src;
+    uint32_t now;
+} rctx_t;
+
 static void relay_cb(void *ctx, const tw_rec_t *r)
 {
-    (void)ctx;
-    if (!s_node.is_exit || tw_seen(&s_node, r->rx, r->boot, r->recseq)) {
+    const rctx_t *c = ctx;
+    if (!s_node.is_exit) {
+        tw_relay_record(&s_node, c->now, c->src, r);    /* carry it on, if this board is a relay for src */
+        return;
+    }
+    if (tw_seen(&s_node, r->rx, r->boot, r->recseq)) {
         return;
     }
     static char line[600];
@@ -327,7 +352,8 @@ static void handle(ev_t *ev)
         if (h.src >= 1 && h.src <= TW_MAX_NODES) {
             s_last_hdr[h.src] = h;
         }
-        if (tw_parse_frame(ev->f.data, ev->f.len, &h, relay_cb, NULL) < 0) {
+        rctx_t c = {h.src, ev->local_us};
+        if (tw_parse_frame(ev->f.data, ev->f.len, &h, relay_cb, &c) < 0) {
             s_node.n_bad_frames++;
         }
         return;
@@ -352,7 +378,14 @@ static void poll_commands(void)
             cmd[n] = 0;
             int id;
             float dbm;
-            if (n && (!strcmp(cmd, "TWSET power default") ||
+            if (n && (!strcmp(cmd, "TWSET relay on") || !strcmp(cmd, "TWSET relay off"))) {
+                tw_set_relay(&s_node, !strcmp(cmd, "TWSET relay on"));
+                apply_settings();
+                char msg[64];
+                int k = snprintf(msg, sizeof(msg), "TWOK relay %s, setting %u\n",
+                                 (s_node.set_flags & TW_SET_RELAY_OFF) ? "off" : "on", s_node.set_seq);
+                out_wait(msg, k);
+            } else if (n && (!strcmp(cmd, "TWSET power default") ||
                       (sscanf(cmd, "TWSET power %f", &dbm) == 1))) {
                 if (!strcmp(cmd, "TWSET power default")) {
                     dbm = TW_POWER_MAX_Q / 4.0f;
@@ -367,12 +400,12 @@ static void poll_commands(void)
                     k = snprintf(msg, sizeof(msg), "TWERR power must be %d..%d dBm\n",
                                  TW_POWER_MIN_Q / 4, TW_POWER_MAX_Q / 4);
                 }
-                out(msg, k);
+                out_wait(msg, k);
             } else if (n && sscanf(cmd, "TWSET id %d", &id) == 1 && id >= 1 && id <= TW_MAX_NODES) {
                 save_id((uint8_t)id);
                 char msg[64];
                 int k = snprintf(msg, sizeof(msg), "TWOK id %d, restarting\n", id);
-                out(msg, k);
+                out_wait(msg, k);
                 usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(200));
                 vTaskDelay(pdMS_TO_TICKS(200));
                 esp_restart();
@@ -435,7 +468,8 @@ static void work_task(void *arg)
             out(line, tw_format_status(&s_node, now, line, sizeof(line)));
             for (int k = 1; k <= TW_MAX_NODES; k++) {
                 if (k != s_id && s_node.heard[k] && (uint32_t)(now - s_node.heard_us[k]) < TW_ACTIVE_US) {
-                    out(line, tw_format_node(&s_last_hdr[k], s_last_rssi[k], line, sizeof(line)));
+                    out(line, tw_format_node(&s_last_hdr[k], s_last_rssi[k], tw_hear_pct(&s_node, now, (uint8_t)k),
+                                             line, sizeof(line)));
                 }
             }
             poll_commands();

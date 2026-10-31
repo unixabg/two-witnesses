@@ -41,7 +41,7 @@ without sudo). Then flash the boards: [FLASH-README.md](FLASH-README.md).
 | file | what |
 |---|---|
 | `private/boards.csv` | where your boards are (feet from a center, which way each faces) and landmarks; drawn on the dashboard map and in each report. Format: `boards-example.csv`. Check it: `~/tw-kit/tw_map.py ~/tw-kit/private/boards.csv` |
-| `~/tw-data/scene-now.txt` | what is true right now ("car 1 in, door shut"); every run records it. Update it whenever something changes |
+| `private/scene-now.txt` | what is true right now ("car 1 in, door shut"); every run records it. Update it whenever something changes (`~/tw-data/scene-now.txt` works too; `private/` is used first) |
 | `private/` | anything else of yours: git ignores the whole folder |
 
 ## Everyday use
@@ -55,6 +55,7 @@ without sudo). Then flash the boards: [FLASH-README.md](FLASH-README.md).
 | test where to put a board | `~/tw-kit/survey.sh` (walk it around, `m` marks a spot) |
 | stop a run early | `~/tw-kit/run.sh stop` (or `watch.sh stop`, `survey.sh stop`) |
 | set every board's transmit power | `~/scratch-esp/bin/python ~/tw-kit/tw_setid.py /dev/ttyACM0 power 11` (`default` = 20 dBm; nothing running on the port) |
+| relaying off / on (every board) | `~/scratch-esp/bin/python ~/tw-kit/tw_setid.py /dev/ttyACM0 relay off` (`relay on` is the default) |
 | check the installed kit | `~/tw-kit/version.sh` |
 
 - Runs live in tmux, so you can close the terminal or the SSH session; they
@@ -66,6 +67,22 @@ without sudo). Then flash the boards: [FLASH-README.md](FLASH-README.md).
   packets/s, loss (10 s and 2 s), signal strength, how far it is above the
   noise, and motion (x its usual); each board's "reports home" percentage;
   the map (`g`) draws each line by how much it stirs right now.
+
+## Boards and relaying
+
+- **How many:** up to **16** boards. Up to 6 work best: each measurement
+  keeps all 192 amplitudes and goes out twice. From 7 on, measurements shrink
+  to 52 amplitudes (as esp-radar uses) and go out once, and each board sends
+  a little less often (every 48 ms with 16). Each board needs its own number.
+- **Relaying (on by default):** only the cabled board talks to the computer,
+  so a board it cannot hear well (a car parked between them) would lose its
+  reports. With relaying, the boards that hear both carry them home, in room
+  left in the frames they send anyway: no extra frames. What that board
+  measured still arrives, and the blocked line still shows as path loss on the
+  map: relaying saves reports, it does not hide what is in the way. Turn it
+  off only for a comparison run (`tw_setid.py ... relay off`, then `relay on`).
+- **Placing:** the board with the clearest view of all the others is the best
+  one to cable to the computer.
 
 ## After a run
 

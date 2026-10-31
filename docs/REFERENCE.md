@@ -11,7 +11,7 @@ esp-radar replay, and the desk tests.
 | `run.sh` | a long run: the routine above |
 | `dash.sh`, `dash.py` | the live dashboard of whatever is running |
 | `tw_node-s3-ch11.bin` | the firmware for every board; see FLASH-README.md; source and simulator in `firmware/` |
-| `tw_setid.py` | give a tw_node board its number (or show which it is and each board's power); `power DBM` / `power default` sets every board's transmit power (tw_node 1.1) |
+| `tw_setid.py` | give a tw_node board its number (or show which it is and every board's settings); `power DBM` / `power default` sets every board's transmit power, `relay off` / `relay on` relaying (network settings; tries up to 3 times until the board reports it) |
 | `split_links.py` | a many-board recording into one folder per link, for view.py / radar_replay.py; `--view`, `--view-only` |
 | `links_report.py` | the links of a many-board run side by side: `links/across.txt` |
 | `after_run.sh` | the views of a finished run folder, one link or many (run.sh and watch.sh call it) |
@@ -32,6 +32,41 @@ esp-radar replay, and the desk tests.
 | `seal.py` | seal / open an expectation (as before) |
 | `fake_board.py` | a pretend receiver with planted signals, for testing at the desk (see below) |
 | `setup_once.sh` | the one-time setup |
+
+## Relaying, in detail (tw_node 2.0)
+
+- **Hearing reports.** Every frame says how well its sender hears each board:
+  the share of that board's frames it received, smoothed over about the last
+  second (its frame numbers tell how many were missed). The dashboard shows
+  `heard N%` for a board the cabled one hears under 90%.
+- **Stranded.** A board is stranded when the exit (the lowest-numbered board
+  with a computer) hears it under 70%.
+- **Relays.** Boards that hear the stranded board at 80% or more, are heard by
+  the exit at 80% or more, and are not exits themselves. The lowest-numbered
+  of them, up to 8, share the work: relay *i* of *k* carries the records whose
+  number leaves *i* when divided by *k*. Every board works this out from the
+  same reports, so no extra messages are needed; if two boards briefly
+  disagree, a record is carried twice and the copy is dropped.
+- **Room.** A relay sends its own new records first, then relayed ones (once
+  each), then second copies of its own. Relaying never adds frames or slots;
+  it fills room in frames already sent.
+- **Records** carried by a relay have hop = 1 in the TWR line; `summary.txt`
+  counts them per link ("came home through a relay").
+
+Simulator (`firmware/sim`, 60 s, board 1 missing 75% of board 2's frames for
+40 s, 5% random loss everywhere): board 2's reports reaching the computer,
+relaying off / on:
+
+| boards | off | on | airtime off / on |
+|---|---|---|---|
+| 3 | 61% | 97.6% | 8.0% / 8.8% |
+| 6 | 53% | 94-95% | 25.9% / 25.9% |
+| 16 | 46% | 91-95% | 25.2% / 26.1% |
+| 16, two boards stranded | 46% | 74-91% | 26.7% |
+
+Board 1 not hearing board 2 at all: 93% got home (the relay sends each once).
+The relay switched off for 15 s mid-run: relaying stopped and resumed within a
+second. Path loss on the blocked direction is unchanged: it still shows.
 
 ## How the view judges
 

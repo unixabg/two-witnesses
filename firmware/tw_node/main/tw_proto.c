@@ -138,6 +138,17 @@ int tw_set_power(tw_node_t *n, uint8_t power_q)
     return 0;
 }
 
+void tw_set_relay(tw_node_t *n, int on)
+{
+    n->set_seq = (uint8_t)(n->set_seq + 1);
+    if (n->set_power == 0) {
+        n->set_power = TW_POWER_MAX_Q;      /* a setting always carries a power: full, as before */
+    }
+    n->set_flags = (uint8_t)(on ? (n->set_flags & ~TW_SET_RELAY_OFF) : (n->set_flags | TW_SET_RELAY_OFF));
+    n->set_pending = 1;
+    n->set_changes++;
+}
+
 void tw_note_settings(tw_node_t *n, const tw_hdr_t *h)
 {
     if (h->set_power < TW_POWER_MIN_Q || h->set_power > TW_POWER_MAX_Q) {
@@ -147,9 +158,10 @@ void tw_note_settings(tw_node_t *n, const tw_hdr_t *h)
     /* newer number wins; the same number with a different value (two computers set it at
        the same moment) is settled the same way everywhere: the lower board number wins */
     if (n->set_power == 0 || newer > 0 ||
-        (newer == 0 && h->set_power != n->set_power && h->src < n->id)) {
+        (newer == 0 && (h->set_power != n->set_power || h->set_flags != n->set_flags) && h->src < n->id)) {
         n->set_seq = h->set_seq;
         n->set_power = h->set_power;
+        n->set_flags = h->set_flags;
         n->set_pending = 1;
         n->set_changes++;
     }
@@ -162,6 +174,22 @@ void tw_note_frame(tw_node_t *n, const tw_hdr_t *h, uint32_t rx_local)
     }
     n->n_rx_frames++;
     tw_note_settings(n, h);
+    /* hearing: a smoothed share of src's frames (its frame numbers tell how many were missed) */
+    const float a = 1.0f / 32.0f;
+    uint8_t s = h->src;
+    if (!n->heard[s] || (uint32_t)(rx_local - n->heard_us[s]) >= TW_ACTIVE_US) {
+        n->hear_r[s] = 1.0f;                        /* (re)appeared: start from "all heard" */
+    } else {
+        uint32_t gap = h->seq - n->hear_seq[s];
+        if (gap >= 1 && gap <= 1000) {
+            n->hear_r[s] *= powf(1.0f - a, (float)(gap - 1));
+            n->hear_r[s] = n->hear_r[s] * (1.0f - a) + a;
+        }                                           /* else: src restarted; keep the estimate */
+    }
+    n->hear_seq[s] = h->seq;
+    memcpy(n->peer_hear[s], h->hear, TW_MAX_NODES);
+    n->peer_us[s] = rx_local;
+    n->peer_flags[s] = h->flags;
     n->heard[h->src] = 1;
     n->heard_us[h->src] = rx_local;
     tw_update_roles(n, rx_local);
@@ -221,6 +249,133 @@ uint32_t tw_next_tx_local(tw_node_t *n, uint32_t now)
     return now + wait;
 }
 
+/* ---------------- hearing and relaying ---------------- */
+static int fresh(const tw_node_t *n, uint32_t now, uint8_t id)
+{
+    return n->heard[id] && (uint32_t)(now - n->heard_us[id]) < TW_ACTIVE_US;
+}
+
+uint8_t tw_hear_pct(const tw_node_t *n, uint32_t now, uint8_t id)
+{
+    if (id == n->id) {
+        return 100;
+    }
+    if (!valid_id(id) || !fresh(n, now, id)) {
+        return 0;
+    }
+    int p = (int)lrintf(n->hear_r[id] * 100.0f);
+    return (uint8_t)(p < 0 ? 0 : p > 100 ? 100 : p);
+}
+
+uint8_t tw_primary_exit(const tw_node_t *n, uint32_t now)
+{
+    if (n->is_exit) {
+        return 0;
+    }
+    for (int i = 1; i <= TW_MAX_NODES; i++) {
+        if (i != n->id && fresh(n, now, (uint8_t)i) && (n->peer_flags[i] & TW_F_EXIT)) {
+            return (uint8_t)i;
+        }
+    }
+    return 0;
+}
+
+/* how well board a says it hears board b (this board's own view when a is this board) */
+static int says_hears(const tw_node_t *n, uint32_t now, uint8_t a, uint8_t b)
+{
+    if (a == n->id) {
+        return tw_hear_pct(n, now, b);
+    }
+    if (!fresh(n, now, a)) {
+        return -1;
+    }
+    return n->peer_hear[a][b - 1];
+}
+
+int tw_relay_share(const tw_node_t *n, uint32_t now, uint8_t src, int *idx, int *of)
+{
+    if ((n->set_flags & TW_SET_RELAY_OFF) || !valid_id(src) || src == n->id) {
+        return 0;
+    }
+    uint8_t ex = tw_primary_exit(n, now);
+    if (!ex || src == ex) {
+        return 0;
+    }
+    int e_src = says_hears(n, now, ex, src);
+    if (e_src < 0 || e_src >= TW_RELAY_STRANDED) {
+        return 0;                                   /* the exit hears it well enough */
+    }
+    /* candidates: not src, not an exit; hear src well and are heard well by the exit. The
+       lowest-numbered TW_RELAY_MAX of them share the work: ranking by board number (not by how
+       well) keeps every board's list the same while the percentages wobble */
+    uint8_t cand[TW_RELAY_MAX];
+    int nc = 0;
+    for (int c = 1; c <= TW_MAX_NODES && nc < TW_RELAY_MAX; c++) {
+        if (c == src || c == ex) {
+            continue;
+        }
+        if (c != n->id && (!fresh(n, now, (uint8_t)c) || (n->peer_flags[c] & TW_F_EXIT))) {
+            continue;
+        }
+        int c_src = says_hears(n, now, (uint8_t)c, src), e_c = says_hears(n, now, ex, (uint8_t)c);
+        if (c_src < TW_RELAY_GOOD || e_c < TW_RELAY_GOOD) {
+            continue;
+        }
+        cand[nc++] = (uint8_t)c;
+    }
+    for (int k = 0; k < nc; k++) {
+        if (cand[k] == n->id) {
+            *idx = k;
+            *of = nc;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int tw_relay_record(tw_node_t *n, uint32_t now, uint8_t src, const tw_rec_t *r)
+{
+    int idx, of;
+    if (n->is_exit || r->hop != 0 || r->rx != src) {
+        return 0;
+    }
+    if (!tw_relay_share(n, now, src, &idx, &of)) {
+        n->relay_for &= (uint16_t)~bit_of(src);
+        return 0;
+    }
+    n->relay_for |= bit_of(src);
+    if ((int)(r->recseq % (uint32_t)of) != idx || tw_seen(n, r->rx, r->boot, r->recseq)) {
+        return 0;                                   /* another relay's share, or the second copy */
+    }
+    /* a free slot, else the oldest own record already sent once (its second copy ranks below
+       relayed records anyway); never an own record that has not gone out yet */
+    tw_qent_t *e = NULL, *old = NULL;
+    for (int i = 0; i < TW_QUEUE_LEN; i++) {
+        tw_qent_t *c = &n->q[i];
+        if (!c->used) {
+            e = c;
+            break;
+        }
+        if (!c->relay && c->sent >= 1 && (!old || (int32_t)(c->made_us - old->made_us) < 0)) {
+            old = c;
+        }
+    }
+    if (!e) {
+        e = old;
+    }
+    if (!e) {
+        n->n_relay_full++;
+        return 0;
+    }
+    e->rec = *r;
+    e->rec.hop = 1;
+    e->used = 1;
+    e->sent = 0;
+    e->relay = 1;
+    e->made_us = now;
+    return 1;
+}
+
 /* ---------------- frames ---------------- */
 static int rec_len(const tw_rec_t *r) { return TW_REC_HDR_LEN + r->n; }
 
@@ -248,23 +403,28 @@ int tw_build_frame(tw_node_t *n, uint32_t now, uint8_t *buf, int max)
     /* expire old records */
     for (int i = 0; i < TW_QUEUE_LEN; i++) {
         tw_qent_t *e = &n->q[i];
-        if (e->used && (e->sent >= copies || (uint32_t)(now - e->made_us) > TW_RECORD_TTL_US)) {
-            if (e->sent == 0) {
+        int done = e->relay ? e->sent >= 1 : e->sent >= copies;
+        if (e->used && (done || (uint32_t)(now - e->made_us) > TW_RECORD_TTL_US)) {
+            if (e->sent == 0 && !e->relay) {
                 n->n_dropped++;
             }
             e->used = 0;
         }
     }
-    /* never-sent records first (oldest first), then second copies; a record goes into a
-       given frame at most once */
+    /* own never-sent records first (oldest first), then relayed ones (sent once), then own
+       second copies; a record goes into a given frame at most once */
     uint8_t in_frame[TW_QUEUE_LEN];
     memset(in_frame, 0, sizeof(in_frame));
-    for (int pass = 0; pass < copies; pass++) {
+    static const uint8_t pass_relay[3] = {0, 1, 0}, pass_sent[3] = {0, 0, 1};
+    for (int pass = 0; pass < 3; pass++) {
+        if (pass == 2 && copies < 2) {
+            break;
+        }
         for (;;) {
             int pick = -1;
             for (int i = 0; i < TW_QUEUE_LEN; i++) {
                 tw_qent_t *e = &n->q[i];
-                if (e->used && !in_frame[i] && e->sent == pass &&
+                if (e->used && !in_frame[i] && e->relay == pass_relay[pass] && e->sent == pass_sent[pass] &&
                         (pick < 0 || (int32_t)(e->made_us - n->q[pick].made_us) < 0)) {
                     pick = i;
                 }
@@ -277,6 +437,9 @@ int tw_build_frame(tw_node_t *n, uint32_t now, uint8_t *buf, int max)
             count++;
             n->q[pick].sent++;
             in_frame[pick] = 1;
+            if (n->q[pick].relay) {
+                n->n_relayed_out++;
+            }
         }
     }
     buf[0] = TW_MAGIC0; buf[1] = TW_MAGIC1; buf[2] = TW_VERSION; buf[3] = n->id;
@@ -291,6 +454,11 @@ int tw_build_frame(tw_node_t *n, uint32_t now, uint8_t *buf, int max)
     put16(buf + 18, (uint16_t)(now / 1000000u));
     buf[20] = n->set_seq;
     buf[21] = n->set_power;
+    buf[22] = n->set_flags;
+    buf[23] = 0;
+    for (int i = 1; i <= TW_MAX_NODES; i++) {
+        buf[23 + i] = tw_hear_pct(n, now, (uint8_t)i);
+    }
     n->n_tx++;
     return pos;
 }
@@ -312,6 +480,8 @@ int tw_peek_header(const uint8_t *buf, int len, tw_hdr_t *h)
     h->uptime_s = get16(buf + 18);
     h->set_seq = buf[20];
     h->set_power = buf[21];
+    h->set_flags = buf[22];
+    memcpy(h->hear, buf + 24, TW_MAX_NODES);
     return valid_id(h->src) ? 0 : -1;
 }
 
@@ -520,11 +690,13 @@ int tw_format_record(const tw_rec_t *r, char *out, int max)
     return k;
 }
 
-int tw_format_node(const tw_hdr_t *h, int8_t rssi, char *out, int max)
+int tw_format_node(const tw_hdr_t *h, int8_t rssi, uint8_t heard_pct, char *out, int max)
 {
-    /* ...,rssi,setting number,its transmit power (quarter dBm; 0 = never set: full power) */
-    return snprintf(out, (size_t)max, "TWN,%u,%lu,%u,%u,%04x,%u,%u,%d,%u,%u\n", h->src, (unsigned long)h->seq,
-                    h->leader, h->flags, h->active, h->period_ms, h->uptime_s, rssi, h->set_seq, h->set_power);
+    /* ...,rssi,setting number,its transmit power (quarter dBm; 0 = never set: full power),
+       relaying on (1) / off (0), how well this (the printing) board hears it, % */
+    return snprintf(out, (size_t)max, "TWN,%u,%lu,%u,%u,%04x,%u,%u,%d,%u,%u,%u,%u\n", h->src, (unsigned long)h->seq,
+                    h->leader, h->flags, h->active, h->period_ms, h->uptime_s, rssi, h->set_seq, h->set_power,
+                    (h->set_flags & TW_SET_RELAY_OFF) ? 0u : 1u, heard_pct);
 }
 
 int tw_format_status(const tw_node_t *n, uint32_t now, char *out, int max)
@@ -535,13 +707,15 @@ int tw_format_status(const tw_node_t *n, uint32_t now, char *out, int max)
     for (int i = 0; i < TW_QUEUE_LEN; i++) {
         used += n->q[i].used;
     }
-    /* ...,queue_used,setting number,setting power,power the radio reports (quarter dBm) */
-    return snprintf(out, (size_t)max, "TWS,%u,%u,%u,%u,%04x,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%u,%d,%u,%u,%u\n",
+    /* ...,queue_used,setting number,setting power,power the radio reports (quarter dBm),
+       relaying on/off, records this board relayed, relayed records it had no room for */
+    return snprintf(out, (size_t)max, "TWS,%u,%u,%u,%u,%04x,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%u,%d,%u,%u,%u,%u,%lu,%lu\n",
                     n->id, TW_VERSION, n->leader, (unsigned)((n->synced ? TW_F_SYNCED : 0) |
                     (n->is_exit ? TW_F_EXIT : 0) | (n->leader == n->id ? TW_F_LEADER : 0)),
                     tw_active(n, now), (unsigned long)(p / 1000u), (unsigned long)(fits ? start : 0),
                     (unsigned long)n->offset, (unsigned long)n->n_tx, (unsigned long)n->n_rx_frames,
                     (unsigned long)n->n_bad_frames, (unsigned long)n->n_meas, (unsigned long)n->n_dup,
                     (unsigned long)n->n_dropped, n->leader_changes, used, n->set_seq, n->set_power,
-                    n->tx_power_q);
+                    n->tx_power_q, (n->set_flags & TW_SET_RELAY_OFF) ? 0u : 1u, (unsigned long)n->n_relayed_out,
+                    (unsigned long)n->n_relay_full);
 }

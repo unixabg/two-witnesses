@@ -10,6 +10,11 @@
  *
  *   sim --nodes 3 --seconds 60 [--loss 0.05] [--exit 1[,2]] [--kill 1@20-40]
  *       [--seed 7] [--realtime] [--out FILE] [--setpower 20@11[@1],40@20]
+ *       [--block 2-1@10-50@0.75,...] [--setrelay 30@off,60@on]
+ *
+ * --block S-R@A-B@P: from A to B seconds, board R misses each of board S's frames with
+ * probability P (on top of --loss): something in the way of that one direction.
+ * --setrelay T@on|off: at T seconds the computer turns relaying on or off (first exit).
  *
  * --setpower T@DBM[@BOARD]: at T seconds, the computer sets the network's transmit
  * power at BOARD (default: the first exit). The JSON summary says how long every
@@ -51,13 +56,18 @@ static simnode_t N_[MAXN + 1];
 static int n_nodes = 3, realtime = 0, exits[MAXN + 1];
 static double seconds = 60, p_loss = 0.05, t0_unix;
 static double walk_a = 30e6, walk_b = 40e6;    /* planted walk across the 1-2 link (--walk A-B seconds) */
-static long collisions = 0, frames = 0, lost_random = 0;
+static long collisions = 0, frames = 0, lost_random = 0, lost_blocked = 0;
 static double air_used_us = 0;
 static FILE *out;
 static unsigned rng_state = 7;
 #define MAXSET 16
 static struct { double t; uint8_t q; int at; uint8_t seq; double done_t; int fired; } sets[MAXSET];
 static int n_sets = 0;
+#define MAXBLK 32
+static struct { int s, r; double a, b, p; } blks[MAXBLK];
+static int n_blks = 0;
+static struct { double t; int on, fired; } rsets[MAXSET];
+static int n_rsets = 0;
 
 static double urand(void)
 {
@@ -106,10 +116,13 @@ typedef struct {
     double t;
 } rctx_t;
 
+static uint8_t cur_src;
+
 static void on_record(void *ctx, const tw_rec_t *r)
 {
     rctx_t *c = ctx;
     if (!c->self->exit) {
+        tw_relay_record(&c->self->st, local_us(c->self, c->t), cur_src, r);
         return;
     }
     if (!tw_seen(&c->self->st, r->rx, r->boot, r->recseq)) {
@@ -134,6 +147,25 @@ static int parse_args(int argc, char **argv, char *kill_spec, char *exit_spec, u
             char *e; walk_a = strtod(argv[++i], &e) * 1e6; walk_b = (*e == '-' ? strtod(e + 1, NULL) : walk_a / 1e6 + 10) * 1e6;
         }
         else if (!strcmp(argv[i], "--out") && i + 1 < argc) *outpath = argv[++i];
+        else if (!strcmp(argv[i], "--block") && i + 1 < argc) {
+            for (char *p = argv[++i]; *p && n_blks < MAXBLK;) {
+                blks[n_blks].s = (int)strtol(p, &p, 10);
+                if (*p == '-') blks[n_blks].r = (int)strtol(p + 1, &p, 10);
+                if (*p == '@') blks[n_blks].a = strtod(p + 1, &p) * 1e6;
+                if (*p == '-') blks[n_blks].b = strtod(p + 1, &p) * 1e6;
+                if (*p == '@') blks[n_blks].p = strtod(p + 1, &p);
+                n_blks++;
+                if (*p == ',') p++; else break;
+            }
+        }
+        else if (!strcmp(argv[i], "--setrelay") && i + 1 < argc) {
+            for (char *p = argv[++i]; *p && n_rsets < MAXSET;) {
+                rsets[n_rsets].t = strtod(p, &p) * 1e6;
+                if (*p == '@') { p++; rsets[n_rsets].on = !strncmp(p, "on", 2); while (*p && *p != ',') p++; }
+                n_rsets++;
+                if (*p == ',') p++; else break;
+            }
+        }
         else if (!strcmp(argv[i], "--setpower") && i + 1 < argc) {
             for (char *p = argv[++i]; *p && n_sets < MAXSET;) {
                 double t = strtod(p, &p), dbm = 0; int at = 0;
@@ -215,6 +247,11 @@ int main(int argc, char **argv)
                 int dead = r->dead_from >= 0 && busy_until >= r->dead_from && (r->dead_to < 0 || busy_until < r->dead_to);
                 if (id == busy_src || dead || last_collided) continue;
                 if (urand() < p_loss) { lost_random++; continue; }
+                int blocked = 0;
+                for (int k = 0; k < n_blks; k++)
+                    if (blks[k].s == busy_src && blks[k].r == id && busy_until >= blks[k].a && busy_until < blks[k].b &&
+                        urand() < blks[k].p) blocked = 1;
+                if (blocked) { lost_blocked++; continue; }
                 uint32_t now_l = local_us(r, busy_until);
                 tw_hdr_t h;
                 if (tw_peek_header(last_frame, last_len, &h) < 0) { r->st.n_bad_frames++; continue; }
@@ -228,6 +265,7 @@ int main(int argc, char **argv)
                                                          phy, 0, csi, CSI_LEN, 1.0f, compact);
                 r->made[h.src]++;
                 rctx_t c = { r, busy_until };
+                cur_src = h.src;
                 if (r->exit) {
                     char line[600];
                     if (tw_format_record(rec, line, sizeof(line)) > 0) emit(busy_until, line);
@@ -254,6 +292,14 @@ int main(int argc, char **argv)
                 sets[k].fired = 1;
                 tw_set_power(&N_[sets[k].at].st, sets[k].q);
                 sets[k].seq = N_[sets[k].at].st.set_seq;
+            }
+        }
+        for (int k = 0; k < n_rsets; k++) {
+            if (!rsets[k].fired && tx_t >= rsets[k].t) {
+                rsets[k].fired = 1;
+                int at = 1;
+                for (int id = 1; id <= n_nodes; id++) if (exits[id]) { at = id; break; }
+                tw_set_relay(&N_[at].st, rsets[k].on);
             }
         }
         for (int id = 1; id <= n_nodes; id++) {
@@ -310,7 +356,7 @@ int main(int argc, char **argv)
             emit(t, line);
             for (int k = 1; k <= n_nodes; k++) {
                 if (k != id && r->st.heard[k] && (uint32_t)(lr - r->st.heard_us[k]) < TW_ACTIVE_US) {
-                    tw_format_node(&r->node_hdr[k], r->node_rssi[k], line, sizeof(line));
+                    tw_format_node(&r->node_hdr[k], r->node_rssi[k], tw_hear_pct(&r->st, lr, (uint8_t)k), line, sizeof(line));
                     emit(t, line);
                 }
             }
@@ -319,8 +365,9 @@ int main(int argc, char **argv)
     for (int id = 1; id <= n_nodes; id++) leader_changes_total += N_[id].st.leader_changes;
     /* ground truth for check_sim.py */
     fprintf(stderr, "{\"nodes\": %d, \"seconds\": %.1f, \"loss\": %.3f, \"frames\": %ld, \"collisions\": %ld, "
-                    "\"lost_random\": %ld, \"airtime_pct\": %.2f, \"leader_changes\": %ld, \"made\": {",
-            n_nodes, seconds, p_loss, frames, collisions, lost_random, 100 * air_used_us / end, leader_changes_total);
+                    "\"lost_random\": %ld, \"lost_blocked\": %ld, \"airtime_pct\": %.2f, \"leader_changes\": %ld, \"made\": {",
+            n_nodes, seconds, p_loss, frames, collisions, lost_random, lost_blocked, 100 * air_used_us / end,
+            leader_changes_total);
     int first = 1;
     for (int rx = 1; rx <= n_nodes; rx++)
         for (int tx = 1; tx <= n_nodes; tx++)
@@ -331,6 +378,10 @@ int main(int argc, char **argv)
     fprintf(stderr, "}, \"dropped\": {");
     for (int id = 1; id <= n_nodes; id++)
         fprintf(stderr, "%s\"%d\": %lu", id > 1 ? ", " : "", id, (unsigned long)N_[id].st.n_dropped);
+    fprintf(stderr, "}, \"relayed_out\": {");
+    for (int id = 1; id <= n_nodes; id++)
+        fprintf(stderr, "%s\"%d\": [%lu, %lu]", id > 1 ? ", " : "", id, (unsigned long)N_[id].st.n_relayed_out,
+                (unsigned long)N_[id].st.n_relay_full);
     fprintf(stderr, "}, \"settings\": [");
     for (int k = 0; k < n_sets; k++)
         fprintf(stderr, "%s{\"t\": %.3f, \"dbm\": %.2f, \"at\": %d, \"seq\": %u, \"all_after_s\": %.3f}",

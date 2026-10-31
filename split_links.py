@@ -91,6 +91,7 @@ class Splitter:
         self.pending = collections.defaultdict(list)    # link -> heap
         self.boot_index = {}                            # (rx, boot) -> order the boots were seen
         self.seen = set()
+        self.relayed = collections.Counter()           # link -> records that came home through a relay
         self.boards = {}
         self.dups = self.bad = 0
         self.hour_span = (0, 0, "")
@@ -109,6 +110,8 @@ class Splitter:
             self.dups += 1
             return
         self.seen.add(key)
+        if r["hop"]:
+            self.relayed[f"{r['tx']}-{r['rx']}"] += 1
         w10 = host_ns // 10**10 * 10
         w = self.win[w10][r["rx"]]
         w[0] += 1
@@ -256,24 +259,26 @@ class Splitter:
             self.tws.append(row)
         self.tws_last = row
 
-    def note_power(self, host_ns, board, q):
-        """transmit power each board reports (quarter dBm; 0 = never set: full power)"""
+    def note_power(self, host_ns, board, q, relay=None):
+        """transmit power each board reports (quarter dBm; 0 = never set: full power), and
+        whether relaying is on (tw_node 2.0+; None before)"""
         pw = self.__dict__.setdefault("power", {})
         hist = pw.setdefault(board, [])
-        if not hist or hist[-1][1] != q:
-            hist.append((host_ns / 1e9, q))
+        if not hist or hist[-1][1:] != (q, relay):
+            hist.append((host_ns / 1e9, q, relay))
 
     def power_lines(self):
         pw = getattr(self, "power", {})
         if not pw:
             return []
-        def dbm(q):
-            return "full power (never set)" if q == 0 else f"{q / 4:g} dBm"
+        def dbm(q, relay):
+            return ("full power (never set)" if q == 0 else f"{q / 4:g} dBm") + \
+                   ("" if relay is None else f", relaying {'on' if relay else 'off'}")
         out = []
         for b, hist in sorted(pw.items()):
-            txt = f"board {b}: transmit power {dbm(hist[0][1])}"
-            for t, q in hist[1:]:
-                txt += f", then {dbm(q)} from {dt.datetime.fromtimestamp(t).strftime('%H:%M:%S')}"
+            txt = f"board {b}: transmit power {dbm(*hist[0][1:])}"
+            for t, q, relay in hist[1:]:
+                txt += f", then {dbm(q, relay)} from {dt.datetime.fromtimestamp(t).strftime('%H:%M:%S')}"
             out.append(txt)
         return out + [""]
 
@@ -309,6 +314,11 @@ class Splitter:
             dst = os.path.join(self.outdir, link, "scene.txt")
             if os.path.exists(scene) and not os.path.exists(dst):
                 open(dst, "w").write(open(scene).read())
+        if self.relayed:
+            L += ["", "came home through a relay (another board carried the measuring board's reports):"]
+            for link in sorted(self.relayed, key=lambda k: [int(x) for x in k.split("-")]):
+                n = self.stats[link]["n"] if link in self.stats else 0
+                L.append(f"  {link:>6}  {self.relayed[link]:9,d}  ({100 * self.relayed[link] / max(n, 1):.1f}% of its records)")
         L += ["", "missing = frames of the sender with no report here. path = the measuring board did not",
               "hear them (sensing: something in the way shows here); delivery = it heard them, but its",
               "report never reached the computer (plumbing: the measuring board's path to the cabled one).",
@@ -387,14 +397,16 @@ def main():
                     try:
                         sp.note_tws(int(f[0]), f[1:])
                         if len(f) >= 21:        # tw_node 1.1+: ...,set_seq,set_power,radio's power
-                            sp.note_power(int(f[0]), int(f[2]), int(f[19]))
+                            sp.note_power(int(f[0]), int(f[2]), int(f[19]),
+                                          int(f[21]) if len(f) >= 22 else None)    # 2.0+: relay on/off
                     except ValueError:
                         pass
                     continue
                 if f[1] == "TWN":
                     try:
                         if len(f) >= 12:        # tw_node 1.1+: ...,set_seq,set_power
-                            sp.note_power(int(f[0]), int(f[2]), int(f[11]))
+                            sp.note_power(int(f[0]), int(f[2]), int(f[11]),
+                                          int(f[12]) if len(f) >= 13 else None)    # 2.0+: relay on/off
                     except ValueError:
                         pass
                     continue

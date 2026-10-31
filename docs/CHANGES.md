@@ -5,6 +5,27 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.4-next (work in progress, on the next branch)
 
+- **Firmware tw_node 2.0: relaying.** In a run at 11 dBm, when a car parked
+  between boards 1 and 2, board 1 heard only about a quarter of board 2's
+  frames. That is sensing (it shows as path loss), but board 2's own
+  measurements travel home in those same frames, so 56% of them were lost
+  too, while board 3 still heard board 2 well. Now every frame says how well
+  its sender hears each board, and when the cabled board hears one under 70%,
+  the boards that hear both (80%+) carry its records home in spare room of
+  their own frames (details and simulator results: docs/REFERENCE.md). On by
+  default; `tw_setid.py PORT relay off|on` is a network setting like the
+  power. The frame header grew to 40 bytes (version 2): 1.x and 2.0 boards do
+  not hear each other, so every board is reflashed.
+- **tw_setid.py tries up to three times** and says "done" only when the board
+  reports the new number or setting: the board's USB line sometimes dropped a
+  command or its answer when busy. The firmware now waits briefly to send its
+  answers instead of dropping them.
+- **The standing scene can live in `private/scene-now.txt`** (used before
+  `~/tw-data/scene-now.txt`), like the board layout.
+- `summary.txt` counts the records that came home through a relay, per link,
+  and lists each board's relay setting; the dashboard shows `heard N%` for a
+  board the cabled one hears badly, and `relay OFF`.
+
 - **Firmware tw_node 1.1: transmit power, set from the computer.**
   `tw_setid.py PORT power 11` (2-20 dBm, or `default` = 20) tells the board on
   the cable; it puts the setting into the two spare bytes of every frame's

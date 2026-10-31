@@ -18,4 +18,5 @@ L=""
 for f in "$KIT/private/boards.csv" "$D/boards.csv"; do [ -r "$f" ] && { L=$f; break; }; done
 [ -n "$L" ] && echo "layout:   $L ($(grep -c '^[0-9]' "$L") boards)" || echo "layout:   none (private/boards.csv or $D/boards.csv; map view off)"
 [ -L "$KIT" ] && echo "install:  $KIT is a link to $(readlink -f "$KIT") (a git clone: git pull updates it)"
-[ -r "$D/scene-now.txt" ] && echo "scene:    $(head -c 120 "$D/scene-now.txt")" || echo "scene:    no standing scene yet ($D/scene-now.txt)"
+SC=""; for f in "$KIT/private/scene-now.txt" "$D/scene-now.txt"; do [ -r "$f" ] && { SC=$f; break; }; done
+[ -n "$SC" ] && echo "scene:    $(head -c 120 "$SC" | tr '\n' ' ')  ($SC)" || echo "scene:    no standing scene yet (private/scene-now.txt or $D/scene-now.txt)"

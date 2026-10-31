@@ -20,9 +20,18 @@
  * header bytes that older firmware sent as zero and ignores, so old and new
  * boards still work together; an old board just keeps full power.)
  *
- * Records carry a hop count (0 = carried by the board that measured it) and
- * are de-duplicated by (measuring board, record sequence number), so that
- * multi-hop forwarding can be switched on later without changing the format.
+ * Relaying (version 2): every frame also says how well its sender hears each
+ * board (percent of that board's frames, over about the last second). When the
+ * exit hears a board badly (under TW_RELAY_STRANDED %), the boards that hear
+ * that board well and are heard well by the exit (TW_RELAY_GOOD %) carry its
+ * records too, with hop = 1: up to TW_RELAY_MAX of them, lowest numbers first, each
+ * taking the records whose number falls to it (record number mod how many).
+ * Every board works out the same list from the same hearing reports, so
+ * nothing is needed but the frames already sent. Relayed records only fill
+ * room left in frames the relay sends anyway (after its own new records,
+ * before its second copies): no extra frames, no extra slots. Records are
+ * de-duplicated by (measuring board, boot, record number) at the exit and on
+ * the computer. A network setting turns relaying off (tw_set_relay).
  *
  * No ESP-IDF here: the same file is compiled into the firmware and into the
  * desk simulator (sim.c). All times are 32-bit microseconds, modular.
@@ -31,13 +40,13 @@
 #include <stdint.h>
 #include <stddef.h>
 
-#define TW_VERSION          1
+#define TW_VERSION          2           /* 2: hearing reports and relaying (1.x boards cannot mix) */
 #define TW_MAGIC0           'T'
 #define TW_MAGIC1           'W'
 #define TW_MAX_NODES        16          /* board numbers 1..16 */
 #define TW_MAX_AMPS         192         /* amplitudes in a full record (HT40: 64 L-LTF + 128 HT-LTF bins) */
 #define TW_COMPACT_AMPS     52          /* L-LTF only (as esp-radar uses) */
-#define TW_HDR_LEN          22
+#define TW_HDR_LEN          40          /* 24 bytes, then how well the sender hears boards 1..16 */
 #define TW_REC_HDR_LEN      28
 #define TW_MAX_PAYLOAD      1400        /* ESP-NOW v2 allows 1470 */
 #define TW_QUEUE_LEN        96          /* own records waiting to be carried */
@@ -50,7 +59,10 @@
 #define TW_GUARD_US         400u        /* gap at the start of each slot */
 #define TW_SLOT_US          3000u       /* each board owns a 3 ms slot: board n starts at (n-1) x 3 ms */
 #define TW_MIN_PERIOD_MS    20          /* never faster than 50 frames/s per board */
-#define TW_FORWARD          0           /* multi-hop forwarding: off (format ready for it) */
+#define TW_RELAY_STRANDED   70          /* the exit hears a board under this %: it is stranded */
+#define TW_RELAY_GOOD       80          /* a relay must hear it, and be heard by the exit, at least this % */
+#define TW_RELAY_MAX        8           /* at most this many relays share one stranded board */
+#define TW_SET_RELAY_OFF    0x01        /* setting flag: relaying off (default on) */
 #define TW_POWER_MIN_Q      8           /* transmit power, in quarter dBm: 2 dBm .. */
 #define TW_POWER_MAX_Q      80          /* .. 20 dBm (the chip's limit; the default) */
 
@@ -72,6 +84,8 @@ typedef struct {
     uint16_t uptime_s;
     uint8_t  set_seq;       /* network setting number (0 and set_power 0: none yet) */
     uint8_t  set_power;     /* transmit power in quarter dBm, 0 = never set (full power) */
+    uint8_t  set_flags;     /* TW_SET_RELAY_OFF */
+    uint8_t  hear[TW_MAX_NODES];   /* how well the sender hears board i+1, % (0 = not heard) */
 } tw_hdr_t;
 
 typedef struct {
@@ -92,7 +106,8 @@ typedef struct {
 typedef struct {
     tw_rec_t rec;
     uint8_t  used, sent;
-    uint32_t made_us;               /* local time it was made */
+    uint8_t  relay;                 /* 1: another board's record, carried for it (sent once) */
+    uint32_t made_us;               /* local time it was made (or taken on, for a relay) */
 } tw_qent_t;
 
 typedef struct {
@@ -118,16 +133,25 @@ typedef struct {
     uint8_t  leader_changes;
     /* network settings (see the top of this file) */
     uint8_t  set_seq, set_power;            /* the setting this board uses and carries on */
+    uint8_t  set_flags;                     /* TW_SET_RELAY_OFF */
     uint8_t  set_pending;                   /* 1: a new setting to apply (the firmware applies it) */
     uint8_t  set_changes;                   /* how many times it changed since start */
     uint8_t  tx_power_q;                    /* the power the radio reports it uses (filled in by the firmware) */
+    /* hearing: how well this board hears each board (smoothed share of its frames) */
+    float    hear_r[TW_MAX_NODES + 1];
+    uint32_t hear_seq[TW_MAX_NODES + 1];
+    /* what each board last said it hears, and its flags (for the exit and the relays) */
+    uint8_t  peer_hear[TW_MAX_NODES + 1][TW_MAX_NODES];
+    uint32_t peer_us[TW_MAX_NODES + 1];
+    uint8_t  peer_flags[TW_MAX_NODES + 1];
+    uint16_t relay_for;                     /* boards this board relayed for, in the last frame parsed of each */
     /* outgoing records */
     tw_qent_t q[TW_QUEUE_LEN];
     uint16_t q_next;
     /* de-duplication of everything printed or relayed, per measuring board */
     tw_seen_t seen[TW_MAX_NODES + 1];
     /* counters */
-    uint32_t n_tx, n_rx_frames, n_bad_frames, n_meas, n_dup, n_dropped, n_relayed_out;
+    uint32_t n_tx, n_rx_frames, n_bad_frames, n_meas, n_dup, n_dropped, n_relayed_out, n_relay_full;
     uint32_t rng;
 } tw_node_t;
 
@@ -156,7 +180,7 @@ const tw_rec_t *tw_add_measurement(tw_node_t *n, uint32_t now_local_us, uint8_t 
 int      tw_seen(tw_node_t *n, uint8_t rx, uint8_t boot, uint32_t recseq);
 /* text lines for the computer */
 int      tw_format_record(const tw_rec_t *r, char *out, int max);
-int      tw_format_node(const tw_hdr_t *h, int8_t rssi, char *out, int max);
+int      tw_format_node(const tw_hdr_t *h, int8_t rssi, uint8_t heard_pct, char *out, int max);
 int      tw_format_status(const tw_node_t *n, uint32_t now_local_us, char *out, int max);
 /* the L-LTF byte ranges for an ESP32/S3 CSI buffer (esp-radar's table); 0 if unknown */
 int      tw_lltf_ranges(uint8_t secondary, uint8_t sig_mode, uint8_t cwb, uint8_t stbc, int len,
@@ -165,5 +189,17 @@ uint32_t tw_rand(tw_node_t *n);
 /* a new setting given at this board (the computer asked for it): power in quarter dBm,
    TW_POWER_MIN_Q..TW_POWER_MAX_Q. Returns 0, or -1 if out of range */
 int      tw_set_power(tw_node_t *n, uint8_t power_q);
+/* relaying on (1) or off (0) for every board, the same way (a new setting number) */
+void     tw_set_relay(tw_node_t *n, int on);
 /* adopt a setting from another board's frame if it is newer (called by tw_note_frame) */
 void     tw_note_settings(tw_node_t *n, const tw_hdr_t *h);
+/* how well this board hears board id now, % (100 for itself, 0 if not heard in 2 s) */
+uint8_t  tw_hear_pct(const tw_node_t *n, uint32_t now_local_us, uint8_t id);
+/* the exit this board's relays serve: the lowest-numbered board with a computer, heard in the
+   last 2 s (0 if none, or if this board is an exit itself) */
+uint8_t  tw_primary_exit(const tw_node_t *n, uint32_t now_local_us);
+/* should this board carry board src's records, and which share: returns 1 and sets *idx, *of */
+int      tw_relay_share(const tw_node_t *n, uint32_t now_local_us, uint8_t src, int *idx, int *of);
+/* call for each record parsed from another board's frame (not on an exit): queues a relayed
+   copy if this board is one of src's relays and the record falls to it. Returns 1 if queued */
+int      tw_relay_record(tw_node_t *n, uint32_t now_local_us, uint8_t src, const tw_rec_t *r);

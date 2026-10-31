@@ -51,8 +51,8 @@ tw_chain_end() {
 }
 
 # The scene of a run, and the board layout it ran with, kept in the run's folder.
-# ~/tw-data/scene-now.txt is the standing scene (which cars, what changed: "board 2:
-# new adapter"). At a keyboard, Enter keeps it and anything typed replaces it; with
+# The standing scene (which cars, what changed: "board 2: new adapter") is the kit's
+# private/scene-now.txt if there is one, else ~/tw-data/scene-now.txt. At a keyboard, Enter keeps it and anything typed replaces it; with
 # nobody there (cron) it is used as it is. SCENE="..." gives a scene for this run
 # only. The layout (see tw_map.py), the kit's private/boards.csv or else
 # ~/tw-data/boards.csv, is copied in as boards.csv, so each run keeps the layout
@@ -60,6 +60,7 @@ tw_chain_end() {
 # Usage: tw_scene_and_layout FOLDER "question"
 tw_scene_and_layout() {
   local dir=$1 prompt=$2 standing="$TW_DATA/scene-now.txt" now_scene="" scene="" src=""
+  [ -r "${KIT:-.}/private/scene-now.txt" ] && standing="${KIT:-.}/private/scene-now.txt"
   [ -r "$standing" ] && now_scene=$(grep -v '^#' "$standing" | tr '\n' ' ' | sed 's/  */ /g; s/^ //; s/ $//')
   if [ -n "${SCENE+x}" ]; then
     scene=$SCENE; src="given for this run"
