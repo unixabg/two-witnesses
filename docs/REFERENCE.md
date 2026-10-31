@@ -1,0 +1,123 @@
+# Reference: every tool, and how the analysis judges
+
+The README covers everyday use. This page has the details: the full list of
+tools, how `view.py` decides what is an event, low data and a rhythm, the
+esp-radar replay, and the desk tests.
+
+## The tools
+
+| File | What it does |
+|---|---|
+| `run.sh` | a long run: the routine above |
+| `dash.sh`, `dash.py` | the live dashboard of whatever is running |
+| `tw_node-s3-ch11.bin` | the firmware for every board; see FLASH-README.md; source and simulator in `firmware/` |
+| `tw_setid.py` | give a tw_node board its number (or show which it is) |
+| `split_links.py` | a many-board recording into one folder per link, for view.py / radar_replay.py; `--view`, `--view-only` |
+| `links_report.py` | the links of a many-board run side by side: `links/across.txt` |
+| `after_run.sh` | the views of a finished run folder, one link or many (run.sh and watch.sh call it) |
+| `live.sh` | the dashboard with nothing saved |
+| `version.sh`, `VERSION` | which kit this is, and whether every file is intact |
+| `tools/sums.sh` | refresh SHA256SUMS after a change (before each commit) |
+| `tw_map.py`, `boards-example.csv` | the board layout drawn to scale (dashboard map, maps in across.txt) |
+| `tw_lib.sh` | shared by the .sh scripts (sessions that close themselves) |
+| `ROADMAP.md` | what is planned and what is being looked into |
+| `survey.sh` | placement test: dashboard in placement view, marks to placement.csv |
+| `watch.sh`, `watch.py` | detection mode: live radio + camera detector, kept frames, events to label |
+| `listen.py` | the listener itself: hourly gzip, flushed each minute (a power cut loses at most a minute), reconnects if the board is unplugged, refuses to write into RAM |
+| `radar_replay.py` | Espressif's esp-radar detector replayed on a recorded run, compared with watch events and labels (`radar_emu.py`, `radar_c3.elf`, `radar_c3_harness.c`, `LICENSE-esp-radar.txt` go with it) |
+| `view.py` | the view of a run folder; `--usual FILE`, `--quiet HH:MM-HH:MM`, `--k 8`, `--min-data 0.5` |
+| `short_run.sh` | a short test: the routine above |
+| `record_csi.py` | plain recorder (as before) |
+| `analyze_csi.py` | blind reader (as before); now also reads `.csv.gz`, e.g. one hour of a night |
+| `seal.py` | seal / open an expectation (as before) |
+| `fake_board.py` | a pretend receiver with planted signals, for testing at the desk (see below) |
+| `setup_once.sh` | the one-time setup |
+
+## How the view judges
+
+- **Movement**: each 10 s, how much the CSI amplitude wobbles (sd / mean per
+  live subcarrier, then the median). An **event** is a run above
+  usual + 8 robust spreads. "Usual" is the night itself, or a quiet night's
+  `usual.json`.
+- **Rhythms**: the analyze_csi.py recipe on each 10-minute piece. A rate that
+  stands out in at least half the pieces is a **habit** (the fridge's
+  0.23 Hz, say). Each piece also shows its strongest peak that is *not* a
+  habit, marked `NEW, notable` at x20 or more. That is where breathing would
+  show.
+- **Gaps**: 5 s or more with nothing received. **RSSI shifts**: a 5-minute
+  mean that moved 0.5 dB or more. **Low data**: 10 s windows with under half
+  the usual packets; listed, drawn in amber, never events.
+- Clock times come from the computer's clock (keep chrony running).
+  It prints times and numbers only: no labels, no guesses.
+
+## Espressif's own detector beside ours: radar_replay.py
+
+```
+~/scratch-esp/bin/python ~/tw-kit/radar_replay.py ~/tw-data/watch/2026-10-27_0607 --train 08:00-09:00
+```
+Replays a recorded run through **esp-radar**, Espressif's presence and
+movement detector for these boards (esp-radar 0.3.4, as its `console_test`
+example runs it on an ESP32-S3 with default settings), and sets its calls
+beside the watch events and your labels. No reflashing: it works on any run
+already recorded.
+
+- `--train HH:MM-HH:MM`: calibrate on a stretch you know was empty, as the
+  board's `radar --train_start` / `--train_stop` does. Without it,
+  Espressif's untrained defaults are used (movement only, no presence).
+- Writes `radar.txt` (summary, and "caught N of M" for each watch kind and
+  each label), `radar_events.csv`, `radar.csv` (every window), `radar.png`.
+- Fill in `detect/events.csv` labels first, then run it: the comparison by
+  label is the useful part.
+- About 1-2 minutes per recorded hour on the Chromebook.
+
+How it is faithful: Espressif ships the windowing and training as source
+(Apache-2.0) and the core math only as a compiled library. The windowing,
+training and the console's decision rule are copied line for line from the
+source. The core math was worked out from the library's symbols and debug
+info (covariance of the window, top eigenvector by the power method;
+jitter = largest 1-|correlation| with the last 3 windows; wander = smallest
+1-|correlation| with the trained shapes) and **checked against Espressif's
+compiled code itself** running under an emulator (`radar_c3.elf`, the
+library's ESP32-C3 build): over 3,000 windows the two agree to 3e-7.
+`--check 3000` repeats that check on your own data; `--emulate` runs the
+whole replay on the original (about 100x slower).
+
+What differs from a board running esp-radar live: our receiver turns on
+the chip's channel filter and LTF merge (esp-radar leaves them off), so the
+CSI it sees is slightly smoothed. A live check would be a spare board
+flashed with Espressif's `console_test`, which already listens for
+our sender's address.
+
+Desk test (fake board, one hour, trained 22:01-22:10): the planted walk
+found exactly (22:41:24-22:42:54), nothing during the planted 10 minutes of
+70% loss, the same result from the real 384-byte line layout. Untrained,
+Espressif's default line sits below the fake board's noise and fires a lot:
+train it.
+
+## Tested at the desk (2026-10-24) with fake_board.py
+
+- Listener: hourly files, the 7 s planted gap logged at the right time, loss
+  counted right; killed hard partway through a file, and the file still read
+  up to the break (229 of 230 s).
+- RAM check: refuses tmpfs and a live overlay whose writable layer is in
+  RAM; accepts an overlay whose writable layer is on disk (persistence).
+- analyze_csi.py: output identical to the old version on the same file.
+- Morning view, **blind**: a random plan was hidden in a file; the reading
+  was sealed before opening it. Planted vs found:
+  rhythm 0.419 Hz 01:37:57–02:06:32 vs 0.418 Hz 01:38:00–02:06:30;
+  gap 01:54:41–01:55:06 vs the same; walk 04:08:15–04:10:02 vs
+  04:08:10–04:10:10. No false events.
+- Evening run: camera and recorder together, clock burned into the video,
+  both clocks agree, seal written.
+
+Not tested here (no hardware in the cloud): the real board, the real
+camera, chrony, systemd-inhibit, apt on the USB. The fake board is cleaner
+than the garage, so its ratios run higher than real ones; set thresholds
+from a real quiet night.
+
+Try the tools without hardware:
+```
+python3 fake_board.py run /tmp/fn --hours 3              # a pretend night
+python3 view.py /tmp/fn                                  # read it, then
+cat /tmp/fn/PLANTED.txt                                  # see what was planted
+```
