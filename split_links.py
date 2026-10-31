@@ -170,7 +170,10 @@ class Splitter:
     def _made(series):
         """{window: [lowest, highest]} of a counter that goes up by one per frame (or record)
         -> {window: how many were made in that window}: the rise of the highest number since
-        the window before, or (first window, after a gap or a restart) highest - lowest + 1"""
+        the window before, or (first window, after a gap or a restart) highest - lowest + 1.
+        A window counting far more than a typical one is capped at the typical count: one
+        stray old record (a leftover line from the board's USB buffer when a run starts,
+        2026-10-31: 1.4 million "frames" in the first 10 s) must not swamp the totals."""
         out, prev_w, prev_hi = {}, None, None
         for w in sorted(series):
             lo, hi = series[w]
@@ -179,6 +182,11 @@ class Splitter:
             else:
                 out[w] = hi - lo + 1
             prev_w, prev_hi = w, hi
+        if len(out) >= 3:
+            typical = sorted(out.values())[len(out) // 2]
+            for w, n in out.items():
+                if n > 3 * max(typical, 1):
+                    out[w] = typical
         return out
 
     def loss_windows(self):

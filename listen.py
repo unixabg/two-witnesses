@@ -169,6 +169,13 @@ def open_port(port, baud):
         try:
             s = serial.Serial(port, baud, timeout=1)
             s.reset_input_buffer()
+            # the board may still hold lines from the last time something read it (hours
+            # ago): they come out first and would be stamped as new. Throw away the first
+            # second of input (2026-10-31: lines from the previous run's last moment).
+            t_end = time.time() + 1.0
+            while time.time() < t_end:
+                s.read(max(1, min(s.in_waiting, 1 << 16)))
+            s.reset_input_buffer()
             if tries:
                 log(f"port {port} open again after {10 * tries} s")
             return s

@@ -202,6 +202,13 @@ watch.sh or survey.sh (they say so).
   the kit reads the board layout from `private/boards.csv` first, then
   `~/tw-data/boards.csv`. Setup puts the example layout there if you have
   none; `version.sh` says which layout is in use.
+- **Fix: stale lines at the start of a run.** The board's USB buffer can still
+  hold lines from the last time something read it (the previous run's last
+  moment, hours old); they came out first and one 10 s window counted 1.4
+  million frames, so `summary.txt` showed about 53% "delivery" loss on every
+  link (2026-10-31; the views and across.txt were right). `listen.py` now
+  throws away the first second after opening the port, and `split_links.py`
+  caps any window that counts far more than a typical one.
 
 ## What changed in v5.3 (2026-10-30): map, fast readout, standing scene (no reflashing)
 
