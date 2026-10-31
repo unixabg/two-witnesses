@@ -54,6 +54,7 @@ without sudo). Then flash the boards: [FLASH-README.md](FLASH-README.md).
 | watch a run that is going | `~/tw-kit/dash.sh` (`g` map, `q` closes the view, the run goes on) |
 | test where to put a board | `~/tw-kit/survey.sh` (walk it around, `m` marks a spot) |
 | stop a run early | `~/tw-kit/run.sh stop` (or `watch.sh stop`, `survey.sh stop`) |
+| set every board's transmit power | `~/scratch-esp/bin/python ~/tw-kit/tw_setid.py /dev/ttyACM0 power 11` (`default` = 20 dBm; nothing running on the port) |
 | check the installed kit | `~/tw-kit/version.sh` |
 
 - Runs live in tmux, so you can close the terminal or the SSH session; they

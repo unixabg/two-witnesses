@@ -12,6 +12,14 @@
  * (the "leader"); its frames set the superframe for everyone. Both roles move
  * by themselves when a board goes quiet.
  *
+ * Network settings (transmit power, for now) are set at one board, the one with
+ * the computer, and spread by themselves: every frame carries the sender's
+ * current setting and its setting number; a board that hears a newer setting
+ * adopts it, keeps it in flash and carries it on. A board that was off when it
+ * changed picks it up from the first frame it hears. (The setting rides in two
+ * header bytes that older firmware sent as zero and ignores, so old and new
+ * boards still work together; an old board just keeps full power.)
+ *
  * Records carry a hop count (0 = carried by the board that measured it) and
  * are de-duplicated by (measuring board, record sequence number), so that
  * multi-hop forwarding can be switched on later without changing the format.
@@ -43,6 +51,8 @@
 #define TW_SLOT_US          3000u       /* each board owns a 3 ms slot: board n starts at (n-1) x 3 ms */
 #define TW_MIN_PERIOD_MS    20          /* never faster than 50 frames/s per board */
 #define TW_FORWARD          0           /* multi-hop forwarding: off (format ready for it) */
+#define TW_POWER_MIN_Q      8           /* transmit power, in quarter dBm: 2 dBm .. */
+#define TW_POWER_MAX_Q      80          /* .. 20 dBm (the chip's limit; the default) */
 
 /* record kinds */
 #define TW_KIND_FULL        0           /* amplitude of every bin of the CSI buffer */
@@ -60,6 +70,8 @@ typedef struct {
     uint32_t net_us;        /* sender's estimate of the leader's clock when the frame was built */
     uint16_t active;        /* bit (id-1): boards the sender counts as active */
     uint16_t uptime_s;
+    uint8_t  set_seq;       /* network setting number (0 and set_power 0: none yet) */
+    uint8_t  set_power;     /* transmit power in quarter dBm, 0 = never set (full power) */
 } tw_hdr_t;
 
 typedef struct {
@@ -104,6 +116,11 @@ typedef struct {
     uint8_t  lead_period_ms;
     uint32_t lead_heard_us;
     uint8_t  leader_changes;
+    /* network settings (see the top of this file) */
+    uint8_t  set_seq, set_power;            /* the setting this board uses and carries on */
+    uint8_t  set_pending;                   /* 1: a new setting to apply (the firmware applies it) */
+    uint8_t  set_changes;                   /* how many times it changed since start */
+    uint8_t  tx_power_q;                    /* the power the radio reports it uses (filled in by the firmware) */
     /* outgoing records */
     tw_qent_t q[TW_QUEUE_LEN];
     uint16_t q_next;
@@ -145,3 +162,8 @@ int      tw_format_status(const tw_node_t *n, uint32_t now_local_us, char *out, 
 int      tw_lltf_ranges(uint8_t secondary, uint8_t sig_mode, uint8_t cwb, uint8_t stbc, int len,
                         int ranges[4]);
 uint32_t tw_rand(tw_node_t *n);
+/* a new setting given at this board (the computer asked for it): power in quarter dBm,
+   TW_POWER_MIN_Q..TW_POWER_MAX_Q. Returns 0, or -1 if out of range */
+int      tw_set_power(tw_node_t *n, uint8_t power_q);
+/* adopt a setting from another board's frame if it is newer (called by tw_note_frame) */
+void     tw_note_settings(tw_node_t *n, const tw_hdr_t *h);

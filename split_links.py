@@ -256,6 +256,27 @@ class Splitter:
             self.tws.append(row)
         self.tws_last = row
 
+    def note_power(self, host_ns, board, q):
+        """transmit power each board reports (quarter dBm; 0 = never set: full power)"""
+        pw = self.__dict__.setdefault("power", {})
+        hist = pw.setdefault(board, [])
+        if not hist or hist[-1][1] != q:
+            hist.append((host_ns / 1e9, q))
+
+    def power_lines(self):
+        pw = getattr(self, "power", {})
+        if not pw:
+            return []
+        def dbm(q):
+            return "full power (never set)" if q == 0 else f"{q / 4:g} dBm"
+        out = []
+        for b, hist in sorted(pw.items()):
+            txt = f"board {b}: transmit power {dbm(hist[0][1])}"
+            for t, q in hist[1:]:
+                txt += f", then {dbm(q)} from {dt.datetime.fromtimestamp(t).strftime('%H:%M:%S')}"
+            out.append(txt)
+        return out + [""]
+
     def save_channel(self):
         """links/channel.json: records and mean noise floor per measuring board each 10 s,
         and the exit's timekeeper and leader-change count wherever they changed"""
@@ -273,6 +294,7 @@ class Splitter:
         L = [f"run       {os.path.abspath(self.folder)}",
              f"records   {len(self.seen):,} (duplicates skipped {self.dups:,}, unreadable lines {self.bad})", ""]
         L += sorted(self.boards.values()) + ([""] if self.boards else [])
+        L += self.power_lines()
         L.append("link   (from-to)   records    span h   rate/s   missing    path  delivery   median RSSI   boots")
         scene = os.path.join(self.folder, "scene.txt")
         for link in sorted(self.stats, key=lambda k: [int(x) for x in k.split("-")]):
@@ -364,6 +386,15 @@ def main():
                 if f[1] == "TWS":
                     try:
                         sp.note_tws(int(f[0]), f[1:])
+                        if len(f) >= 21:        # tw_node 1.1+: ...,set_seq,set_power,radio's power
+                            sp.note_power(int(f[0]), int(f[2]), int(f[19]))
+                    except ValueError:
+                        pass
+                    continue
+                if f[1] == "TWN":
+                    try:
+                        if len(f) >= 12:        # tw_node 1.1+: ...,set_seq,set_power
+                            sp.note_power(int(f[0]), int(f[2]), int(f[11]))
                     except ValueError:
                         pass
                     continue

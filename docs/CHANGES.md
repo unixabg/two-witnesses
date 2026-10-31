@@ -5,6 +5,26 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.4-next (work in progress, on the next branch)
 
+- **Firmware tw_node 1.1: transmit power, set from the computer.**
+  `tw_setid.py PORT power 11` (2-20 dBm, or `default` = 20) tells the board on
+  the cable; it puts the setting into the two spare bytes of every frame's
+  header (a change number and the power in quarter dBm), and every board that
+  hears a newer change number takes it, applies it
+  (`esp_wifi_set_max_tx_power`) and keeps it in flash. A board that was off
+  takes it when it comes back; two settings with the same change number go to
+  the lower-numbered board's. Boards on 1.0 send zeros there, which 1.1
+  ignores, so mixed boards still work (the 1.0 ones stay at full power). The
+  channel stays fixed at 11. Why: at full power boards a few metres
+  apart hear each other strongly, much of it by reflection off metal; a
+  lower power may make each link depend more on its own path
+  (to be tested: one night at 20 dBm against one at 10-11 dBm).
+  Simulator (`sim --setpower T@DBM[@BOARD]`): every board had it within
+  0.014-0.034 s in each case; a board switched off during the change took it
+  on return; two conflicting settings ended on the lower board's; delivery
+  unchanged (99.7%).
+  The dashboard shows each board's power; `summary.txt` lists it per board
+  (and when it changed).
+
 - **One firmware image** (`tw_node-s3-ch11.bin`); the two-board images and
   their guide are in release v5.3. `FLASH-README.md` is the one flashing guide.
 - **`VERSION`** is the one place for the version; `tools/sums.sh` refreshes

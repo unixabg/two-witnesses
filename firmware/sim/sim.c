@@ -9,7 +9,11 @@
  * stderr as JSON, for check_sim.py.
  *
  *   sim --nodes 3 --seconds 60 [--loss 0.05] [--exit 1[,2]] [--kill 1@20-40]
- *       [--seed 7] [--realtime] [--out FILE]
+ *       [--seed 7] [--realtime] [--out FILE] [--setpower 20@11[@1],40@20]
+ *
+ * --setpower T@DBM[@BOARD]: at T seconds, the computer sets the network's transmit
+ * power at BOARD (default: the first exit). The JSON summary says how long every
+ * live board took to adopt each setting, and what each board ended with.
  *
  * In --realtime mode the exit's lines are written as they happen (for a pty
  * feeding listen.py and the dashboard); otherwise simulated time runs flat out
@@ -51,6 +55,9 @@ static long collisions = 0, frames = 0, lost_random = 0;
 static double air_used_us = 0;
 static FILE *out;
 static unsigned rng_state = 7;
+#define MAXSET 16
+static struct { double t; uint8_t q; int at; uint8_t seq; double done_t; int fired; } sets[MAXSET];
+static int n_sets = 0;
 
 static double urand(void)
 {
@@ -127,6 +134,16 @@ static int parse_args(int argc, char **argv, char *kill_spec, char *exit_spec, u
             char *e; walk_a = strtod(argv[++i], &e) * 1e6; walk_b = (*e == '-' ? strtod(e + 1, NULL) : walk_a / 1e6 + 10) * 1e6;
         }
         else if (!strcmp(argv[i], "--out") && i + 1 < argc) *outpath = argv[++i];
+        else if (!strcmp(argv[i], "--setpower") && i + 1 < argc) {
+            for (char *p = argv[++i]; *p && n_sets < MAXSET;) {
+                double t = strtod(p, &p), dbm = 0; int at = 0;
+                if (*p == '@') dbm = strtod(p + 1, &p);
+                if (*p == '@') at = (int)strtol(p + 1, &p, 10);
+                sets[n_sets].t = t * 1e6; sets[n_sets].q = (uint8_t)lround(dbm * 4); sets[n_sets].at = at;
+                sets[n_sets].done_t = -1; n_sets++;
+                if (*p == ',') p++; else break;
+            }
+        }
         else { fprintf(stderr, "unknown argument %s\n", argv[i]); return -1; }
     }
     if (n_nodes < 1 || n_nodes > MAXN) { fprintf(stderr, "--nodes 1..%d\n", MAXN); return -1; }
@@ -168,6 +185,10 @@ int main(int argc, char **argv)
         if (*p == ',') p++; else break;
     }
 
+    for (int k = 0; k < n_sets; k++) {
+        if (!sets[k].at) for (int id = 1; id <= n_nodes; id++) if (exits[id]) { sets[k].at = id; break; }
+        if (!sets[k].at) sets[k].at = 1;
+    }
     double t = 0, end = seconds * 1e6;
     double busy_until = 0;      /* the channel: end of the frame on the air */
     int busy_src = 0;
@@ -227,6 +248,30 @@ int main(int argc, char **argv)
         }
         int dead = s->dead_from >= 0 && tx_t >= s->dead_from && (s->dead_to < 0 || tx_t < s->dead_to);
         uint32_t lnow = local_us(s, tx_t);
+        /* the computer's power commands, and the firmware applying settings */
+        for (int k = 0; k < n_sets; k++) {
+            if (!sets[k].fired && tx_t >= sets[k].t) {
+                sets[k].fired = 1;
+                tw_set_power(&N_[sets[k].at].st, sets[k].q);
+                sets[k].seq = N_[sets[k].at].st.set_seq;
+            }
+        }
+        for (int id = 1; id <= n_nodes; id++) {
+            tw_node_t *st = &N_[id].st;
+            if (st->set_pending) { st->set_pending = 0; }
+            st->tx_power_q = st->set_power ? st->set_power : TW_POWER_MAX_Q;
+        }
+        for (int k = 0; k < n_sets; k++) {         /* has every live board got setting k (or newer)? */
+            if (!sets[k].fired || sets[k].done_t >= 0) continue;
+            int all = 1;
+            for (int id = 1; id <= n_nodes; id++) {
+                simnode_t *r = &N_[id];
+                int rd = r->dead_from >= 0 && tx_t >= r->dead_from && (r->dead_to < 0 || tx_t < r->dead_to);
+                if (rd) continue;
+                if ((int8_t)(uint8_t)(r->st.set_seq - sets[k].seq) < 0 || r->st.set_power == 0) { all = 0; break; }
+            }
+            if (all) sets[k].done_t = tx_t;
+        }
         if (!dead) {
             int len = tw_build_frame(&s->st, lnow, frame, TW_MAX_PAYLOAD);
             double air = 40 + (len + 30) * 8 / 13.5;
@@ -286,6 +331,14 @@ int main(int argc, char **argv)
     fprintf(stderr, "}, \"dropped\": {");
     for (int id = 1; id <= n_nodes; id++)
         fprintf(stderr, "%s\"%d\": %lu", id > 1 ? ", " : "", id, (unsigned long)N_[id].st.n_dropped);
+    fprintf(stderr, "}, \"settings\": [");
+    for (int k = 0; k < n_sets; k++)
+        fprintf(stderr, "%s{\"t\": %.3f, \"dbm\": %.2f, \"at\": %d, \"seq\": %u, \"all_after_s\": %.3f}",
+                k ? ", " : "", sets[k].t / 1e6, sets[k].q / 4.0, sets[k].at, sets[k].seq,
+                sets[k].done_t >= 0 ? (sets[k].done_t - sets[k].t) / 1e6 : -1.0);
+    fprintf(stderr, "], \"final_power\": {");
+    for (int id = 1; id <= n_nodes; id++)
+        fprintf(stderr, "%s\"%d\": [%u, %u]", id > 1 ? ", " : "", id, N_[id].st.set_seq, N_[id].st.set_power);
     fprintf(stderr, "}}\n");
     if (out != stdout) fclose(out);
     return 0;

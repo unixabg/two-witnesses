@@ -7,9 +7,10 @@ cabled to a computer prints everything (its own measurements and those relayed
 to it), so the other boards need only a power bank.
 
 ```
-59f33538843bdae51d7992a615a34ab5aa52d0a156f4521e7b5467dfed8b1acd  tw_node-s3-ch11.bin
+dc8463767cbd9bf4bd692e73af6cd1cc5fe7ba93fb6707aaedd1ee5b4144b11e  tw_node-s3-ch11.bin
 ```
-Built from Espressif's esp-csi examples (csi_send / csi_recv at commit
+Firmware tw_node 1.1 (adds the transmit power setting; otherwise the same as
+1.0). Built from Espressif's esp-csi examples (csi_send / csi_recv at commit
 8633d67, the same as the earlier images) with ESP-IDF v5.5.6: same channel
 (11, 40 MHz, secondary below), same ESP-NOW rate (HT40 MCS0), same CSI
 settings and gain compensation as the v2 receiver, so its measurements stay
@@ -23,6 +24,7 @@ comparable with the recordings so far. Source: `firmware/tw_node/`.
 | address on the air | `1a:00:00:00:00:NN` (NN = board number), so every measurement says who sent the frame |
 | time slots | board N sends in its own 3 ms slot, (N-1) x 3 ms into each period; the period is 20 ms (50 frames/s per board) up to board 6, then 3 ms per board (48 ms with 16) |
 | timekeeper | the lowest-numbered board heard in the last 2 s; if it goes quiet, the next takes over within about 2 s |
+| transmit power | full (20 dBm) until set; `tw_setid.py PORT power 11` sets every board at once (2-20 dBm) through the board on the cable; each board keeps it in flash, and one that was off picks it up when it comes back |
 | exit | any board with a computer reading its native USB port; plug a second board into a second computer for a hot standby |
 | records | each measurement goes out in two frames (redundancy) while there are 6 boards or fewer; above that, one copy, and records shrink to the 52 L-LTF subcarriers (as esp-radar uses) to keep the air under ~25% |
 | de-duplication | records carry (measuring board, boot number, record number) and a hop count (0 today; ready for multi-hop outdoors) |
@@ -54,11 +56,32 @@ Board on the native USB port, in download mode (hold BOOT, tap RST, release BOOT
 Tap RST. Then check who it is (it says hello every 10 s):
 ```
 ~/scratch-esp/bin/python tw_setid.py /dev/ttyACM0
-# -> board 16, factory address 30:30:f9:xx:xx:xx, firmware tw_node 1.0
+# -> board 16, factory address 30:30:f9:xx:xx:xx, firmware tw_node 1.1
 ```
 A new board says it is board 16 and needs a number:
 `~/scratch-esp/bin/python tw_setid.py /dev/ttyACM0 1` (then 2, 3, ... for the
 others, one at a time on the cable). Every board needs its own.
+
+Flashing as above (erase-flash, or writing the whole image) clears what the
+board kept in flash: its number and its power setting. Set the number again
+after every reflash; the power comes back by itself from the other boards if
+they still have it (or set it again).
+
+## Transmit power (tw_node 1.1)
+
+With every board running 1.1 and the cabled one on the computer (stop
+`live.sh` or a run first: only one program can use the port):
+```
+~/scratch-esp/bin/python tw_setid.py /dev/ttyACM0 power 11        # 11 dBm, every board
+~/scratch-esp/bin/python tw_setid.py /dev/ttyACM0 power default   # back to 20 dBm
+~/scratch-esp/bin/python tw_setid.py /dev/ttyACM0                 # who is it, and each board's power
+```
+The setting travels in every frame; each board takes it within a second and
+keeps it across restarts. If two computers set different powers at the same
+moment, the lower-numbered board's setting wins. A board still on 1.0 ignores
+it and stays at full power. The dashboard shows each board's power
+(`tx 11 dBm`), and each run's `links/summary.txt` records it. Change it
+between runs, not during one.
 
 ## First test, on the bench (10 minutes)
 

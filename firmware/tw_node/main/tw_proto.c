@@ -126,12 +126,42 @@ void tw_update_roles(tw_node_t *n, uint32_t now)
     }
 }
 
+int tw_set_power(tw_node_t *n, uint8_t power_q)
+{
+    if (power_q < TW_POWER_MIN_Q || power_q > TW_POWER_MAX_Q) {
+        return -1;
+    }
+    n->set_seq = (uint8_t)(n->set_seq + 1);
+    n->set_power = power_q;
+    n->set_pending = 1;
+    n->set_changes++;
+    return 0;
+}
+
+void tw_note_settings(tw_node_t *n, const tw_hdr_t *h)
+{
+    if (h->set_power < TW_POWER_MIN_Q || h->set_power > TW_POWER_MAX_Q) {
+        return;                     /* none (older firmware sends 0), or nonsense */
+    }
+    int8_t newer = (int8_t)(uint8_t)(h->set_seq - n->set_seq);
+    /* newer number wins; the same number with a different value (two computers set it at
+       the same moment) is settled the same way everywhere: the lower board number wins */
+    if (n->set_power == 0 || newer > 0 ||
+        (newer == 0 && h->set_power != n->set_power && h->src < n->id)) {
+        n->set_seq = h->set_seq;
+        n->set_power = h->set_power;
+        n->set_pending = 1;
+        n->set_changes++;
+    }
+}
+
 void tw_note_frame(tw_node_t *n, const tw_hdr_t *h, uint32_t rx_local)
 {
     if (!valid_id(h->src) || h->src == n->id) {
         return;
     }
     n->n_rx_frames++;
+    tw_note_settings(n, h);
     n->heard[h->src] = 1;
     n->heard_us[h->src] = rx_local;
     tw_update_roles(n, rx_local);
@@ -259,7 +289,8 @@ int tw_build_frame(tw_node_t *n, uint32_t now, uint8_t *buf, int max)
     buf[16] = tw_period_ms(n, now);
     buf[17] = (uint8_t)count;
     put16(buf + 18, (uint16_t)(now / 1000000u));
-    put16(buf + 20, 0);
+    buf[20] = n->set_seq;
+    buf[21] = n->set_power;
     n->n_tx++;
     return pos;
 }
@@ -279,6 +310,8 @@ int tw_peek_header(const uint8_t *buf, int len, tw_hdr_t *h)
     h->period_ms = buf[16];
     h->n_records = buf[17];
     h->uptime_s = get16(buf + 18);
+    h->set_seq = buf[20];
+    h->set_power = buf[21];
     return valid_id(h->src) ? 0 : -1;
 }
 
@@ -489,8 +522,9 @@ int tw_format_record(const tw_rec_t *r, char *out, int max)
 
 int tw_format_node(const tw_hdr_t *h, int8_t rssi, char *out, int max)
 {
-    return snprintf(out, (size_t)max, "TWN,%u,%lu,%u,%u,%04x,%u,%u,%d\n", h->src, (unsigned long)h->seq,
-                    h->leader, h->flags, h->active, h->period_ms, h->uptime_s, rssi);
+    /* ...,rssi,setting number,its transmit power (quarter dBm; 0 = never set: full power) */
+    return snprintf(out, (size_t)max, "TWN,%u,%lu,%u,%u,%04x,%u,%u,%d,%u,%u\n", h->src, (unsigned long)h->seq,
+                    h->leader, h->flags, h->active, h->period_ms, h->uptime_s, rssi, h->set_seq, h->set_power);
 }
 
 int tw_format_status(const tw_node_t *n, uint32_t now, char *out, int max)
@@ -501,11 +535,13 @@ int tw_format_status(const tw_node_t *n, uint32_t now, char *out, int max)
     for (int i = 0; i < TW_QUEUE_LEN; i++) {
         used += n->q[i].used;
     }
-    return snprintf(out, (size_t)max, "TWS,%u,%u,%u,%u,%04x,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%u,%d\n",
+    /* ...,queue_used,setting number,setting power,power the radio reports (quarter dBm) */
+    return snprintf(out, (size_t)max, "TWS,%u,%u,%u,%u,%04x,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%u,%d,%u,%u,%u\n",
                     n->id, TW_VERSION, n->leader, (unsigned)((n->synced ? TW_F_SYNCED : 0) |
                     (n->is_exit ? TW_F_EXIT : 0) | (n->leader == n->id ? TW_F_LEADER : 0)),
                     tw_active(n, now), (unsigned long)(p / 1000u), (unsigned long)(fits ? start : 0),
                     (unsigned long)n->offset, (unsigned long)n->n_tx, (unsigned long)n->n_rx_frames,
                     (unsigned long)n->n_bad_frames, (unsigned long)n->n_meas, (unsigned long)n->n_dup,
-                    (unsigned long)n->n_dropped, n->leader_changes, used);
+                    (unsigned long)n->n_dropped, n->leader_changes, used, n->set_seq, n->set_power,
+                    n->tx_power_q);
 }

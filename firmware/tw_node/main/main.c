@@ -20,6 +20,11 @@
  *   tw_setid.py /dev/ttyACM0 N     (stored in flash; survives reflashing the
  *   same image; erase-flash clears it)
  *
+ * Transmit power: set at the board on the computer, for every board at once:
+ *   tw_setid.py /dev/ttyACM0 power 11      (dBm, 2..20; "power default" = 20, full)
+ * The setting spreads in every frame (tw_proto.h), is kept in each board's flash,
+ * and is reported per board (TWN, TWS lines; the dashboard shows it).
+ *
  * Output on the native USB port (text lines; listen.py adds the computer's time):
  *   TWR,...  one measurement record   TWN,...  a board heard (once a second)
  *   TWS,...  this board's status      TWH,...  hello: board number, MAC, version
@@ -47,7 +52,7 @@
 
 #include "tw_proto.h"
 
-#define FW_VERSION              "tw_node 1.0"
+#define FW_VERSION              "tw_node 1.1"
 #define TW_CHANNEL              11
 #define TW_PHYMODE              WIFI_PHY_MODE_HT40
 #define TW_RATE                 WIFI_PHY_RATE_MCS0_LGI
@@ -116,6 +121,47 @@ static uint8_t board_id(void)
     }
     ESP_LOGW(TAG, "board " MACSTR " has no number: set one with tw_setid.py (using 16 for now)", MAC2STR(mac));
     return TW_MAX_NODES;
+}
+
+/* the network setting, kept across restarts */
+static void load_settings(void)
+{
+    nvs_handle_t h;
+    uint8_t seq = 0, pwr = 0;
+    if (nvs_open("tw", NVS_READONLY, &h) == ESP_OK) {
+        nvs_get_u8(h, "pseq", &seq);
+        nvs_get_u8(h, "pwr", &pwr);
+        nvs_close(h);
+    }
+    if (pwr >= TW_POWER_MIN_Q && pwr <= TW_POWER_MAX_Q) {
+        s_node.set_seq = seq;
+        s_node.set_power = pwr;
+        s_node.set_pending = 1;
+    }
+}
+
+/* apply a new setting to the radio and keep it (called once a second) */
+static void apply_settings(void)
+{
+    if (s_node.set_pending) {
+        s_node.set_pending = 0;
+        if (s_node.set_power) {
+            if (esp_wifi_set_max_tx_power((int8_t)s_node.set_power) != ESP_OK) {
+                ESP_LOGW(TAG, "could not set transmit power %u/4 dBm", s_node.set_power);
+            }
+            nvs_handle_t h;
+            if (nvs_open("tw", NVS_READWRITE, &h) == ESP_OK) {
+                nvs_set_u8(h, "pseq", s_node.set_seq);
+                nvs_set_u8(h, "pwr", s_node.set_power);
+                nvs_commit(h);
+                nvs_close(h);
+            }
+        }
+    }
+    int8_t q = 0;
+    if (esp_wifi_get_max_tx_power(&q) == ESP_OK) {
+        s_node.tx_power_q = (uint8_t)q;
+    }
 }
 
 static void save_id(uint8_t id)
@@ -305,7 +351,24 @@ static void poll_commands(void)
         if (ch == '\n' || ch == '\r') {
             cmd[n] = 0;
             int id;
-            if (n && sscanf(cmd, "TWSET id %d", &id) == 1 && id >= 1 && id <= TW_MAX_NODES) {
+            float dbm;
+            if (n && (!strcmp(cmd, "TWSET power default") ||
+                      (sscanf(cmd, "TWSET power %f", &dbm) == 1))) {
+                if (!strcmp(cmd, "TWSET power default")) {
+                    dbm = TW_POWER_MAX_Q / 4.0f;
+                }
+                char msg[96];
+                int q = (int)(dbm * 4.0f + 0.5f), k;
+                if (tw_set_power(&s_node, (uint8_t)(q < 0 ? 0 : q > 255 ? 255 : q)) == 0) {
+                    apply_settings();
+                    k = snprintf(msg, sizeof(msg), "TWOK power %.2f dBm, setting %u (radio reports %.2f dBm)\n",
+                                 q / 4.0, s_node.set_seq, s_node.tx_power_q / 4.0);
+                } else {
+                    k = snprintf(msg, sizeof(msg), "TWERR power must be %d..%d dBm\n",
+                                 TW_POWER_MIN_Q / 4, TW_POWER_MAX_Q / 4);
+                }
+                out(msg, k);
+            } else if (n && sscanf(cmd, "TWSET id %d", &id) == 1 && id >= 1 && id <= TW_MAX_NODES) {
                 save_id((uint8_t)id);
                 char msg[64];
                 int k = snprintf(msg, sizeof(msg), "TWOK id %d, restarting\n", id);
@@ -368,6 +431,7 @@ static void work_task(void *arg)
             next_status += 1000000u;
             s_node.is_exit = (uint8_t)usb_up();
             tw_update_roles(&s_node, now);
+            apply_settings();
             out(line, tw_format_status(&s_node, now, line, sizeof(line)));
             for (int k = 1; k <= TW_MAX_NODES; k++) {
                 if (k != s_id && s_node.heard[k] && (uint32_t)(now - s_node.heard_us[k]) < TW_ACTIVE_US) {
@@ -403,10 +467,12 @@ void app_main(void)
     ESP_ERROR_CHECK(usb_serial_jtag_driver_install(&usb_cfg));
     s_id = board_id();
     tw_init(&s_node, s_id, 0, esp_random());
+    load_settings();
     s_q = xQueueCreate(48, sizeof(ev_t));
     wifi_init();
     espnow_init();
     csi_init();
+    apply_settings();                   /* the power kept from before a restart, if any */
     ESP_LOGW(TAG, "%s: board %u, address " MACSTR ", channel %d, frames up to %d bytes", FW_VERSION, s_id,
              MAC2STR(s_fake_mac), TW_CHANNEL, s_max_payload);
     xTaskCreatePinnedToCore(work_task, "tw_work", 8192, NULL, 5, NULL, 1);

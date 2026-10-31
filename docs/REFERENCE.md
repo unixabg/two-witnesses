@@ -11,7 +11,7 @@ esp-radar replay, and the desk tests.
 | `run.sh` | a long run: the routine above |
 | `dash.sh`, `dash.py` | the live dashboard of whatever is running |
 | `tw_node-s3-ch11.bin` | the firmware for every board; see FLASH-README.md; source and simulator in `firmware/` |
-| `tw_setid.py` | give a tw_node board its number (or show which it is) |
+| `tw_setid.py` | give a tw_node board its number (or show which it is and each board's power); `power DBM` / `power default` sets every board's transmit power (tw_node 1.1) |
 | `split_links.py` | a many-board recording into one folder per link, for view.py / radar_replay.py; `--view`, `--view-only` |
 | `links_report.py` | the links of a many-board run side by side: `links/across.txt` |
 | `after_run.sh` | the views of a finished run folder, one link or many (run.sh and watch.sh call it) |
