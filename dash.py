@@ -24,6 +24,11 @@ Keys:
         height"); the last 30 s are averaged and saved to placement.csv
     p   placement view on/off: big RSSI and link-quality readouts, for
         walking a board around (survey.sh starts in it)
+    c   CSI view of the chosen link (many boards), press again to switch, a
+        third time to close: "shape" = the strength on each subcarrier, one
+        row per second, newest at the top (a dark stripe that stays = a notch
+        in the channel, e.g. from a strong reflection); "change" = how far each
+        subcarrier is from its last minute (movement lights it up)
     g   map view on/off (many boards): the boards to scale from boards.csv
         (the run folder's, else ~/tw-data/boards.csv), each line drawn by how
         much it stirs right now (motion and the last 2 s of loss)
@@ -58,6 +63,8 @@ QUIET_S = 600
 MARK_S = 30
 SPARK_U = "▁▂▃▄▅▆▇█"
 SPARK_A = " .:-=+*#"
+CSI_RAMP = " .:-=+*#%@"             # dark (weak / unchanged) .. bright (strong / changed)
+CSI_KEEP = 600                      # seconds of per-second CSI pictures kept per link
 
 
 def parse(dgram):
@@ -150,6 +157,7 @@ class Link:
         self.pk_hist = collections.deque(maxlen=300)
         self.rmin = self.rmax = None
         self.peaks = collections.deque(maxlen=50)        # (t, x) where x >= 10
+        self.pics = collections.deque(maxlen=CSI_KEEP)   # (t, mean amplitude per subcarrier) each second
         self.last_rx = 0.0
 
     def add(self, t, seq, rssi, noise, amp):
@@ -178,6 +186,7 @@ class Link:
             self.cur = None
             return
         pic = self.sums / self.n
+        self.pics.append((self.cur, pic))
         motion = None
         if self.live is None:
             self.first_pics.append(pic)
@@ -518,6 +527,8 @@ class Screen:
         y += 1
         if getattr(self, "map_on", False):
             y = self.draw_map(links, y, h, w)
+        elif getattr(self, "csi_mode", 0) and keys:
+            y = self.draw_csi(keys[self.sel], links[keys[self.sel]], y, h, w)
         elif keys:
             k = keys[self.sel]
             link = links[k]
@@ -561,7 +572,7 @@ class Screen:
         self.put(h - 3, 1, line)
         if self.msg and time.time() - self.msg_t < 8:
             self.put(h - 2, 1, self.msg, self.color(4))
-        self.put(h - 1, 0, " m mark  p placement  g map  [ ] link  r reset  +/- span  q quit (recording carries on) ".ljust(w),
+        self.put(h - 1, 0, " m mark  p placement  g map  c CSI  [ ] link  r reset  +/- span  q quit (recording carries on) ".ljust(w),
                  curses.A_REVERSE)
         scr.refresh()
 
@@ -586,6 +597,64 @@ class Screen:
             p = tw_map.pair(a, b)
             levels[p] = max(levels.get(p, 0), lv)
         return levels
+
+    def draw_csi(self, key, link, y, h, w):
+        """the chosen link's CSI, one row per second, newest at the top. Mode 1 "shape": the
+        strength (dB) on each subcarrier, dark = weak; mode 2 "change": how far each subcarrier is
+        from its median over the last minute, dark = unchanged, bright = 3 dB or more"""
+        mode = "shape" if self.csi_mode == 1 else "change"
+        tx, rx = key.split(ARROW)
+        self.put(y, 1, f"CSI {key}: board {rx} hearing board {tx}, {mode}   (c: "
+                       f"{'change' if mode == 'shape' else 'close'}   [ ] another link)", curses.A_BOLD)
+        y += 1
+        pics = list(link.pics)
+        if not pics:
+            self.put(y, 3, "collecting ...")
+            return y + 2
+        n = max(len(p) for _t, p in pics)
+        pics = [(t, p) for t, p in pics if len(p) == n]
+        A = np.array([p for _t, p in pics])                    # seconds x subcarriers
+        live = np.median(A, axis=0) > 1.0                      # leave out the empty (guard, DC) bins
+        idx = np.nonzero(live)[0]
+        if len(idx) < 4:
+            self.put(y, 3, "no live subcarriers yet")
+            return y + 2
+        rows = max(4, min(len(pics), h - y - 8))
+        width = max(10, min(w - 14, len(idx)))
+        groups = np.array_split(idx, width)                    # neighbouring subcarriers share a column
+        with np.errstate(divide="ignore", invalid="ignore"):
+            db = 20 * np.log10(np.maximum(A, 1e-3))
+            cols = np.stack([db[:, g].mean(axis=1) for g in groups], axis=1)     # seconds x columns
+            if mode == "shape":
+                lo, hi = np.percentile(cols[-rows:], 2), np.percentile(cols[-rows:], 98)
+                val = (cols - lo) / max(hi - lo, 1e-6)
+            else:
+                val = np.zeros_like(cols)
+                for i in range(max(0, len(cols) - rows), len(cols)):     # only the rows shown
+                    ref = np.median(cols[max(0, i - 60):i + 1], axis=0)
+                    val[i] = np.abs(cols[i] - ref) / 3.0
+        # where the radio's report moves from the L-LTF part (first 64 bins) to the HT-LTF part
+        cut = next((c for c, g in enumerate(groups) if g[0] >= 64), None)
+        head = [" "] * width
+        if cut:
+            head[cut] = "|"
+        self.put(y, 12, "".join(head) + "   subcarriers as the radio reports them" +
+                 ("" if cut is None else ": L-LTF | HT-LTF"), curses.A_DIM)
+        y += 1
+        for r in range(rows):
+            i = len(cols) - 1 - r
+            if i < 0:
+                break
+            t = pics[i][0]
+            if r % 10 == 0:
+                self.put(y, 1, dt.datetime.fromtimestamp(t).strftime("%H:%M:%S"), curses.A_DIM)
+            v = np.clip(val[i], 0, 0.999)
+            self.put(y, 12, "".join(CSI_RAMP[int(x * len(CSI_RAMP))] for x in v))
+            y += 1
+        self.put(y, 12, ("dark = weak, bright = strong" if mode == "shape" else
+                         "dark = as in the last minute, bright = changed by 3 dB or more")
+                 + f"   ({len(idx)} live subcarriers in {width} columns)", curses.A_DIM)
+        return y + 2
 
     def draw_map(self, links, y, h, w):
         now = time.time()
@@ -768,6 +837,10 @@ def run(scr, a):
             ui.placement = not ui.placement
         elif k == ord("g"):
             ui.map_on = not getattr(ui, "map_on", False)
+            ui.csi_mode = 0
+        elif k == ord("c"):
+            ui.csi_mode = (getattr(ui, "csi_mode", 0) + 1) % 3
+            ui.map_on = False
         elif k == ord("r"):
             for link in links.values():
                 link.rmin = link.rmax = None

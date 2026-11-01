@@ -108,8 +108,7 @@ def show(seen):
         relay = "" if b["relay"] is None else f", relaying {'on' if b['relay'] else 'OFF'}"
         if b["cable"]:
             print(f"  board {k} (on the cable): setting {b['set_seq']}, {dbm(b['power_q'])}{relay}; "
-                  f"radio reports {dbm(b['radio_q'])}"
-                  + (f"; records it relayed: {b['relayed']}" if b.get("relayed") is not None else ""))
+                  f"radio reports {dbm(b['radio_q'])}")
         else:
             heard = "" if b["heard"] is None else f"; the board on the cable hears {b['heard']}% of its frames"
             print(f"  board {k}: setting {b['set_seq']}, {dbm(b['power_q'])}{relay}{heard}")

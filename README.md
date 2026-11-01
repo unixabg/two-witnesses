@@ -66,7 +66,9 @@ without sudo). Then flash the boards: [FLASH-README.md](FLASH-README.md).
 - The dashboard: a row per link (`2→1` = board 1 hearing board 2) with
   packets/s, loss (10 s and 2 s), signal strength, how far it is above the
   noise, and motion (x its usual); each board's "reports home" percentage;
-  the map (`g`) draws each line by how much it stirs right now.
+  the map (`g`) draws each line by how much it stirs right now; `c` shows the
+  chosen link's CSI itself, one row a second: its shape across the channel
+  (press again: what changed in the last minute).
 
 ## Boards and relaying
 
