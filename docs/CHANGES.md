@@ -9,7 +9,10 @@ the README has only what you need to run the kit.
   channel, one row a second, newest at the top, as "." (weakest) and 1..9.
   Press once for the shape (a column of dots that stays is a notch, as a
   strong reflection makes); again for the change from the last minute ("."
-  unchanged, 9 = 3 dB or more: movement lights it up); a third time to close. Everything else on the dashboard is computed from these numbers.
+  unchanged, 9 = 3 dB or more: movement lights it up); a third time to close.
+  In the shape, each side of the `|` (L-LTF, HT-LTF) has its own scale: the
+  L-LTF part comes in much weaker and was squashed into dots. The footer says
+  whether anything is being recorded (live.sh: nothing is). Everything else on the dashboard is computed from these numbers.
 
 - **Firmware tw_node 2.0: relaying.** In a run at 11 dBm, when a car parked
   between boards 1 and 2, board 1 heard only about a quarter of board 2's

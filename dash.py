@@ -455,7 +455,7 @@ class Screen:
         self.put(h - 3, 1, "  ".join(health_items))
         if self.msg and time.time() - self.msg_t < 8:
             self.put(h - 2, 1, self.msg, self.color(4))
-        self.put(h - 1, 0, " m mark  p placement  r reset  +/- span  q quit (recording carries on) ".ljust(w),
+        self.put(h - 1, 0, (" m mark  p placement  r reset  +/- span  q quit" + (" (recording carries on) " if self.a.until else " (nothing is being recorded) ")).ljust(w),
                  curses.A_REVERSE)
         scr.refresh()
 
@@ -573,7 +573,7 @@ class Screen:
         self.put(h - 3, 1, line)
         if self.msg and time.time() - self.msg_t < 8:
             self.put(h - 2, 1, self.msg, self.color(4))
-        self.put(h - 1, 0, " m mark  p placement  g map  c CSI  [ ] link  r reset  +/- span  q quit (recording carries on) ".ljust(w),
+        self.put(h - 1, 0, (" m mark  p placement  g map  c CSI  [ ] link  r reset  +/- span  q quit" + (" (recording carries on) " if self.a.until else " (nothing is being recorded) ")).ljust(w),
                  curses.A_REVERSE)
         scr.refresh()
 
@@ -628,8 +628,15 @@ class Screen:
             db = 20 * np.log10(np.maximum(A, 1e-3))
             cols = np.stack([db[:, g].mean(axis=1) for g in groups], axis=1)     # seconds x columns
             if mode == "shape":
-                lo, hi = np.percentile(cols[-rows:], 2), np.percentile(cols[-rows:], 98)
-                val = (cols - lo) / max(hi - lo, 1e-6)
+                # each part of the radio's report on its own scale: the L-LTF part (first 64 bins)
+                # comes in much weaker than the HT-LTF part, and one shared scale would squash it
+                val = np.zeros_like(cols)
+                part = np.array([g[0] >= 64 for g in groups])
+                for sel in (~part, part):
+                    if sel.any():
+                        seg = cols[-rows:][:, sel]
+                        lo, hi = np.percentile(seg, 2), np.percentile(seg, 98)
+                        val[:, sel] = (cols[:, sel] - lo) / max(hi - lo, 1e-6)
             else:
                 val = np.zeros_like(cols)
                 for i in range(max(0, len(cols) - rows), len(cols)):     # only the rows shown
@@ -653,7 +660,7 @@ class Screen:
             v = np.clip(val[i], 0, 0.999)
             self.put(y, 12, "".join(CSI_RAMP[int(x * len(CSI_RAMP))] for x in v))
             y += 1
-        self.put(y, 12, (". weakest .. 9 strongest (on this screen)" if mode == "shape" else
+        self.put(y, 12, (". weakest .. 9 strongest on this screen, each side of | on its own scale" if mode == "shape" else
                          ". as in the last minute, 1..9 = changed by about 0.3 .. 3 dB or more")
                  + f"   ({len(idx)} live subcarriers in {width} columns)", curses.A_DIM)
         return y + 2
