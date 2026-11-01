@@ -6,10 +6,10 @@ the README has only what you need to run the kit.
 ## What changed in v5.4-next (work in progress, on the next branch)
 
 - **Dashboard: the CSI itself (`c`).** The chosen link's amplitudes across the
-  channel, one row a second, newest at the top. Press once for the shape (dark
-  = weak: a stripe that stays is a notch, as a strong reflection makes); again
-  for the change from the last minute (movement lights it up); a third time to
-  close. Everything else on the dashboard is computed from these numbers.
+  channel, one row a second, newest at the top, as "." (weakest) and 1..9.
+  Press once for the shape (a column of dots that stays is a notch, as a
+  strong reflection makes); again for the change from the last minute ("."
+  unchanged, 9 = 3 dB or more: movement lights it up); a third time to close. Everything else on the dashboard is computed from these numbers.
 
 - **Firmware tw_node 2.0: relaying.** In a run at 11 dBm, when a car parked
   between boards 1 and 2, board 1 heard only about a quarter of board 2's

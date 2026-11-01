@@ -26,9 +26,10 @@ Keys:
         walking a board around (survey.sh starts in it)
     c   CSI view of the chosen link (many boards), press again to switch, a
         third time to close: "shape" = the strength on each subcarrier, one
-        row per second, newest at the top (a dark stripe that stays = a notch
-        in the channel, e.g. from a strong reflection); "change" = how far each
-        subcarrier is from its last minute (movement lights it up)
+        row per second, newest at the top, "." weakest then 1..9 (a column of
+        dots that stays = a notch in the channel, e.g. from a strong
+        reflection); "change" = how far each subcarrier is from its last
+        minute, "." unchanged, 1..9 = about 0.3 .. 3 dB or more (movement)
     g   map view on/off (many boards): the boards to scale from boards.csv
         (the run folder's, else ~/tw-data/boards.csv), each line drawn by how
         much it stirs right now (motion and the last 2 s of loss)
@@ -63,7 +64,7 @@ QUIET_S = 600
 MARK_S = 30
 SPARK_U = "▁▂▃▄▅▆▇█"
 SPARK_A = " .:-=+*#"
-CSI_RAMP = " .:-=+*#%@"             # dark (weak / unchanged) .. bright (strong / changed)
+CSI_RAMP = ".123456789"             # . weakest / unchanged, then 1..9 stronger / more changed
 CSI_KEEP = 600                      # seconds of per-second CSI pictures kept per link
 
 
@@ -600,8 +601,9 @@ class Screen:
 
     def draw_csi(self, key, link, y, h, w):
         """the chosen link's CSI, one row per second, newest at the top. Mode 1 "shape": the
-        strength (dB) on each subcarrier, dark = weak; mode 2 "change": how far each subcarrier is
-        from its median over the last minute, dark = unchanged, bright = 3 dB or more"""
+        strength (dB) on each subcarrier, "." weakest .. 9 strongest on the screen; mode 2
+        "change": how far each subcarrier is from its median over the last minute, "." unchanged,
+        then 1..9 in steps of about 0.3 dB (9 = 3 dB or more)"""
         mode = "shape" if self.csi_mode == 1 else "change"
         tx, rx = key.split(ARROW)
         self.put(y, 1, f"CSI {key}: board {rx} hearing board {tx}, {mode}   (c: "
@@ -651,8 +653,8 @@ class Screen:
             v = np.clip(val[i], 0, 0.999)
             self.put(y, 12, "".join(CSI_RAMP[int(x * len(CSI_RAMP))] for x in v))
             y += 1
-        self.put(y, 12, ("dark = weak, bright = strong" if mode == "shape" else
-                         "dark = as in the last minute, bright = changed by 3 dB or more")
+        self.put(y, 12, (". weakest .. 9 strongest (on this screen)" if mode == "shape" else
+                         ". as in the last minute, 1..9 = changed by about 0.3 .. 3 dB or more")
                  + f"   ({len(idx)} live subcarriers in {width} columns)", curses.A_DIM)
         return y + 2
 
