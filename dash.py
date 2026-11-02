@@ -569,7 +569,20 @@ class Screen:
         line = "  ".join(health_items)
         hb = boards.get("health")
         if hb:
-            line += "   board " + " ".join(x for x in hb if x.startswith(("usb_drops", "queue_full", "frames")))
+            items = []
+            for x in hb:
+                if x.startswith("usb_drops="):
+                    # the board counts every line it could not hand over since it booted,
+                    # including all the time nothing was reading the port; only the
+                    # drops since this dashboard started reading say anything about now
+                    try:
+                        n = int(x[10:])
+                        items.append(f"usb_drops=+{n - boards.get('usb_drops0', n)} since start ({n} since boot)")
+                    except ValueError:
+                        items.append(x)
+                elif x.startswith(("queue_full", "frames")):
+                    items.append(x)
+            line += "   board " + " ".join(items)
         self.put(h - 3, 1, line)
         if self.msg and time.time() - self.msg_t < 8:
             self.put(h - 2, 1, self.msg, self.color(4))
@@ -824,6 +837,10 @@ def run(scr, a):
                             b["relay"] = int(f[19])
                     elif kind == "TWF":
                         boards["health"] = f[1:]
+                        if "usb_drops0" not in boards:  # the count when we started reading
+                            for x in f[1:]:
+                                if x.startswith("usb_drops="):
+                                    boards["usb_drops0"] = int(x[10:])
                 except (ValueError, IndexError):
                     pass
                 continue

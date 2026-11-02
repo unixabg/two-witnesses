@@ -3,6 +3,16 @@
 Newest first. Each entry keeps the reasoning and the desk tests behind the change;
 the README has only what you need to run the kit.
 
+## What changed in v5.5-next (work in progress, on the next branch)
+
+- **Dashboard: `usb_drops` counted from when the dashboard opened.** The
+  board counts every line it could not hand over since it booted, and most of
+  those are from the hours when nothing was reading the port (the buffer
+  fills and stays full), so a large number said nothing about the run under
+  way. The health line now shows `usb_drops=+N since start (M since boot)`:
+  N is what matters while watching. Counting on the board only while a
+  computer reads stays on the roadmap (firmware).
+
 ## What changed in v5.4 (2026-11-02): transmit power, relaying, the CSI view (one reflash for every board)
 
 - **Dashboard: the CSI itself (`c`).** The chosen link's amplitudes across the
