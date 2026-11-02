@@ -7,12 +7,13 @@ so boards are reflashed as rarely as possible.
 - **Self-numbering**: a new board listens for a few seconds, takes the lowest
   free number, settles clashes by its factory address and keeps the number;
   `tw_setid.py` still overrides.
-- **Passing records along**: boards that hear a poorly-heard board well
-  repeat its records once (hop 1), so its measurements still reach the
-  computer when its own path to the cabled board is weak. The record format
-  already carries a hop count.
 - **USB output only while a computer is reading**, with a hello when a reader
   appears and once a minute.
+- **Survey mode (FTM)**: on request, the boards pause sensing and measure
+  their distances to each other by round-trip timing (about 1-2 m indoors),
+  so the layout file can be checked and a moved board noticed; a nightly
+  survey compared with a stored one. Needs a test first: that switching a
+  board's radio to answer and back leaves the readings as they were.
 - At 5-6 boards the second copy of each record stops fitting in the frames
   (simulator: 98% / 96% of records delivered); switch to compact records
   earlier, or use larger frames.

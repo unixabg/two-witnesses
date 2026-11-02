@@ -3,7 +3,7 @@
 Newest first. Each entry keeps the reasoning and the desk tests behind the change;
 the README has only what you need to run the kit.
 
-## What changed in v5.4-next (work in progress, on the next branch)
+## What changed in v5.4 (2026-11-02): transmit power, relaying, the CSI view (one reflash for every board)
 
 - **Dashboard: the CSI itself (`c`).** The chosen link's amplitudes across the
   channel, one row a second, newest at the top, as "." (weakest) and 1..9.
