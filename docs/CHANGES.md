@@ -5,6 +5,17 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **`replay.py`: waves.** The page now opens with each board drawn as a
+  beacon: one fan of arcs per path, pointing to the other board, for the
+  board's own signal reaching it, in the same colors as the lines; up to 3
+  arcs lit for how much that direction changed (still, so a paused screenshot
+  is exact), and while it plays, echoes running out along the path; a faint
+  path stays under each pair so a lit fan reads as "this path", not "at this
+  board". Both ends of a path lit: something real; one end only: a board's
+  own quirk. Fans narrow to fit beside each other. `--view lines` opens with
+  the lines instead; a switch on the page flips between them. Echoes are off
+  for viewers who ask their computer for reduced motion.
+
 - **`replay.py`: a run replayed on the board layout.** One page (no outside
   links, opens offline) with every link drawn twice, one line per direction,
   colored by how much it changed each second (its fluctuation in times its

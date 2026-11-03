@@ -6,7 +6,7 @@ link, both directions, second by second, with a timeline, the events and the
 lasting changes.
 
     ~/scratch-esp/bin/python ~/tw-kit/replay.py RUN_FOLDER [--title TITLE]
-            [--from HH:MM] [--to HH:MM] [--note "HH:MM[:SS] text"]... [--out FILE]
+            [--from HH:MM] [--to HH:MM] [--note "HH:MM[:SS] text"]... [--view waves|lines] [--out FILE]
     e.g. ~/scratch-esp/bin/python ~/tw-kit/replay.py ~/tw-data/runs/2026-11-03_0000 \\
             --title "Garage replay" --from 05:00 --note "07:15 door opened"
 
@@ -16,6 +16,16 @@ any browser, offline. Without --title it asks at a keyboard (Enter keeps
 keep part of the run (clock times, as listen.py --until: the next time that
 clock time comes round after the run started). --note puts your own marks on
 the timeline (any number of them).
+
+Two ways to draw the links (a switch on the page flips between them; --view
+says which the page opens with):
+  waves   (the default) each board is a beacon with one fan of arcs per path,
+          pointing to the other board, for its own signal reaching it; up to
+          3 arcs lit for how much that direction changed, and echoes running
+          out along the path while it plays. Both ends of a path lit:
+          something real; one end only: a board's own quirk.
+  lines   two lines per link, one per direction, the arrow from the sender to
+          the board that measures.
 
 The layout is the run folder's boards.csv (the one the run used), else the
 kit's private/boards.csv, else ~/tw-data/boards.csv (format: tw_map.py);
@@ -347,6 +357,8 @@ def main():
     ap.add_argument("--to", dest="t_to", help="HH:MM: stop here")
     ap.add_argument("--note", action="append", default=[], help='"HH:MM[:SS] text": a mark of your own')
     ap.add_argument("--out", help="the page to write (default RUN_FOLDER/replay.html)")
+    ap.add_argument("--view", choices=("waves", "lines"), default="waves",
+                    help="how the page opens: waves (each board a beacon, a fan per path) or lines (one line per direction)")
     a = ap.parse_args()
     folder = os.path.abspath(os.path.expanduser(a.folder))
     title = a.title
@@ -408,7 +420,7 @@ def main():
     loc = lambda t: dt.datetime.fromtimestamp(int(t))
     span = f"{loc(epoch[0]):%Y-%m-%d %H:%M} to {loc(epoch[-1]):%H:%M}"
     data = dict(
-        title=title,
+        title=title, view=a.view,
         sub=" · ".join(x for x in [os.path.basename(folder), span, f"{len(boards)} boards", scene] if x),
         segs=[dict(a=a_, n=b_ - a_, t=int(epoch[a_]),
                    off=int(loc(epoch[a_]).astimezone().utcoffset().total_seconds())) for a_, b_ in segs],
@@ -503,6 +515,12 @@ th { color: var(--muted); font-weight: 500; font-size: 12px; }
   font-variant-numeric: tabular-nums; max-width: 280px; }
 .notes { color: var(--ink2); font-size: 13px; padding: 2px 16px 16px; }
 .notes p { margin: 4px 0; }
+.maphead { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; }
+.maphead h2 { margin: 0; }
+.seg { display: inline-flex; border: 1px solid var(--axis); border-radius: 7px; overflow: hidden; }
+.seg button { font: inherit; font-size: 12px; color: var(--ink2); background: var(--surface); border: 0; padding: 3px 10px; cursor: pointer; }
+.seg button.on { background: var(--ink); color: var(--surface); }
+body.v-waves .lg-lines, body.v-lines .lg-waves { display: none; }
 kbd { font: 11px ui-monospace, monospace; border: 1px solid var(--axis); border-radius: 4px; padding: 0 4px; }
 </style>
 </head>
@@ -525,13 +543,15 @@ kbd { font: 11px ui-monospace, monospace; border: 1px solid var(--axis); border-
 <div class="tlwrap"><canvas id="tl" aria-label="Timeline: change per link direction across the run"></canvas></div>
 <div class="wrap">
   <div class="card">
-    <h2>Map</h2>
+    <div class="maphead"><h2>Map</h2>
+      <div class="seg" role="group" aria-label="Map view"><button id="vWaves" type="button">Waves</button><button id="vLines" type="button">Lines</button></div></div>
     <svg id="map" role="img" aria-label="The boards and their links, to scale"></svg>
     <div class="legend">
       <span><span class="ramp"></span>&nbsp; change: quiet &rarr; 6&times; its quiet level or more</span>
       <span><svg width="26" height="8"><line x1="1" y1="4" x2="25" y2="4" stroke="var(--shape)" stroke-width="3" stroke-dasharray="4 3"/></svg> shape moved &ge;1.5 dB from its usual (something standing or parked differently)</span>
       <span><svg width="26" height="8"><line x1="1" y1="4" x2="25" y2="4" stroke="var(--muted)" stroke-width="3" stroke-dasharray="1 3" stroke-linecap="round"/></svg> no data that second (frames lost)</span>
-      <span>two lines per link: one per direction, arrow from the sender to the board that measures</span>
+      <span class="lg-lines">two lines per link: one per direction, arrow from the sender to the board that measures</span>
+      <span class="lg-waves">each board is a beacon: one fan per path, toward the other board, for its own signal reaching it; up to 3 arcs lit = how much it changed; echoes along the path while playing. Both ends of a path lit: something real; one end only: a board&rsquo;s own quirk</span>
     </div>
   </div>
   <div class="card">
@@ -593,6 +613,38 @@ const defs = el("defs", {});
 const mk = el("marker", { id: "arr", viewBox: "0 0 10 10", refX: 5, refY: 5, markerWidth: FS * 1.2, markerHeight: FS * 1.2, markerUnits: "userSpaceOnUse", orient: "auto" }, defs);
 el("path", { d: "M0,1 L9,5 L0,9 z", fill: "context-stroke" }, mk);
 const OFF = span / 55, W0 = span / 85;
+const gLines = el("g", {}), gWaves = el("g", {});
+/* waves: each board a beacon, one fan of 3 arcs per path, toward the other board */
+const FAN = { r: [1.55, 2.3, 3.05].map(k => k * FS), half: 32 * Math.PI / 180, w: FS * .28 };
+function arcPath(cxp, cyp, R, th, half) {
+  const a = th - half, b = th + half;
+  return `M${cxp + R * Math.cos(a)},${cyp + R * Math.sin(a)} A${R},${R} 0 0 1 ${cxp + R * Math.cos(b)},${cyp + R * Math.sin(b)}`;
+}
+[...new Set(NAMES.map(nm => nm.split("-").sort().join("-")))].forEach(pr => {     // a faint path under each pair
+  const [s, r] = pr.split("-"); if (!B[s] || !B[r]) return;
+  el("line", { x1: B[s].x, y1: -B[s].y, x2: B[r].x, y2: -B[r].y, stroke: "var(--axis)", "stroke-width": W0 * .45, "stroke-dasharray": `${W0} ${W0 * 1.2}` }, gWaves);
+});
+const angTo = (a, b) => Math.atan2(-(b.y - a.y), b.x - a.x);
+const fanEls = NAMES.map((nm, d) => {
+  const [s, r] = nm.split("-"); const a = B[s], b = B[r];
+  if (!a || !b) return null;
+  const ax = a.x, ay = -a.y, L = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+  const th = angTo(a, b);
+  // narrow the fan to fit beside this board's other fans
+  let gap = Math.PI;
+  NAMES.forEach(o => { const [s2, r2] = o.split("-"); if (s2 !== s || r2 === r || !B[r2]) return;
+    let dA = Math.abs(angTo(a, B[r2]) - th); if (dA > Math.PI) dA = 2 * Math.PI - dA; gap = Math.min(gap, dA); });
+  const half = Math.max(Math.min(FAN.half, gap * 0.42), 8 * Math.PI / 180);
+  const g = el("g", {}, gWaves);
+  const shape = el("path", { d: arcPath(ax, ay, FAN.r[2] + FS * .7, th, half), fill: "none", stroke: "var(--shape)", "stroke-width": FAN.w * 1.1, "stroke-dasharray": `${FAN.w * 1.6} ${FAN.w}`, opacity: 0 }, g);
+  const arcs = FAN.r.map(R => el("path", { d: arcPath(ax, ay, R, th, half), fill: "none", stroke: "var(--quiet)", "stroke-width": FAN.w, "stroke-linecap": "round" }, g));
+  const echo = el("path", { d: "", fill: "none", stroke: "var(--quiet)", "stroke-width": FAN.w, "stroke-linecap": "round", opacity: 0 }, g);
+  const R = FAN.r[2] + FS * .9;          // hover: the wedge the fan sits in
+  const hit = el("path", { d: `M${ax},${ay} L${ax + R * Math.cos(th - half)},${ay + R * Math.sin(th - half)} A${R},${R} 0 0 1 ${ax + R * Math.cos(th + half)},${ay + R * Math.sin(th + half)} Z`, fill: "transparent" }, g);
+  hit.addEventListener("mousemove", e => showTip(e, dirTip(d, cur)));
+  hit.addEventListener("mouseleave", hideTip);
+  return { arcs, echo, shape, ax, ay, th, half, end: Math.max(L / 2 - FS * .3, FAN.r[2] + FS), ph: Math.random(), lvl: 0, f: 0, c: "" };
+});
 const linkEls = NAMES.map((nm, d) => {
   const [s, r] = nm.split("-"); const a = B[s], b = B[r];
   if (!a || !b) return null;                         // a board missing from boards.csv
@@ -600,9 +652,9 @@ const linkEls = NAMES.map((nm, d) => {
   const ox = dy / L * OFF, oy = -dx / L * OFF;
   const p = (x, y) => `${x + ox},${-(y + oy)}`;
   const pl = `${p(a.x, a.y)} ${p((a.x + b.x) / 2, (a.y + b.y) / 2)} ${p(b.x, b.y)}`;
-  const halo = el("polyline", { points: pl, fill: "none", stroke: "var(--shape)", "stroke-width": W0 * 2.2, "stroke-dasharray": `${W0 * 2} ${W0 * 1.4}`, opacity: 0 });
-  const line = el("polyline", { points: pl, fill: "none", stroke: "var(--quiet)", "stroke-width": W0, "stroke-linecap": "round", "marker-mid": "url(#arr)" });
-  const hit = el("polyline", { points: pl, fill: "none", stroke: "transparent", "stroke-width": W0 * 4 });
+  const halo = el("polyline", { points: pl, fill: "none", stroke: "var(--shape)", "stroke-width": W0 * 2.2, "stroke-dasharray": `${W0 * 2} ${W0 * 1.4}`, opacity: 0 }, gLines);
+  const line = el("polyline", { points: pl, fill: "none", stroke: "var(--quiet)", "stroke-width": W0, "stroke-linecap": "round", "marker-mid": "url(#arr)" }, gLines);
+  const hit = el("polyline", { points: pl, fill: "none", stroke: "transparent", "stroke-width": W0 * 4 }, gLines);
   hit.addEventListener("mousemove", e => showTip(e, dirTip(d, cur)));
   hit.addEventListener("mouseleave", hideTip);
   return { line, halo };
@@ -761,6 +813,18 @@ function render() {
       const sh = raw(D.shape, d, cur) / 10;
       L.halo.setAttribute("opacity", sh >= 1.5 ? Math.min(0.4 + (sh - 1.5) / 4, 0.9).toFixed(2) : 0);
     }
+    const F = fanEls[d];
+    if (F) {
+      F.lvl = v < 1.15 ? 0 : f < 0.34 ? 1 : f < 0.67 ? 2 : 3; F.f = f; F.c = c;
+      const quiet = css("--quiet");
+      F.arcs.forEach((a, k) => {
+        a.setAttribute("stroke", v < 0 ? css("--muted") : k < F.lvl ? c : quiet);
+        a.setAttribute("stroke-dasharray", v < 0 ? `${FAN.w * .3} ${FAN.w * 1.2}` : "none");
+      });
+      const sh = raw(D.shape, d, cur) / 10;
+      F.shape.setAttribute("opacity", sh >= 1.5 ? Math.min(0.45 + (sh - 1.5) / 4, 0.95).toFixed(2) : 0);
+      if (!playing || v < 0 || F.lvl === 0) F.echo.setAttribute("opacity", 0);
+    }
     const tds = rows[d].children, sz = sizeAt(d, cur);
     tds[0].firstChild.style.background = c;
     tds[1].textContent = sz < 0 ? "–" : sz.toFixed(2);
@@ -776,12 +840,38 @@ function render() {
   drawTL();
 }
 function seek(i) { cur = Math.max(0, Math.min(N - 1, i)); render(); }
+const still = matchMedia("(prefers-reduced-motion: reduce)");
+function echoes(dt) {                    // waves: rings travel out along each active path
+  if (mode !== "waves" || still.matches) return;
+  fanEls.forEach(F => {
+    if (!F) return;
+    if (F.lvl === 0) { F.echo.setAttribute("opacity", 0); return; }
+    F.ph = (F.ph + dt * (0.5 + 1.3 * F.f)) % 1;
+    const R = FAN.r[2] + F.ph * (F.end - FAN.r[2]);
+    F.echo.setAttribute("d", arcPath(F.ax, F.ay, R, F.th, F.half));
+    F.echo.setAttribute("stroke", F.c);
+    F.echo.setAttribute("opacity", ((1 - F.ph) * (0.35 + 0.2 * F.lvl)).toFixed(2));
+  });
+}
 function tick(ts) {
   if (!playing) return;
-  if (last) { acc += (ts - last) / 1000 * Number(speedSel.value); const s = Math.floor(acc);
-    if (s) { acc -= s; cur += s; if (cur >= N - 1) { cur = N - 1; setPlay(false); } render(); } }
+  if (last) { const dt = (ts - last) / 1000; acc += dt * Number(speedSel.value); const s = Math.floor(acc);
+    if (s) { acc -= s; cur += s; if (cur >= N - 1) { cur = N - 1; setPlay(false); } render(); }
+    if (playing) echoes(Math.min(dt, 0.1)); }
   last = ts; requestAnimationFrame(tick);
 }
+let mode = "";
+function setMode(m) {
+  mode = m === "lines" ? "lines" : "waves";
+  gLines.style.display = mode === "lines" ? "" : "none";
+  gWaves.style.display = mode === "waves" ? "" : "none";
+  document.body.classList.toggle("v-lines", mode === "lines"); document.body.classList.toggle("v-waves", mode === "waves");
+  document.getElementById("vWaves").classList.toggle("on", mode === "waves");
+  document.getElementById("vLines").classList.toggle("on", mode === "lines");
+  render();
+}
+document.getElementById("vWaves").addEventListener("click", () => setMode("waves"));
+document.getElementById("vLines").addEventListener("click", () => setMode("lines"));
 const playBtn = document.getElementById("play");
 function setPlay(p) { playing = p; last = 0; acc = 0; playBtn.innerHTML = p ? "&#10073;&#10073; Pause" : "&#9654; Play"; if (p) requestAnimationFrame(tick); render(); }
 playBtn.addEventListener("click", () => setPlay(!playing));
@@ -807,7 +897,7 @@ cv.addEventListener("pointerup", () => drag = false);
 cv.addEventListener("pointerleave", hideTip);
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { readRamp(); layoutTL(); render(); });
 addEventListener("resize", layoutTL);
-readRamp(); layoutTL(); seek(0);
+readRamp(); layoutTL(); cur = 0; setMode(D.view);
 </script>
 </body>
 </html>

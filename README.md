@@ -111,7 +111,9 @@ with a timeline, the events and the lasting changes), as one page to open in
 a browser: `~/scratch-esp/bin/python ~/tw-kit/replay.py ~/tw-data/runs/<run>`
 writes `replay.html` into the run folder. It asks for a title (or give
 `--title "..."`); `--from 05:00 --to 07:00` keeps part of the run, and
-`--note "07:15 door opened"` adds your own marks. The page holds the board layout:
+`--note "07:15 door opened"` adds your own marks, and `--view lines` opens it with
+one line per direction instead of the beacons (a switch on the page flips
+between them). The page holds the board layout:
 keep it as private as the run.
 
 ## Reading a run honestly
