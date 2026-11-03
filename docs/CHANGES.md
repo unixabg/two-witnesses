@@ -5,6 +5,28 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **`replay.py`: a run replayed on the board layout.** One page (no outside
+  links, opens offline) with every link drawn twice, one line per direction,
+  colored by how much it changed each second (its fluctuation in times its
+  quiet level), orange dashes where its shape stays off its usual (something
+  standing or parked), dots where its frames were lost; a timeline of every
+  direction for the whole run; events; lasting changes found by themselves (a
+  link whose shape steps by 1 dB, or its RSSI by 3 dB, in both directions and
+  stays); notes of your own (`--note "07:15 door opened"`). It reads the run
+  folder's boards.csv first, then private/, then ~/tw-data, and asks for a
+  title at a keyboard (`--title`). The measures work on bands of 4
+  subcarriers after taking out each record's overall level, so a change of
+  power or gain is not taken for movement. Thresholds come from each
+  direction's quietest hour (99.9th percentile, capped at the median + 20x its
+  spread, so a long event in a short run cannot raise its own threshold).
+  Desk tests: on tests/gen_run.py the planted movement (60 s on 1-2) is the
+  one event and the planted RSSI step (+6 dB) is found at the second it was
+  planted; the whole-channel and one-link losses show as gaps. On a real
+  night (4 hours, 3 boards, 1.5 minutes to read) a car leaving shows as a
+  lasting change on the links next to its bay (shape 4.4 dB, RSSI +4.8 dB),
+  four minutes after the owner noted getting in. It cannot place a person:
+  with three boards it shows which paths were disturbed.
+
 - **Dashboard: `usb_drops` counted from when the dashboard opened.** The
   board counts every line it could not hand over since it booted, and most of
   those are from the hours when nothing was reading the port (the buffer

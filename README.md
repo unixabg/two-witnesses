@@ -106,6 +106,14 @@ Remake the views of a run (for example after updating the kit):
 `~/tw-kit/after_run.sh ~/tw-data/runs/<run>`, or for a many-board run
 `~/scratch-esp/bin/python ~/tw-kit/split_links.py ~/tw-data/runs/<run> --again --view`.
 
+Replay a many-board run on the board layout (every link, second by second,
+with a timeline, the events and the lasting changes), as one page to open in
+a browser: `~/scratch-esp/bin/python ~/tw-kit/replay.py ~/tw-data/runs/<run>`
+writes `replay.html` into the run folder. It asks for a title (or give
+`--title "..."`); `--from 05:00 --to 07:00` keeps part of the run, and
+`--note "07:15 door opened"` adds your own marks. The page holds the board layout:
+keep it as private as the run.
+
 ## Reading a run honestly
 
 What makes the results believable is how they are read:
