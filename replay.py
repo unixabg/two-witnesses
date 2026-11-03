@@ -51,7 +51,18 @@ Lasting changes: a link whose shape steps by 1 dB or more in both directions
 and stays (the 5 minutes before against the 5 minutes after); listed with the
 change in RSSI. Something parked, moved or opened, not someone moving.
 
-What it cannot show: where a person is. A lit link means something moved in
+Two marks for where something is (a direction counts as lit past its event
+threshold, held for 3 seconds; each mark lasts 3 seconds or more):
+  near a board   everything lit touches one board, on at least two of its
+                 paths, at least one of them lit both ways, and the path away
+                 from it is quiet: something near that board, on any side
+                 (behind it too). Drawn as rings around it; events mostly near
+                 one board are tagged "near N".
+  one-sided      a direction lit while the other way of the same path is
+                 clearly quiet: more likely a board's own quirk than the room.
+                 Drawn hollow; "one-sided" in the table.
+
+What it cannot show exactly where a person is. A lit link means something moved in
 or near its path, or (with no shape change) somewhere its signal reflects
 through. Three boards give three lines; more boards give more crossings.
 
@@ -313,6 +324,63 @@ def find_events(dirs, epoch, size):
     return keep, thr
 
 
+def board_marks(dirs, size, thr):
+    """per second: the board everything lit is near (0: none), and the directions lit one
+    way only. Lit = past the direction's event threshold within the last 3 seconds.
+    Near board X: everything lit touches X, on at least two of its paths, at least one of
+    them lit both ways, and a path away from X is seen and quiet. One-sided: a direction
+    lit while the other way of the same path is seen and clearly quiet (under a third of
+    the way from quiet to its own threshold: thresholds differ, and a real change that
+    just misses the other way's is not one-sided). Both hold for 3 seconds or more."""
+    S = np.array([np.nan_to_num(size[d], nan=0.0) for d in dirs])
+    seen = np.array([~np.isnan(size[d]) for d in dirs])
+    thr = np.asarray(thr)[:, None]
+    lit = S > thr
+    lit3 = lit.copy()
+    lit3[:, 1:] |= lit[:, :-1]
+    lit3[:, 2:] |= lit[:, :-2]
+    part = (S - 1) / np.maximum(thr - 1, 0.05)        # 0 quiet .. 1 at the threshold
+    part3 = part.copy()
+    part3[:, 1:] = np.maximum(part3[:, 1:], part[:, :-1])
+    part3[:, 2:] = np.maximum(part3[:, 2:], part[:, :-2])
+
+    def lasting(m, n=3):                # keep only runs of n seconds or more
+        out = np.zeros_like(m)
+        i = 0
+        while i < len(m):
+            if m[i]:
+                j = i
+                while j < len(m) and m[j] == m[i]:
+                    j += 1
+                if j - i >= n:
+                    out[i:j] = m[i:j]
+                i = j
+            else:
+                i += 1
+        return out
+    k = {d: i for i, d in enumerate(dirs)}
+    one = np.zeros_like(lit3)
+    for d, i in k.items():
+        j = k.get((d[1], d[0]))
+        if j is not None:
+            one[i] = lasting(lit3[i] & (part3[j] < 1 / 3) & seen[j])
+    near = np.zeros(S.shape[1], int)
+    for x in sorted({b for d in dirs for b in d}):
+        away = [k[d] for d in dirs if x not in d]
+        partners = sorted({b for d in dirs for b in d if x in d and b != x})
+        if not away or len(partners) < 2:
+            continue
+        quiet_away = ~lit3[away].any(axis=0) & seen[away].any(axis=0)
+        n_lit = sum((lit3[k[(x, p)]] if (x, p) in k else 0) | (lit3[k[(p, x)]] if (p, x) in k else 0)
+                    for p in partners)
+        both = np.zeros(S.shape[1], bool)
+        for p in partners:
+            if (x, p) in k and (p, x) in k:
+                both |= lit3[k[(x, p)]] & lit3[k[(p, x)]]
+        near[quiet_away & (n_lit >= 2) & both] = x
+    return lasting(near), one
+
+
 def find_steps(dirs, epoch, out, rssi):
     """links whose average shape steps by >= 1 dB, or whose RSSI steps by >= 3 dB, in both
     directions, and stays"""
@@ -421,6 +489,12 @@ def main():
     size, loss, shape, rssi = measures(dirs, out, epoch, a.settle * 60)
     events, thr = find_events(dirs, epoch, size)
     steps = find_steps(dirs, epoch, out, rssi)
+    near, one = board_marks(dirs, size, thr)
+    for e in events:                    # an event mostly near one board says so
+        seg = near[e["i"]:e["j"] + 1]
+        vals, cnt = np.unique(seg[seg > 0], return_counts=True)
+        if len(vals) and cnt.max() >= max(2, 0.25 * len(seg)):
+            e["near"] = int(vals[cnt.argmax()])
 
     notes = []
     for s in a.note:
@@ -456,6 +530,7 @@ def main():
         loss=[q(loss[d], 1, 100) for d in dirs],
         shape=[q(shape[d], 10, 300) for d in dirs],
         events=[dict(n=k + 1, **e) for k, e in enumerate(events)],
+        near=near.tolist(), one=["".join("1" if x else "0" for x in row) for row in one],
         steps=steps, notes=notes,
         boards=[dict(id=str(k), x=v[0], y=v[1], label=v[3]) for k, v in sorted(boards.items())],
         marks=[dict(x=m[1], y=m[2], label=m[3]) for m in marks],
@@ -470,7 +545,9 @@ def main():
     print(f"{total:,} records ({dup:,} second copies skipped); {len(names)} directions; "
           f"{len(epoch) // 3600} h {len(epoch) % 3600 // 60} min in {len(segs)} part(s)")
     print("thresholds: " + "  ".join(f"{n} {t:.2f}" for n, t in zip(names, thr)))
-    print(f"{len(events)} events; lasting changes:" + ("" if steps else " none"))
+    nb = {x: int((near == x).sum()) for x in np.unique(near[near > 0])}
+    print(f"{len(events)} events" + "".join(f"; near board {x}: {n} s" for x, n in nb.items())
+          + "; lasting changes:" + ("" if steps else " none"))
     for s in steps:
         print(f"  {loc(epoch[s['i']]):%H:%M:%S}  link {s['link']}: shape {s['db']} dB, RSSI {s['rssi']:+.1f} dB")
 
@@ -542,6 +619,8 @@ th { color: var(--muted); font-weight: 500; font-size: 12px; }
   font-variant-numeric: tabular-nums; max-width: 280px; }
 .notes { color: var(--ink2); font-size: 13px; padding: 2px 16px 16px; }
 .notes p { margin: 4px 0; }
+.os { color: var(--muted); font-size: 11px; margin-left: 6px; }
+.nr { font-weight: 600; color: var(--ink); }
 .maphead { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; }
 .maphead h2 { margin: 0; }
 .seg { display: inline-flex; border: 1px solid var(--axis); border-radius: 7px; overflow: hidden; }
@@ -577,6 +656,8 @@ kbd { font: 11px ui-monospace, monospace; border: 1px solid var(--axis); border-
       <span><span class="ramp"></span>&nbsp; change: quiet &rarr; 6&times; its quiet level or more</span>
       <span><svg width="26" height="8"><line x1="1" y1="4" x2="25" y2="4" stroke="var(--shape)" stroke-width="3" stroke-dasharray="4 3"/></svg> shape moved &ge;1.5 dB from its recent usual (something standing or parked differently; clears once it has stayed __SETTLE__ min)</span>
       <span><svg width="26" height="8"><line x1="1" y1="4" x2="25" y2="4" stroke="var(--muted)" stroke-width="3" stroke-dasharray="1 3" stroke-linecap="round"/></svg> no data that second (frames lost)</span>
+      <span><svg width="26" height="14"><circle cx="13" cy="7" r="5.5" fill="none" stroke="var(--s3)" stroke-width="2"/><circle cx="13" cy="7" r="2" fill="var(--ink)"/></svg> rings around a board: everything lit touches that board and the path away from it is quiet: something near it, on any side (behind it too)</span>
+      <span><svg width="26" height="8"><line x1="2" y1="4" x2="24" y2="4" stroke="var(--s3)" stroke-width="5" stroke-linecap="round"/><line x1="2" y1="4" x2="24" y2="4" stroke="var(--surface)" stroke-width="2" stroke-linecap="round"/></svg> hollow: lit one way only, the other way quiet: more likely a board&rsquo;s own quirk than the room</span>
       <span class="lg-lines">two lines per link: one per direction, arrow from the sender to the board that measures</span>
       <span class="lg-waves">each board is a beacon: one fan per path, toward the other board, for its own signal reaching it; up to 3 arcs lit = how much it changed; echoes along the path while playing. Both ends of a path lit: something real; one end only: a board&rsquo;s own quirk</span>
     </div>
@@ -665,12 +746,13 @@ const fanEls = NAMES.map((nm, d) => {
   const g = el("g", {}, gWaves);
   const shape = el("path", { d: arcPath(ax, ay, FAN.r[2] + FS * .7, th, half), fill: "none", stroke: "var(--shape)", "stroke-width": FAN.w * 1.1, "stroke-dasharray": `${FAN.w * 1.6} ${FAN.w}`, opacity: 0 }, g);
   const arcs = FAN.r.map(R => el("path", { d: arcPath(ax, ay, R, th, half), fill: "none", stroke: "var(--quiet)", "stroke-width": FAN.w, "stroke-linecap": "round" }, g));
+  const hollow = FAN.r.map(R => el("path", { d: arcPath(ax, ay, R, th, half), fill: "none", stroke: "var(--surface)", "stroke-width": FAN.w * .42, "stroke-linecap": "round", opacity: 0 }, g));
   const echo = el("path", { d: "", fill: "none", stroke: "var(--quiet)", "stroke-width": FAN.w, "stroke-linecap": "round", opacity: 0 }, g);
   const R = FAN.r[2] + FS * .9;          // hover: the wedge the fan sits in
   const hit = el("path", { d: `M${ax},${ay} L${ax + R * Math.cos(th - half)},${ay + R * Math.sin(th - half)} A${R},${R} 0 0 1 ${ax + R * Math.cos(th + half)},${ay + R * Math.sin(th + half)} Z`, fill: "transparent" }, g);
   hit.addEventListener("mousemove", e => showTip(e, dirTip(d, cur)));
   hit.addEventListener("mouseleave", hideTip);
-  return { arcs, echo, shape, ax, ay, th, half, end: Math.max(L / 2 - FS * .3, FAN.r[2] + FS), ph: Math.random(), lvl: 0, f: 0, c: "" };
+  return { g, arcs, hollow, echo, shape, ax, ay, th, half, end: Math.max(L / 2 - FS * .3, FAN.r[2] + FS), ph: Math.random(), lvl: 0, f: 0, c: "" };
 });
 const linkEls = NAMES.map((nm, d) => {
   const [s, r] = nm.split("-"); const a = B[s], b = B[r];
@@ -681,11 +763,23 @@ const linkEls = NAMES.map((nm, d) => {
   const pl = `${p(a.x, a.y)} ${p((a.x + b.x) / 2, (a.y + b.y) / 2)} ${p(b.x, b.y)}`;
   const halo = el("polyline", { points: pl, fill: "none", stroke: "var(--shape)", "stroke-width": W0 * 2.2, "stroke-dasharray": `${W0 * 2} ${W0 * 1.4}`, opacity: 0 }, gLines);
   const line = el("polyline", { points: pl, fill: "none", stroke: "var(--quiet)", "stroke-width": W0, "stroke-linecap": "round", "marker-mid": "url(#arr)" }, gLines);
+  const hollow = el("polyline", { points: pl, fill: "none", stroke: "var(--surface)", "stroke-width": W0 * .45, "stroke-linecap": "round", opacity: 0 }, gLines);
   const hit = el("polyline", { points: pl, fill: "none", stroke: "transparent", "stroke-width": W0 * 4 }, gLines);
   hit.addEventListener("mousemove", e => showTip(e, dirTip(d, cur)));
   hit.addEventListener("mouseleave", hideTip);
-  return { line, halo };
+  return { line, halo, hollow };
 });
+/* rings: everything lit is near one board (on any side of it, behind it too) */
+const gRings = el("g", {});
+const ringEls = {};
+D.boards.forEach(b => {
+  const g = el("g", { style: "display:none" }, gRings);
+  const rings = FAN.r.map(R => el("circle", { cx: b.x, cy: -b.y, r: R, fill: "none", stroke: "var(--quiet)", "stroke-width": FAN.w }, g));
+  const echo = el("circle", { cx: b.x, cy: -b.y, r: FAN.r[2], fill: "none", stroke: "var(--quiet)", "stroke-width": FAN.w, opacity: 0 }, g);
+  el("text", { x: b.x, y: -b.y - FAN.r[2] - FS * .55, "font-size": FS * .8, "text-anchor": "middle", fill: "var(--ink2)", "font-weight": 600 }, g).textContent = `near ${b.id}`;
+  ringEls[b.id] = { g, rings, echo, ph: 0, c: "", f: 0, lvl: 0 };
+});
+const isOne = (d, i) => D.one[d][i] === "1";
 const cxm = (Math.min(...xs) + Math.max(...xs)) / 2;
 D.marks.forEach(m => {
   const g = el("g", {});
@@ -710,17 +804,18 @@ function hideTip() { tip.style.display = "none"; }
 function dirTip(d, i) {
   const [s, r] = NAMES[d].split("-"); const v = sizeAt(d, i);
   return `<b>${s} → ${r}</b> &nbsp;<span style="color:var(--muted)">board ${r} hearing board ${s}</span><br>` +
-    (v < 0 ? "no data this second" : `change ${v.toFixed(2)}× quiet<br>loss ${raw(D.loss, d, i)}%<br>shape moved ${(raw(D.shape, d, i) / 10).toFixed(1)} dB`);
+    (v < 0 ? "no data this second" : `change ${v.toFixed(2)}× quiet<br>loss ${raw(D.loss, d, i)}%<br>shape moved ${(raw(D.shape, d, i) / 10).toFixed(1)} dB` +
+      (isOne(d, i) ? `<br><b>one-sided:</b> ${r} \u2192 ${s} is quiet` : ""));
 }
 
 /* ---------- now table and events ---------- */
 const tbody = document.querySelector("#now tbody");
-const rows = NAMES.map(nm => { const tr = document.createElement("tr"); tr.innerHTML = `<td><span class="sw"></span>${nm.replace("-", " → ")}</td><td></td><td></td><td></td>`; tbody.appendChild(tr); return tr; });
+const rows = NAMES.map(nm => { const tr = document.createElement("tr"); tr.innerHTML = `<td><span class="sw"></span>${nm.replace("-", " → ")}<span class="os"></span></td><td></td><td></td><td></td>`; tbody.appendChild(tr); return tr; });
 const evlist = document.getElementById("evlist");
 const evRows = D.events.map(e => {
   const div = document.createElement("div"); div.className = "ev";
   const top = e.pk.indexOf(Math.max(...e.pk));
-  div.innerHTML = `<span class="m">E${e.n}</span><span>${clk(e.i)}</span><span class="m">${tOf(e.j) - tOf(e.i) + 1} s</span><span>peak ${Math.max(...e.pk).toFixed(1)} on ${NAMES[top].replace("-", "→")}</span>`;
+  div.innerHTML = `<span class="m">E${e.n}</span><span>${clk(e.i)}</span><span class="m">${tOf(e.j) - tOf(e.i) + 1} s</span><span>peak ${Math.max(...e.pk).toFixed(1)} on ${NAMES[top].replace("-", "→")}${e.near ? ` <b class="nr">near ${e.near}</b>` : ""}</span>`;
   div.addEventListener("click", () => seek(Math.max(0, e.i - 5)));
   evlist.appendChild(div); return div;
 });
@@ -839,6 +934,8 @@ function render() {
       L.line.setAttribute("stroke-dasharray", v < 0 ? `${W0 * .5} ${W0 * 1.3}` : "none");
       const sh = raw(D.shape, d, cur) / 10;
       L.halo.setAttribute("opacity", sh >= 1.5 ? Math.min(0.4 + (sh - 1.5) / 4, 0.9).toFixed(2) : 0);
+      L.hollow.setAttribute("opacity", v >= 1.15 && isOne(d, cur) ? 1 : 0);
+      L.hollow.setAttribute("stroke-width", (W0 * (1 + f * 1.6) * .45).toFixed(3));
     }
     const F = fanEls[d];
     if (F) {
@@ -847,6 +944,7 @@ function render() {
       F.arcs.forEach((a, k) => {
         a.setAttribute("stroke", v < 0 ? css("--muted") : k < F.lvl ? c : quiet);
         a.setAttribute("stroke-dasharray", v < 0 ? `${FAN.w * .3} ${FAN.w * 1.2}` : "none");
+        F.hollow[k].setAttribute("opacity", v >= 0 && k < F.lvl && isOne(d, cur) ? 1 : 0);
       });
       const sh = raw(D.shape, d, cur) / 10;
       F.shape.setAttribute("opacity", sh >= 1.5 ? Math.min(0.45 + (sh - 1.5) / 4, 0.95).toFixed(2) : 0);
@@ -854,10 +952,24 @@ function render() {
     }
     const tds = rows[d].children, sz = sizeAt(d, cur);
     tds[0].firstChild.style.background = c;
+    tds[0].lastChild.textContent = sz >= 1.15 && isOne(d, cur) ? "one-sided" : "";
     tds[1].textContent = sz < 0 ? "–" : sz.toFixed(2);
     tds[2].textContent = raw(D.loss, d, cur) < 0 ? "–" : raw(D.loss, d, cur);
     tds[3].textContent = raw(D.shape, d, cur) < 0 ? "–" : (raw(D.shape, d, cur) / 10).toFixed(1);
   });
+  const X = String(D.near[cur] || "");
+  for (const id in ringEls) {
+    const R = ringEls[id], show = id === X;
+    R.g.style.display = show ? "" : "none";
+    if (!show) continue;
+    let best = -1;                     // the strongest lit direction of that board
+    NAMES.forEach((nm, d) => { if (nm.split("-").includes(id)) { const v = playing ? windowMax(d, cur) : sizeAt(d, cur); if (v > best) best = v; } });
+    R.c = colorFor(best) || css("--muted"); R.f = best < 1.15 ? 0 : Math.min(Math.log(best) / Math.log(6), 1);
+    R.lvl = R.f < 0.34 ? 1 : R.f < 0.67 ? 2 : 3;
+    R.rings.forEach((r, k) => r.setAttribute("stroke", k < R.lvl ? R.c : css("--quiet")));
+    if (!playing) R.echo.setAttribute("opacity", 0);
+  }
+  fanEls.forEach((F, d) => { if (F) F.g.style.display = X && NAMES[d].split("-")[0] === X ? "none" : ""; });   // the rings stand in for its fans
   let on = -1;
   D.events.forEach((e, k) => { const a = e.i <= cur && cur <= e.j; evRows[k].classList.toggle("on", a); if (a) on = k; });
   document.getElementById("nowev").textContent = on >= 0 ? `in E${D.events[on].n}` : "";
@@ -879,6 +991,13 @@ function echoes(dt) {                    // waves: rings travel out along each a
     F.echo.setAttribute("stroke", F.c);
     F.echo.setAttribute("opacity", ((1 - F.ph) * (0.35 + 0.2 * F.lvl)).toFixed(2));
   });
+  const R = ringEls[String(D.near[cur] || "")];
+  if (R) {
+    R.ph = (R.ph + dt * (0.5 + 1.3 * R.f)) % 1;
+    R.echo.setAttribute("r", FAN.r[2] + R.ph * FS * 7);
+    R.echo.setAttribute("stroke", R.c);
+    R.echo.setAttribute("opacity", ((1 - R.ph) * 0.75).toFixed(2));
+  }
 }
 function tick(ts) {
   if (!playing) return;

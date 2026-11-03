@@ -5,6 +5,22 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **`replay.py`: near a board, and one-sided.** Two marks for where
+  something is. *Near a board*: everything lit touches one board, on at least
+  two of its paths, at least one of them lit both ways, while the path away
+  from it stays quiet; it is drawn as rings all the way round that board
+  (something near it on any side, behind it too, where no path runs), and
+  events mostly near one board are tagged "near N". *One-sided*: a direction
+  lit while the other way of the same path is clearly quiet (under a third of
+  the way to its own threshold, since thresholds differ); a real change shows
+  both ways, so this is more likely a board's own quirk; it is drawn hollow,
+  with "one-sided" in the table. Lit means past the direction's event
+  threshold, held 3 seconds; each mark has to last 3 seconds. On a real night
+  the rings came up only in the half hour of activity, around the board a car
+  was parked beside, while someone was at the car and while it pulled out;
+  one-sided came up as short blips at night, most often on one board's
+  receiving side, where a 31 s rhythm of that board had been found before.
+
 - **`replay.py`: the orange mark clears.** A link's shape is now compared with
   its usual *lately* (the median of the 30 minutes before, ending a minute
   earlier) instead of over the whole run, so something parked, moved or opened
