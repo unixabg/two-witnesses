@@ -14,7 +14,7 @@ esp-radar replay, and the desk tests.
 | `tw_setid.py` | give a tw_node board its number (or show which it is and every board's settings); `power DBM` / `power default` sets every board's transmit power, `relay off` / `relay on` relaying (network settings; tries up to 3 times until the board reports it) |
 | `split_links.py` | a many-board recording into one folder per link, for view.py / radar_replay.py; `--view`, `--view-only` |
 | `links_report.py` | the links of a many-board run side by side: `links/across.txt` |
-| `replay.py` | a page that replays a many-board run on the board layout: each link both ways, second by second (change, loss, shape), a timeline, events, lasting changes (shape or RSSI steps), your own notes; drawn as waves (each board a beacon, a fan per path) or lines (`--view waves|lines`, a switch on the page); `--title`, `--from`, `--to`, `--note`, `--out` |
+| `replay.py` | a page that replays a many-board run on the board layout: each link both ways, second by second (change, loss, shape), a timeline, events, lasting changes (shape or RSSI steps), your own notes; drawn as waves (each board a beacon, a fan per path) or lines (`--view waves|lines`, a switch on the page); `--settle MIN` (when a new state counts as usual; 15), `--title`, `--from`, `--to`, `--note`, `--out` |
 | `after_run.sh` | the views of a finished run folder, one link or many (run.sh and watch.sh call it) |
 | `live.sh` | the dashboard with nothing saved |
 | `version.sh`, `VERSION` | which kit this is, and whether every file is intact |

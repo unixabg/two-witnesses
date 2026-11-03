@@ -6,7 +6,8 @@ link, both directions, second by second, with a timeline, the events and the
 lasting changes.
 
     ~/scratch-esp/bin/python ~/tw-kit/replay.py RUN_FOLDER [--title TITLE]
-            [--from HH:MM] [--to HH:MM] [--note "HH:MM[:SS] text"]... [--view waves|lines] [--out FILE]
+            [--from HH:MM] [--to HH:MM] [--note "HH:MM[:SS] text"]... [--view waves|lines]
+            [--settle MIN] [--out FILE]
     e.g. ~/scratch-esp/bin/python ~/tw-kit/replay.py ~/tw-data/runs/2026-11-03_0000 \\
             --title "Garage replay" --from 05:00 --note "07:15 door opened"
 
@@ -38,7 +39,10 @@ bands of 4 subcarriers, after taking out each record's overall level):
           quiet level (each band's median over the run); 1 = quiet
   loss    share of the sender's frames that left no record that second
   shape   how far the link's average shape that second is from its usual
-          (median over the run), dB
+          lately (the median of the 30 minutes before, ending a minute
+          earlier), dB. Something parked, moved or opened shows for about 15
+          minutes, then counts as the usual and the mark clears (--settle MIN
+          sets the minutes); the lasting changes listed below stay.
 Events: seconds where a direction passes its threshold (the 99.9th percentile
 of its quietest hour, but no more than its median + 20 x its usual spread,
 and at least 1.3), merged across gaps of up to 15 s, kept
@@ -233,7 +237,28 @@ def assemble(acc):
     return dirs, epoch, segs, out
 
 
-def measures(dirs, out):
+def recent_usual(mean, ok, epoch, settle):
+    """per second, the link's usual shape lately: the median of the 2 x `settle` seconds
+    before it, ending a minute earlier (so a change does not count against itself). A
+    median turns once the new state fills half its window, so a change counts as usual
+    `settle` (+1 minute) after it happened. Worked out every 30 s; where there is too
+    little before (the start of the run, after a gap), the median of what comes after
+    stands in."""
+    base = np.full(mean.shape, np.nan, np.float32)
+    lag, every = 60, 30
+    for g in range(0, len(epoch), every):
+        t = epoch[g]
+        a, b = np.searchsorted(epoch, t - lag - 2 * settle), np.searchsorted(epoch, t - lag)
+        w = np.flatnonzero(ok[a:b]) + a
+        if len(w) < 60:
+            a, b = g, np.searchsorted(epoch, t + settle)
+            w = np.flatnonzero(ok[a:b]) + a
+        if len(w) >= 10:
+            base[g:g + every] = np.median(mean[w], axis=0)
+    return base
+
+
+def measures(dirs, out, epoch, settle):
     size, loss, shape, rssi = {}, {}, {}, {}
     for d in dirs:
         o = out[d]
@@ -242,7 +267,7 @@ def measures(dirs, out):
             ok = o["n"] >= max(5, np.percentile(o["n"], 50) * 0.6)
         ref = np.median(o["std"][ok], axis=0) if ok.any() else np.ones(o["std"].shape[1])
         s = (o["std"] / np.maximum(ref, 1e-3)).mean(axis=1)
-        base = np.median(o["mean"][ok], axis=0) if ok.any() else np.zeros(o["mean"].shape[1])
+        base = recent_usual(o["mean"], ok, epoch, settle)
         sh = np.sqrt(((o["mean"] - base) ** 2).mean(axis=1))
         expect = max(np.percentile(o["n"], 95), 1)
         size[d] = np.where(ok, s, np.nan)
@@ -357,6 +382,8 @@ def main():
     ap.add_argument("--to", dest="t_to", help="HH:MM: stop here")
     ap.add_argument("--note", action="append", default=[], help='"HH:MM[:SS] text": a mark of your own')
     ap.add_argument("--out", help="the page to write (default RUN_FOLDER/replay.html)")
+    ap.add_argument("--settle", type=float, default=15, metavar="MIN",
+                    help="minutes after which a new state counts as usual (the orange mark clears); default 15")
     ap.add_argument("--view", choices=("waves", "lines"), default="waves",
                     help="how the page opens: waves (each board a beacon, a fan per path) or lines (one line per direction)")
     a = ap.parse_args()
@@ -391,7 +418,7 @@ def main():
     print(f"reading {folder}" + (f" from {a.t_from}" if a.t_from else "") + (f" to {a.t_to}" if a.t_to else ""), file=sys.stderr)
     acc, total, dup, _ = read_run(folder, t_from, t_to)
     dirs, epoch, segs, out = assemble(acc)
-    size, loss, shape, rssi = measures(dirs, out)
+    size, loss, shape, rssi = measures(dirs, out, epoch, a.settle * 60)
     events, thr = find_events(dirs, epoch, size)
     steps = find_steps(dirs, epoch, out, rssi)
 
@@ -433,7 +460,7 @@ def main():
         boards=[dict(id=str(k), x=v[0], y=v[1], label=v[3]) for k, v in sorted(boards.items())],
         marks=[dict(x=m[1], y=m[2], label=m[3]) for m in marks],
     )
-    page = PAGE.replace("__TITLE__", html.escape(title)).replace(
+    page = PAGE.replace("__TITLE__", html.escape(title)).replace("__SETTLE__", f"{a.settle:g}").replace(
         "__DATA__", json.dumps(data, separators=(",", ":")).replace("</", "<\\/"))
     dest = a.out or os.path.join(folder, "replay.html")
     with open(dest, "w") as f:
@@ -548,7 +575,7 @@ kbd { font: 11px ui-monospace, monospace; border: 1px solid var(--axis); border-
     <svg id="map" role="img" aria-label="The boards and their links, to scale"></svg>
     <div class="legend">
       <span><span class="ramp"></span>&nbsp; change: quiet &rarr; 6&times; its quiet level or more</span>
-      <span><svg width="26" height="8"><line x1="1" y1="4" x2="25" y2="4" stroke="var(--shape)" stroke-width="3" stroke-dasharray="4 3"/></svg> shape moved &ge;1.5 dB from its usual (something standing or parked differently)</span>
+      <span><svg width="26" height="8"><line x1="1" y1="4" x2="25" y2="4" stroke="var(--shape)" stroke-width="3" stroke-dasharray="4 3"/></svg> shape moved &ge;1.5 dB from its recent usual (something standing or parked differently; clears once it has stayed __SETTLE__ min)</span>
       <span><svg width="26" height="8"><line x1="1" y1="4" x2="25" y2="4" stroke="var(--muted)" stroke-width="3" stroke-dasharray="1 3" stroke-linecap="round"/></svg> no data that second (frames lost)</span>
       <span class="lg-lines">two lines per link: one per direction, arrow from the sender to the board that measures</span>
       <span class="lg-waves">each board is a beacon: one fan per path, toward the other board, for its own signal reaching it; up to 3 arcs lit = how much it changed; echoes along the path while playing. Both ends of a path lit: something real; one end only: a board&rsquo;s own quirk</span>

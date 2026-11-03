@@ -5,6 +5,16 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **`replay.py`: the orange mark clears.** A link's shape is now compared with
+  its usual *lately* (the median of the 30 minutes before, ending a minute
+  earlier) instead of over the whole run, so something parked, moved or opened
+  is marked for about 15 minutes and then counts as the usual: after a car
+  left, the mark used to stay on its links until the run ended; now it clears
+  about 16 minutes later. If it comes back, that is a change again and is
+  marked.
+  `--settle MIN` sets the minutes. The timeline ticks and the list of lasting
+  changes stay as they were.
+
 - **`replay.py`: waves.** The page now opens with each board drawn as a
   beacon: one fan of arcs per path, pointing to the other board, for the
   board's own signal reaching it, in the same colors as the lines; up to 3
