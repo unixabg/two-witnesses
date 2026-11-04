@@ -1,7 +1,7 @@
 # Example layout: three boards around a center point, each facing it (feet;
 # x to the east, y to the north). setup_once.sh copies this to
-# ~/tw-data/boards.csv if there is none: edit that copy to match your boards
-# (draw it with: tw_map.py ~/tw-data/boards.csv).
+# private/boards.csv if there is none: make that copy match your boards with
+# tw_layout.py edit (or any text editor; tw_layout.py shows it).
 id,x_ft,y_ft,facing,label
 1,0,-15,N,board 1
 2,0,15,S,board 2

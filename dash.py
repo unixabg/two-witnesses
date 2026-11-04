@@ -31,7 +31,7 @@ Keys:
         reflection); "change" = how far each subcarrier is from its last
         minute, "." unchanged, 1..9 = about 0.3 .. 3 dB or more (movement)
     g   map view on/off (many boards): the boards to scale from boards.csv
-        (the run folder's, else ~/tw-data/boards.csv), each line drawn by how
+        (the run folder's, else the one you keep: tw_layout.py), each line drawn by how
         much it stirs right now (motion and the last 2 s of loss)
     [ ] choose the link shown in detail (with several boards)
     r   reset min/max
@@ -685,7 +685,7 @@ class Screen:
             self.boards_t = now
         bxy, marks = self.boards_xy
         if not bxy:
-            self.put(y, 1, "MAP: no boards.csv (in the run folder or ~/tw-data); see tw_map.py for the format",
+            self.put(y, 1, "MAP: no boards.csv (in the run folder, or the one you keep: tw_layout.py); see tw_map.py for the format",
                      self.color(2))
             return y + 2
         mh = max(8, min(24, h - y - 6))

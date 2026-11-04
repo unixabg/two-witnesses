@@ -40,7 +40,7 @@ without sudo). Then flash the boards: [FLASH-README.md](FLASH-README.md).
 
 | file | what |
 |---|---|
-| `private/boards.csv` | where your boards are (feet from a center, which way each faces) and landmarks; drawn on the dashboard map and in each report. Format: `boards-example.csv`. Check it: `~/tw-kit/tw_map.py ~/tw-kit/private/boards.csv` |
+| `private/boards.csv` | where your boards are (feet from a reference point, which way each faces) and landmarks; drawn on the dashboard map, in each report and replay. Show it: `~/tw-kit/tw_layout.py`; change it value by value: `tw_layout.py edit` (or any text editor); earlier versions: `tw_layout.py backups` (every version is kept in `private/layouts/`). Each run keeps a copy of the one it started with. A second site: run the kit with `TW_DATA=~/site-b`; its layout is `~/site-b/boards.csv`. Format: `boards-example.csv` |
 | `private/scene-now.txt` | what is true right now ("car 1 in, door shut"); every run records it. Update it whenever something changes (`~/tw-data/scene-now.txt` works too; `private/` is used first) |
 | `private/` | anything else of yours: git ignores the whole folder |
 
@@ -52,7 +52,7 @@ without sudo). Then flash the boards: [FLASH-README.md](FLASH-README.md).
 | record with the camera too | `~/tw-kit/watch.sh 07:00` (or `--nocam`) |
 | look at the boards without recording | `~/tw-kit/live.sh` (`q` quits) |
 | watch a run that is going | `~/tw-kit/dash.sh` (`g` map, `q` closes the view, the run goes on) |
-| test where to put a board | `~/tw-kit/survey.sh` (walk it around, `m` marks a spot) |
+| test where to put a board | `~/tw-kit/survey.sh` (it first shows the layout and asks if it is still right; then walk a board around, `m` marks a spot) |
 | stop a run early | `~/tw-kit/run.sh stop` (or `watch.sh stop`, `survey.sh stop`) |
 | set every board's transmit power | `~/scratch-esp/bin/python ~/tw-kit/tw_setid.py /dev/ttyACM0 power 11` (`default` = 20 dBm; nothing running on the port) |
 | relaying off / on (every board) | `~/scratch-esp/bin/python ~/tw-kit/tw_setid.py /dev/ttyACM0 relay off` (`relay on` is the default) |

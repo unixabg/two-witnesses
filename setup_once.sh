@@ -101,7 +101,7 @@ elif [ -r "$DATA/boards.csv" ]; then
   ok "board layout: $DATA/boards.csv"
 elif [ $LINKED = 1 ] && [ -r "$KIT/boards-example.csv" ]; then
   mkdir -p "$KIT/private" && cp "$KIT/boards-example.csv" "$KIT/private/boards.csv"
-  ok "board layout: $KIT/private/boards.csv from the example (edit it to match your boards; git ignores private/)"
+  ok "board layout: $KIT/private/boards.csv from the example (make it match your boards: $KIT/tw_layout.py edit; git ignores private/)"
 elif [ -r "$KIT/boards-example.csv" ]; then
   cp "$KIT/boards-example.csv" "$DATA/boards.csv"; ok "board layout: $DATA/boards.csv from the example (edit it to match your boards)"
 fi

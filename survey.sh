@@ -10,7 +10,11 @@
 # Usage:
 #   ./survey.sh [UNTIL]       UNTIL = clock time to stop (default: 2 hours from now)
 #   ./survey.sh stop          stop early
-# Folder: ~/tw-data/survey/<date>_<start time>/  (csi-*.csv.gz, listen.log, placement.csv)
+# First it shows the board layout and asks if it is still right (Enter = yes,
+# e = edit it, b = an earlier version; tw_layout.py): every replay of the survey
+# draws it. Then the scene, as run.sh asks it.
+# Folder: ~/tw-data/survey/<date>_<start time>/  (csi-*.csv.gz, listen.log,
+# placement.csv, and the layout and scene it started with: boards.csv, scene.txt)
 # The board on the Chromebook's cable stays put; move the others (on power
 # banks). With the old two-board images: move the sender.
 #
@@ -29,7 +33,7 @@ case "${1:-}" in
     tmux has-session -t survey 2>/dev/null || { echo "no survey is running"; exit 1; }
     tmux send-keys -t survey:0 C-c
     echo "stopping the survey"; exit 0 ;;
-  -h|--help) sed -n '4,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  -h|--help) sed -n '4,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 esac
 UNTIL=${1:-$(date -d '+2 hours' +%H:%M)}
 
@@ -37,6 +41,9 @@ command -v tmux >/dev/null || { echo "tmux is missing (sudo apt install tmux)"; 
 tw_port_free_or_exit survey
 [ -e "$PORT" ] || { echo "no receiver at $PORT (the board's native USB port)"; exit 1; }
 [ -w "$PORT" ] || { echo "REFUSED: no permission for $PORT (sudo usermod -aG dialout $USER, then log in again)"; exit 1; }
+# the layout first: is it still right? (a survey started by a script just shows it)
+TW_DATA=$TW_DATA "$PY" "$KIT/tw_layout.py" confirm || exit 1
+echo
 if [ "$("$SYSTEMCTL" is-enabled sleep.target 2>/dev/null)" != "masked" ]; then
   # shellcheck disable=SC2086
   sudo -n "$SYSTEMCTL" mask $SLEEP_UNITS 2>/dev/null || sudo "$SYSTEMCTL" mask $SLEEP_UNITS >/dev/null \
@@ -46,6 +53,7 @@ fi
 DIR=$TW_DATA/survey/$(date +%Y-%m-%d_%H%M)
 [ -e "$DIR" ] && { echo "$DIR already exists (two starts in the same minute?); wait a minute"; exit 1; }
 mkdir -p "$DIR"
+tw_scene_and_layout "$DIR" "Scene for this survey (which boards move, what is parked)"
 REC=$DIR/commands-recorder.sh
 {
   echo "#!/bin/bash"

@@ -28,9 +28,11 @@ says which the page opens with):
   lines   two lines per link, one per direction, the arrow from the sender to
           the board that measures.
 
-The layout is the run folder's boards.csv (the one the run used), else the
-kit's private/boards.csv, else ~/tw-data/boards.csv (format: tw_map.py);
-landmarks are drawn too. The page holds the layout and the times of the run:
+The layout is the run folder's boards.csv: the one the run started with
+(run.sh and survey.sh keep it there), boards and landmarks alike; edit that
+copy to add a landmark to an old run. A folder without one is drawn with the
+layout you keep up to date (tw_layout.py), and the page and the terminal say
+so. Format: tw_map.py. The page holds the layout and the times of the run:
 keep it as private as the run itself.
 
 Per second and per direction of every link (from the records' amplitudes, in
@@ -468,7 +470,10 @@ def main():
     layout = tw_map.find_boards(folder)
     boards, marks = tw_map.load_boards(layout)
     if not boards:
-        sys.exit("no boards.csv (in the run folder, private/ or ~/tw-data); see tw_map.py for the format")
+        sys.exit("no boards.csv (in the run folder, or the one you keep: tw_layout.py path); see tw_map.py for the format")
+    own = os.path.dirname(os.path.abspath(layout)) == folder
+    if not own:
+        print(f"note: no layout kept in the run folder; drawn with {layout} as it is now", file=sys.stderr)
 
     # the run's first second, to place --from/--to/--note
     first = None
@@ -522,7 +527,8 @@ def main():
     span = f"{loc(epoch[0]):%Y-%m-%d %H:%M} to {loc(epoch[-1]):%H:%M}"
     data = dict(
         title=title, view=a.view,
-        sub=" · ".join(x for x in [os.path.basename(folder), span, f"{len(boards)} boards", scene] if x),
+        sub=" · ".join(x for x in [os.path.basename(folder), span, f"{len(boards)} boards", scene,
+                                    "" if own else "layout as it is now (none kept in the run folder)"] if x),
         segs=[dict(a=a_, n=b_ - a_, t=int(epoch[a_]),
                    off=int(loc(epoch[a_]).astimezone().utcoffset().total_seconds())) for a_, b_ in segs],
         dirs=names,

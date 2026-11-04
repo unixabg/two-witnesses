@@ -50,13 +50,26 @@ tw_chain_end() {
   printf 'tmux kill-session -t %q 2>/dev/null\n' "$s"
 }
 
+# The board layout you keep up to date (tw_layout.py, tw_map.layout_file): for a site
+# of its own (TW_DATA other than ~/tw-data) $TW_DATA/boards.csv, else the kit's
+# private/boards.csv, else ~/tw-data/boards.csv (the old place).
+tw_layout_file() {
+  local data home
+  data=$(realpath -m "$TW_DATA" 2>/dev/null || echo "$TW_DATA")
+  home=$(realpath -m "$HOME/tw-data" 2>/dev/null || echo "$HOME/tw-data")
+  if [ "$data" != "$home" ]; then echo "$TW_DATA/boards.csv"
+  elif [ -r "${KIT:-.}/private/boards.csv" ]; then echo "${KIT:-.}/private/boards.csv"
+  elif [ -r "$HOME/tw-data/boards.csv" ]; then echo "$HOME/tw-data/boards.csv"
+  else echo "${KIT:-.}/private/boards.csv"; fi
+}
+
 # The scene of a run, and the board layout it ran with, kept in the run's folder.
 # The standing scene (which cars, what changed: "board 2: new adapter") is the kit's
 # private/scene-now.txt if there is one, else ~/tw-data/scene-now.txt. At a keyboard, Enter keeps it and anything typed replaces it; with
 # nobody there (cron) it is used as it is. SCENE="..." gives a scene for this run
-# only. The layout (see tw_map.py), the kit's private/boards.csv or else
-# ~/tw-data/boards.csv, is copied in as boards.csv, so each run keeps the layout
-# it had even after boards move.
+# only. The layout (tw_layout_file) is copied in as boards.csv, so each run keeps
+# the layout it had even after boards move; if the layout changed since its last
+# kept version (an edit by hand), a copy goes into layouts/ beside it first.
 # Usage: tw_scene_and_layout FOLDER "question"
 tw_scene_and_layout() {
   local dir=$1 prompt=$2 standing="$TW_DATA/scene-now.txt" now_scene="" scene="" src=""
@@ -77,8 +90,10 @@ tw_scene_and_layout() {
   fi
   [ -n "$scene" ] && printf '%s  %s   [%s]\n' "$(date '+%Y-%m-%d %H:%M')" "$scene" "$src" >> "$dir/scene.txt"
   local layout
-  for layout in "${KIT:-.}/private/boards.csv" "$TW_DATA/boards.csv"; do
-    if [ -r "$layout" ]; then cp "$layout" "$dir/boards.csv"; break; fi
-  done
+  layout=$(tw_layout_file)
+  if [ -r "$layout" ]; then
+    TW_DATA=$TW_DATA "${PY:-python3}" "${KIT:-.}/tw_layout.py" keep >/dev/null 2>&1
+    cp "$layout" "$dir/boards.csv"
+  fi
   return 0
 }

@@ -8,8 +8,10 @@ moment in across.txt). Run it alone to check a boards.csv:
 
     ~/scratch-esp/bin/python tw_map.py ~/tw-data/boards.csv
 
-Where: the kit's private/ folder (private/boards.csv, kept out of git), or
-~/tw-data/boards.csv. Each run copies the one it used into its folder.
+Where: the kit's private/ folder (private/boards.csv, kept out of git); for a
+second site, $TW_DATA/boards.csv (see tw_layout.py, which also shows, checks,
+edits and keeps every version of it). Each run copies the one it started with
+into its folder, and the views of a run draw that copy.
 
 boards.csv: one row per board, and optionally landmarks:
     id,x_ft,y_ft,facing,label
@@ -33,17 +35,31 @@ LEVEL_CHARS = ".-=#?"           # 0 quiet .. 3 strongly; 4 = no data on that lin
 FACING = {"N": "^", "S": "v", "E": ">", "W": "<"}
 
 
+def layout_file():
+    """the layout you keep up to date (tw_layout.py edits it): $TW_DATA/boards.csv for a
+    site of its own (TW_DATA set to a folder other than ~/tw-data), else the kit's
+    private/boards.csv (ignored by git); ~/tw-data/boards.csv, the old place, when
+    private/boards.csv does not exist. Where it should be even when it is not there yet."""
+    home = os.path.expanduser("~/tw-data")
+    data = os.path.expanduser(os.environ.get("TW_DATA", home))
+    private = os.path.join(os.path.dirname(os.path.abspath(__file__)), "private", "boards.csv")
+    if os.path.realpath(data) != os.path.realpath(home):
+        return os.path.join(data, "boards.csv")
+    if os.path.exists(private):
+        return private
+    old = os.path.join(home, "boards.csv")
+    return old if os.path.exists(old) else private
+
+
 def find_boards(*folders):
-    """the first boards.csv found in these folders (a run keeps a copy of its layout),
-    then in the kit's private/ folder (ignored by git: the owner's own layout), then
-    in TW_DATA (~/tw-data)"""
-    data = os.environ.get("TW_DATA", os.path.expanduser("~/tw-data"))
-    private = os.path.join(os.path.dirname(os.path.abspath(__file__)), "private")
-    for d in [f for f in folders if f] + [private, data]:
+    """the boards.csv of the first of these folders that has one (a run keeps a copy of
+    the layout it started with), else the layout you keep up to date (layout_file)"""
+    for d in [f for f in folders if f]:
         p = os.path.join(d, "boards.csv")
         if os.path.exists(p):
             return p
-    return None
+    p = layout_file()
+    return p if os.path.exists(p) else None
 
 
 def load_boards(path):

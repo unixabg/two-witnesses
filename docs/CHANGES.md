@@ -5,6 +5,26 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **One layout to keep, every version kept: `tw_layout.py`.** The layout is
+  what every map, report and replay is drawn on, so it now has a tool of its
+  own: `tw_layout.py` shows it (to scale, with a table), `edit` changes it
+  value by value (Enter keeps each value; feet from one reference point you
+  choose, x east, y north; boards and landmarks, added or removed), `backups`
+  lists the earlier versions with what differs and puts one back. Every
+  version is kept in `layouts/` beside the file, with the time in its name:
+  before and after each edit, and at the start of each run or survey when the
+  file changed since the last kept one (an edit with a text editor). Nothing
+  is overwritten.
+  **One file:** `private/boards.csv`. A second site runs with `TW_DATA` set
+  to its own folder and keeps `boards.csv` there. `~/tw-data/boards.csv` still
+  counts when `private/boards.csv` does not exist.
+  **survey.sh** now starts with the layout: it shows it and asks if it is
+  still right (Enter = yes, e = edit, b = an earlier version), then the scene
+  as run.sh asks it; the survey folder keeps both, as a run folder does.
+  **replay.py** draws the run folder's copy, boards and landmarks alike (edit
+  that copy to add a landmark to an old run); a folder without one is drawn
+  with the layout as it is now, and the page and the terminal say so.
+
 - **`replay.py`: near a board, and one-sided.** Two marks for where
   something is. *Near a board*: everything lit touches one board, on at least
   two of its paths, at least one of them lit both ways, while the path away
