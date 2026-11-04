@@ -51,6 +51,17 @@ Events: seconds where a direction passes its threshold (the 99.9th percentile
 of its quietest hour, but no more than its median + 20 x its usual spread,
 and at least 1.3), merged across gaps of up to 15 s, kept
 when 2 s or longer or one second at 1.5x the threshold.
+Stretches: an event of 2 minutes or more (a link that stays restless, as after
+a car has left) is listed as a stretch, with the peaks inside it as events of
+their own (E48a, E48b, ...): moments when at least two directions rise to 1.8x
+their level of the 5 minutes before, or the loss jumps by 20 points; a peak
+with only one direction's loss behind it is marked weak. A long stretch no
+longer hides what happens within it.
+About this recording: the instrument as the boards reported it during the run
+(firmware, each board's transmit power and relaying, any change of power, which
+is also put on the timeline, bandwidth, layout, thresholds, settle time, kit
+version); the title line says the power ("all boards at 11 dBm"). Runs at
+different powers compare only by shape and RSSI steps, not by event sizes.
 Lasting changes: a link whose shape steps by 1 dB or more in both directions
 and stays (the 5 minutes before against the 5 minutes after); listed with the
 change in RSSI. Something parked, moved or opened, not someone moving.
@@ -157,11 +168,84 @@ class Acc:
                                 n=H["n"].astype(np.int32), r=(H["r"] / n[:, 0]).astype(np.float32))
 
 
+def instrument(inst, p, t_from, t_to):
+    """the boards' own reports: transmit power and relaying (TWN: each board heard, once a
+    second; TWS: the cabled board), firmware (TWH: hello; its board address is not kept)"""
+    try:
+        sec = int(p[0]) // 1_000_000_000
+        if (t_from and sec < t_from) or (t_to and sec >= t_to):
+            return
+        f = p[2:]
+        if p[1] == "TWN" and len(f) >= 10:
+            inst["power"].append((sec, int(f[0]), int(f[9])))
+            if len(f) >= 11:
+                inst["relay"].append((sec, int(f[0]), int(f[10])))
+        elif p[1] == "TWS" and len(f) >= 19:
+            inst["power"].append((sec, int(f[0]), int(f[18]) or int(f[17])))
+            if len(f) >= 20:
+                inst["relay"].append((sec, int(f[0]), int(f[19])))
+        elif p[1] == "TWH" and len(f) >= 4:
+            inst["fw"].add(f"{f[2]} (built {f[3]})")
+    except ValueError:
+        pass
+
+
+def describe(inst, epoch, settle, thr, names, layout, own):
+    """-> (one line for the title, rows for "About this recording", notes for power changes)"""
+    dbm = lambda q: q / 4 if q else 20.0           # 0 = never set: full power
+    per, changes = {}, []
+    last = {}
+    for sec, b, q in sorted(inst["power"]):
+        per.setdefault(b, {}).setdefault(q, 0)
+        per[b][q] += 1
+        if b in last and last[b] != q:
+            changes.append((sec, b, dbm(last[b]), dbm(q)))
+        last[b] = q
+    common = {b: dbm(max(c, key=c.get)) for b, c in sorted(per.items())}
+    if not common:
+        power = "transmit power not reported"
+    elif len(set(common.values())) == 1:
+        power = f"all boards at {next(iter(common.values())):g} dBm"
+    else:
+        power = "boards at " + ", ".join(f"{b}: {v:g}" for b, v in common.items()) + " dBm (not all the same)"
+    if changes:
+        power += f" for most of the run (changed {len(changes)} time{'s' * (len(changes) != 1)}: see About)"
+    rel = {}
+    for sec, b, v in inst["relay"]:
+        rel[b] = v
+    phy = max(inst["phy"], key=inst["phy"].get) if inst["phy"] else None
+    bw = ""
+    if phy is not None:
+        ph = int(phy)
+        bw = {0: "20 MHz", 1: "40 MHz"}.get(ph & 3, f"bandwidth code {ph & 3}")
+        bw += {1: ", secondary channel above", 2: ", secondary channel below"}.get((ph >> 5) & 3, "")
+    kit = "?"
+    try:
+        kit = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION")).read().strip()
+    except OSError:
+        pass
+    rows = [
+        ("firmware", ", ".join(sorted(inst["fw"])) or "not reported in this part"),
+        ("transmit power", ", ".join(f"board {b} {v:g} dBm" for b, v in common.items()) or "not reported"),
+        ("power changes", "; ".join(f"{dt.datetime.fromtimestamp(s):%H:%M:%S} board {b} {a:g} -> {c:g} dBm"
+                                    for s, b, a, c in changes) or "none"),
+        ("relaying", ", ".join(f"board {b} {'on' if v else 'off'}" for b, v in sorted(rel.items())) or "not reported"),
+        ("channel", bw or "not reported"),
+        ("layout", os.path.basename(layout) + (" kept in the run folder" if own else " as it is now (none in the run folder)")),
+        ("thresholds", ", ".join(f"{n} {x:.2f}" for n, x in zip(names, thr))),
+        ("shape settles after", f"{settle:g} min"),
+        ("made by", f"replay.py, kit {kit}, {dt.datetime.now():%Y-%m-%d %H:%M}"),
+    ]
+    notes = [(s, f"board {b} power {a:g} -> {c:g} dBm") for s, b, a, c in changes]
+    return power, rows, notes
+
+
 def read_run(folder, t_from, t_to):
     files = sorted(glob.glob(os.path.join(folder, "csi-*.csv.gz")) + glob.glob(os.path.join(folder, "csi-*.csv")))
     if not files:
         sys.exit(f"no recording (csi-*.csv.gz) in {folder}")
     acc = Acc()
+    acc.inst = dict(power=[], relay=[], fw=set(), phy={})   # the instrument, as the boards report it
     recent = {}                 # (rx, boot) -> set of record numbers seen lately (records come twice)
     total = dup = 0
     t_first = None
@@ -179,6 +263,9 @@ def read_run(folder, t_from, t_to):
             if line.startswith("#"):
                 continue
             p = line.rstrip("\n").split(",")
+            if len(p) > 3 and p[1] in ("TWN", "TWS", "TWH"):
+                instrument(acc.inst, p, t_from, t_to)
+                continue
             if len(p) != 19 or p[1] != "TWR":
                 continue
             try:
@@ -201,6 +288,7 @@ def read_run(folder, t_from, t_to):
             d = (tx, rx)
             if acc.nbins.setdefault(d, n) != n or len(p[18]) != 2 * n:
                 continue
+            acc.inst["phy"][p[14]] = acc.inst["phy"].get(p[14], 0) + 1
             b = buf.setdefault(d, ([], [], [], []))
             b[0].append(sec); b[1].append(step); b[2].append(bytes.fromhex(p[18])); b[3].append(rssi)
             nrec += 1
@@ -385,6 +473,51 @@ def board_marks(dirs, size, thr):
     return lasting(near), one
 
 
+def find_peaks(dirs, epoch, size, loss, events, near):
+    """inside an event of 2 minutes or more (a stretch: a link that stays restless), the
+    moments that rise well above the stretch's own recent level: at least two directions
+    at 1.8 x their level of the 5 minutes before (ending 30 s earlier), or a jump in loss
+    of 20 points. A peak with only one direction's loss behind it is marked weak."""
+    S = np.array([size[d] for d in dirs])
+    L = np.array([loss[d] for d in dirs])
+    for e in events:
+        i0, j0 = e["i"], e["j"]
+        if epoch[j0] - epoch[i0] < 120:
+            continue
+        e["stretch"] = True
+        med = np.nanmedian(S[:, i0:j0 + 1], axis=1)
+        k = int(np.nanargmax(med))
+        e["level"] = [k, round(float(med[k]), 1)]
+        hits = []
+        for i in range(i0, j0 + 1):
+            a = int(np.searchsorted(epoch, epoch[i] - 300)); b = int(np.searchsorted(epoch, epoch[i] - 30))
+            if b <= a:
+                continue
+            with np.errstate(all="ignore"):
+                lev = np.nanmedian(S[:, a:b], axis=1)
+                levl = np.nanmedian(L[:, a:b], axis=1)
+            up = {d for d in range(len(dirs)) if S[d, i] > 1.3 and S[d, i] >= 1.8 * lev[d]}
+            lj = {d for d in range(len(dirs)) if L[d, i] - levl[d] >= 20}
+            if len(up) >= 2 or lj:
+                hits.append((i, up, lj))
+        subs = []
+        for i, up, lj in hits:
+            if subs and epoch[i] - epoch[subs[-1]["j"]] <= 15:
+                s = subs[-1]; s["j"] = i; s["up"] |= up; s["lj"] |= lj
+            else:
+                subs.append(dict(i=i, j=i, up=set(up), lj=set(lj)))
+        e["subs"] = []
+        for s in subs:
+            if epoch[s["j"]] - epoch[s["i"]] < 2:
+                continue
+            seg = near[s["i"]:s["j"] + 1]
+            vals, cnt = np.unique(seg[seg > 0], return_counts=True)
+            e["subs"].append(dict(i=s["i"], j=s["j"], up=sorted(s["up"]), lj=sorted(s["lj"]),
+                                  pk=[round(float(np.nanmax(S[d, s["i"]:s["j"] + 1])), 1) for d in range(len(dirs))],
+                                  weak=not s["up"] and len(s["lj"]) == 1,
+                                  near=int(vals[cnt.argmax()]) if len(vals) and cnt.max() >= 2 else 0))
+
+
 def find_steps(dirs, epoch, out, rssi):
     """links whose average shape steps by >= 1 dB, or whose RSSI steps by >= 3 dB, in both
     directions, and stays"""
@@ -502,6 +635,9 @@ def main():
         vals, cnt = np.unique(seg[seg > 0], return_counts=True)
         if len(vals) and cnt.max() >= max(2, 0.25 * len(seg)):
             e["near"] = int(vals[cnt.argmax()])
+    find_peaks(dirs, epoch, size, loss, events, near)
+    names = [f"{tx}-{rx}" for tx, rx in dirs]
+    power, about, power_notes = describe(acc.inst, epoch, a.settle, thr, names, layout, own)
 
     notes = []
     for s in a.note:
@@ -535,6 +671,10 @@ def main():
                     notes.append(dict(i=i, label=label))
         except OSError:
             pass
+    for t_, label in power_notes:       # the instrument changed during the run
+        i = int(np.searchsorted(epoch, t_))
+        if i < len(epoch):
+            notes.append(dict(i=i, label=label))
     notes.sort(key=lambda n: n["i"])
 
     scene = ""
@@ -545,12 +685,12 @@ def main():
 
     def q(x, k, mx):
         return np.where(np.isnan(x), -1, np.clip(np.round(x * k), 0, mx)).astype(int).tolist()
-    names = [f"{tx}-{rx}" for tx, rx in dirs]
     loc = lambda t: dt.datetime.fromtimestamp(int(t))
     span = f"{loc(epoch[0]):%Y-%m-%d %H:%M} to {loc(epoch[-1]):%H:%M}"
     data = dict(
         title=title, view=a.view,
-        sub=" · ".join(x for x in [os.path.basename(folder), span, f"{len(boards)} boards", scene,
+        about=about,
+        sub=" · ".join(x for x in [os.path.basename(folder), span, f"{len(boards)} boards", power, scene,
                                     "" if own else "layout as it is now (none kept in the run folder)"] if x),
         segs=[dict(a=a_, n=b_ - a_, t=int(epoch[a_]),
                    off=int(loc(epoch[a_]).astimezone().utcoffset().total_seconds())) for a_, b_ in segs],
@@ -575,6 +715,12 @@ def main():
           f"{len(epoch) // 3600} h {len(epoch) % 3600 // 60} min in {len(segs)} part(s)")
     print("thresholds: " + "  ".join(f"{n} {t:.2f}" for n, t in zip(names, thr)))
     nb = {x: int((near == x).sum()) for x in np.unique(near[near > 0])}
+    print(power)
+    for e in events:
+        if e.get("stretch"):
+            print(f"stretch {loc(epoch[e['i']]):%H:%M:%S}, {int(epoch[e['j']] - epoch[e['i']]) + 1} s: "
+                  f"{names[e['level'][0]]} restless ({e['level'][1]}x quiet); peaks inside: "
+                  + (", ".join(f"{loc(epoch[s['i']]):%H:%M:%S}" + (" (weak)" if s["weak"] else "") for s in e["subs"]) or "none"))
     print(f"{len(events)} events" + "".join(f"; near board {x}: {n} s" for x, n in nb.items())
           + "; lasting changes:" + ("" if steps else " none"))
     for s in steps:
@@ -639,6 +785,13 @@ th { color: var(--muted); font-weight: 500; font-size: 12px; }
   cursor: pointer; font-variant-numeric: tabular-nums; font-size: 13px; }
 .ev:hover { background: var(--grid); }
 .ev.on { background: var(--sel); }
+.ev.st span:last-child { color: var(--ink2); }
+.ev.sub { padding-left: 18px; grid-template-columns: 46px 66px 50px 1fr; }
+details.about { margin-top: 8px; }
+details.about summary { cursor: pointer; color: var(--ink); }
+details.about table { width: auto; margin-top: 6px; font-size: 12px; }
+details.about th { text-align: left; color: var(--muted); font-weight: 500; padding-right: 14px; }
+details.about td { text-align: left; }
 .ev .m { color: var(--muted); }
 .legend { display: flex; flex-wrap: wrap; gap: 14px; color: var(--ink2); font-size: 12px; margin-top: 6px; align-items: center; }
 .ramp { display: inline-block; width: 110px; height: 8px; border-radius: 4px; vertical-align: middle;
@@ -702,6 +855,7 @@ kbd { font: 11px ui-monospace, monospace; border: 1px solid var(--axis); border-
 </div>
 <div class="notes">
   <p><b>What this shows:</b> which links were disturbed, when, and how much. It cannot place a person: a lit link means something moved in or near that path, or (with no shape change) somewhere its signal reflects through. Orange marks on the timeline are lasting changes (a link&rsquo;s shape stepped and stayed: something parked, moved or opened); black marks are your notes.</p>
+  <details class="about"><summary><b>About this recording</b>: the instrument as the boards reported it</summary><table id="abouttbl"></table></details>
   <p><kbd>space</kbd> play/pause &middot; <kbd>&larr;</kbd><kbd>&rarr;</kbd> &plusmn;1 s (shift &plusmn;1 min) &middot; <kbd>n</kbd><kbd>p</kbd> next/previous event &middot; click or drag the timeline to jump.</p>
 </div>
 <div id="tip"></div>
@@ -841,14 +995,35 @@ function dirTip(d, i) {
 const tbody = document.querySelector("#now tbody");
 const rows = NAMES.map(nm => { const tr = document.createElement("tr"); tr.innerHTML = `<td><span class="sw"></span>${nm.replace("-", " → ")}<span class="os"></span></td><td></td><td></td><td></td>`; tbody.appendChild(tr); return tr; });
 const evlist = document.getElementById("evlist");
-const evRows = D.events.map(e => {
-  const div = document.createElement("div"); div.className = "ev";
-  const top = e.pk.indexOf(Math.max(...e.pk));
-  div.innerHTML = `<span class="m">E${e.n}</span><span>${clk(e.i)}</span><span class="m">${tOf(e.j) - tOf(e.i) + 1} s</span><span>peak ${Math.max(...e.pk).toFixed(1)} on ${NAMES[top].replace("-", "→")}${e.near ? ` <b class="nr">near ${e.near}</b>` : ""}</span>`;
-  div.addEventListener("click", () => seek(Math.max(0, e.i - 5)));
-  evlist.appendChild(div); return div;
+const ITEMS = [];                       // events, and inside a stretch its peaks, in time order
+function evRow(name, i, j, text, cls) {
+  const div = document.createElement("div"); div.className = "ev" + (cls ? " " + cls : "");
+  div.innerHTML = `<span class="m">${name}</span><span>${clk(i)}</span><span class="m">${tOf(j) - tOf(i) + 1} s</span><span></span>`;
+  div.lastChild.innerHTML = text;
+  div.addEventListener("click", () => seek(Math.max(0, i - 5)));
+  evlist.appendChild(div);
+  ITEMS.push({ i, j, name, el: div });
+}
+const arrow = d => NAMES[d].replace("-", "→");
+D.events.forEach(e => {
+  const top = e.pk.indexOf(Math.max(...e.pk)), nr = e.near ? ` <b class="nr">near ${e.near}</b>` : "";
+  if (e.stretch) {
+    evRow(`E${e.n}`, e.i, e.j, `stretch: ${arrow(e.level[0])} restless (${e.level[1]}× quiet), peak ${Math.max(...e.pk).toFixed(1)}${nr}`, "st");
+    e.subs.forEach((s, k) => {
+      const big = s.pk.indexOf(Math.max(...s.pk));
+      const what = s.up.length ? `peak ${s.pk[big].toFixed(1)} on ${arrow(big)}` : `loss jump on ${s.lj.map(arrow).join(", ")}`;
+      evRow(`E${e.n}${String.fromCharCode(97 + (k % 26))}`, s.i, s.j,
+            what + (s.up.length && s.lj.length ? ", loss jump" : "") + (s.weak ? ` <span class="m">(weak)</span>` : "")
+            + (s.near ? ` <b class="nr">near ${s.near}</b>` : ""), "sub");
+    });
+  } else {
+    evRow(`E${e.n}`, e.i, e.j, `peak ${Math.max(...e.pk).toFixed(1)} on ${arrow(top)}${nr}`);
+  }
 });
 if (!D.events.length) evlist.textContent = "none";
+const abt = document.getElementById("abouttbl");
+(D.about || []).forEach(([k, v]) => { const tr = document.createElement("tr"); tr.innerHTML = "<th></th><td></td>";
+  tr.children[0].textContent = k; tr.children[1].textContent = v; abt.appendChild(tr); });
 function stepText(s, short) {
   const sh = s.db >= 1 ? `shape ${s.db} dB` : "", rs = Math.abs(s.rssi) >= (short ? 3 : 1) ? `RSSI ${s.rssi > 0 ? "+" : ""}${s.rssi} dB` : "";
   return `${s.link} ` + [sh, rs].filter(Boolean).join(", ");
@@ -938,7 +1113,13 @@ function drawTL() {
   D.steps.forEach(s => { const x = xOfI(s.i); cx.fillStyle = css("--shape"); cx.fillRect(x - .5, TL.top - 4, 2, ND * ROWH + 4); label(x, 9, stepText(s, true)); });
   D.notes.forEach(n => { const x = xOfI(n.i); cx.fillStyle = css("--note"); cx.fillRect(x - .5, TL.top - 4, 2, ND * ROWH + 4); label(x, 22, n.label); });
   cx.fillStyle = css("--ink2");
-  D.events.forEach(e => cx.fillRect(xOfI(e.i), TL.top - 6, 1, 3));
+  D.events.forEach(e => {
+    cx.fillRect(xOfI(e.i), TL.top - 6, 1, 3);
+    if (e.stretch) {                    // a stretch: a bar along its length, its peaks ticked
+      cx.globalAlpha = .45; cx.fillRect(xOfI(e.i), TL.top - 9, Math.max(1, xOfI(e.j) - xOfI(e.i)), 2); cx.globalAlpha = 1;
+      e.subs.forEach(s => cx.fillRect(xOfI(s.i), TL.top - 8, 1, 5));
+    }
+  });
   cx.fillStyle = css("--ink"); cx.fillRect(xOfI(cur) - 1, TL.top - 8, 2, ND * ROWH + 10);
 }
 
@@ -1000,10 +1181,10 @@ function render() {
   }
   fanEls.forEach((F, d) => { if (F) F.g.style.display = X && NAMES[d].split("-")[0] === X ? "none" : ""; });   // the rings stand in for its fans
   let on = -1;
-  D.events.forEach((e, k) => { const a = e.i <= cur && cur <= e.j; evRows[k].classList.toggle("on", a); if (a) on = k; });
-  document.getElementById("nowev").textContent = on >= 0 ? `in E${D.events[on].n}` : "";
-  const nearK = on >= 0 ? on : D.events.findIndex(e => e.i > cur);
-  if (nearK >= 0) { const r = evRows[nearK], top = r.offsetTop - evlist.offsetTop;
+  ITEMS.forEach((e, k) => { const a = e.i <= cur && cur <= e.j; e.el.classList.toggle("on", a); if (a) on = k; });
+  document.getElementById("nowev").textContent = on >= 0 ? `in ${ITEMS[on].name}` : "";
+  const nearK = on >= 0 ? on : ITEMS.findIndex(e => e.i > cur);
+  if (nearK >= 0) { const r = ITEMS[nearK].el, top = r.offsetTop - evlist.offsetTop;
     if (top < evlist.scrollTop || top > evlist.scrollTop + evlist.clientHeight - r.offsetHeight) evlist.scrollTop = top - evlist.clientHeight / 3; }
   drawTL();
 }
@@ -1052,7 +1233,7 @@ function setPlay(p) { playing = p; last = 0; acc = 0; playBtn.innerHTML = p ? "&
 playBtn.addEventListener("click", () => setPlay(!playing));
 speedSel.addEventListener("change", render);
 function jumpEv(dir) {
-  const E = D.events; const e = dir > 0 ? E.find(e => e.i > cur + 5) : [...E].reverse().find(e => e.i < cur - 5);
+  const E = ITEMS; const e = dir > 0 ? E.find(e => e.i > cur + 5) : [...E].reverse().find(e => e.i < cur - 5);
   if (e) seek(Math.max(0, e.i - 5));
 }
 document.getElementById("next").addEventListener("click", () => jumpEv(1));

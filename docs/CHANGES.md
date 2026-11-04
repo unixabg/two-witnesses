@@ -5,7 +5,27 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
-- **The layout check says the boards' transmit power.** Read from the
+- **`replay.py`: stretches with their peaks, and the instrument on the page.**
+  An event of 2 minutes or more is now a *stretch* (a link that stays
+  restless, as after a car has left), and the moments inside it that rise
+  well above the stretch's own recent level are listed under it as events of
+  their own (E48a, E48b, ...): at least two directions at 1.8x their level of
+  the 5 minutes before, or a 20-point jump in loss; a peak with only one
+  direction's loss behind it is marked weak. Before, a stretch merged
+  everything into one long event: on a real morning a car leaving was
+  followed by half an hour of restlessness, and two walks in the house near
+  the garage, noted by the owner, were inside it unseen; now one comes out as
+  a peak on three directions and the other as a weak one. The timeline draws
+  a bar along each stretch with its peaks ticked.
+  The page also says what instrument made the recording, from the boards' own
+  reports: the title line gives the transmit power ("all boards at 11 dBm"),
+  and an "About this recording" section lists the firmware and its build,
+  each board's power and relaying, any power change (also marked on the
+  timeline), the bandwidth, the layout used, the thresholds, the settle time
+  and the kit version. Runs at different powers compare by shape and RSSI
+  steps, not by event sizes.
+
+ Read from the
   boards' own reports during the checked stretch (the TWN and TWS lines) and
   printed under the time: "transmit power: 11 dBm on every board (1, 2, 3)",
   or each board's when they differ (then links are not compared fairly), and
