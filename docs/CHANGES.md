@@ -5,7 +5,15 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
-- **Moving boards in a survey keeps the layout right.** After `m` (the spot's
+- **The layout check says the boards' transmit power.** Read from the
+  boards' own reports during the checked stretch (the TWN and TWS lines) and
+  printed under the time: "transmit power: 11 dBm on every board (1, 2, 3)",
+  or each board's when they differ (then links are not compared fairly), and
+  whether it changed during the check. Comparing two nights' checks is only
+  fair at the same power: a night at 8 dBm and one at 11 dBm differ by 3 dB on
+  every link before anything in the room changes.
+
+ After `m` (the spot's
   label), the survey dashboard asks if a board was moved there: its number
   and new x y in feet, as in boards.csv (Enter: none). The move goes to
   moves.csv in the survey folder and the map shows the board there at once.

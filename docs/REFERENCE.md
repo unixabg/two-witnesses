@@ -19,7 +19,7 @@ esp-radar replay, and the desk tests.
 | `live.sh` | the dashboard with nothing saved |
 | `version.sh`, `VERSION` | which kit this is, and whether every file is intact |
 | `tools/sums.sh` | refresh SHA256SUMS after a change (before each commit) |
-| `tw_layout.py` | the board layout you keep: show it, `confirm` (is it still right?), `edit` (value by value), `backups` (put an earlier version back), `moves SURVEY_FOLDER` (write a survey's moved boards into the layout), `check RUN_FOLDER` (the layout against the radio: each link's signal against its length, swapped numbers, a board heard much worse one way), `keep`, `path`; every version kept in `layouts/` beside it; `TW_DATA` other than ~/tw-data: that site's own |
+| `tw_layout.py` | the board layout you keep: show it, `confirm` (is it still right?), `edit` (value by value), `backups` (put an earlier version back), `moves SURVEY_FOLDER` (write a survey's moved boards into the layout), `check RUN_FOLDER` (the layout against the radio: each link's signal against its length, swapped numbers, a board heard much worse one way; with each board's transmit power as reported), `keep`, `path`; every version kept in `layouts/` beside it; `TW_DATA` other than ~/tw-data: that site's own |
 | `tw_map.py`, `boards-example.csv` | the board layout drawn to scale (dashboard map, maps in across.txt) |
 | `tw_lib.sh` | shared by the .sh scripts (sessions that close themselves) |
 | `ROADMAP.md` | what is planned and what is being looked into |

@@ -40,7 +40,9 @@ themselves, falling 25 dB per tenfold distance, as indoors). It flags a link
 file, or something solid in the path), a better fit with two board numbers
 swapped, a board the others hear much better (or worse) than it hears them on
 all its paths (its receiving or sending side), loss at rest over 20%, and
-whether anything moved during the check (the numbers may then be off). It
+whether anything moved during the check (the numbers may then be off), and
+the boards' transmit power as they report it (compare two checks only at the
+same power; boards at different powers are flagged). It
 cannot prove a layout right: it catches the common mistakes before a night is
 recorded on a wrong map. With three boards the fit is rough (about 4 dB).
 
@@ -428,9 +430,20 @@ def read_quiet(folder, minutes, at=None):
     else:
         files = files[-2:]        # the last minutes are in the newest file (or the one before)
     rec = {}
+    pw = []                       # (time, board, transmit power in quarter dBm), as the boards report it
     for path in files:
         for line in lines(path):
             p = line.split(",", 12)
+            if len(p) > 2 and p[1] in ("TWN", "TWS"):
+                f = line.rstrip("\n").split(",")[2:]
+                try:            # TWN: a board heard, its power setting at 9; TWS: the cabled board, radio's power at 18
+                    if p[1] == "TWN" and len(f) >= 10:
+                        pw.append((int(p[0]) / 1e9, int(f[0]), int(f[9])))
+                    elif p[1] == "TWS" and len(f) >= 19:
+                        pw.append((int(p[0]) / 1e9, int(f[0]), int(f[18]) or int(f[17])))
+                except ValueError:
+                    pass
+                continue
             if len(p) < 12 or p[1] != "TWR":
                 continue
             try:
@@ -462,7 +475,31 @@ def read_quiet(folder, minutes, at=None):
         out[d] = dict(rssi=rs[len(rs) // 2], spread=q3 - q1, n=len(v), jumpy=(max(wl) - min(wl)) if wl else 0,
                       loss=100 * (1 - len(seqs) / span) if span > 0 else 0.0,
                       secs=v[-1][0] - v[0][0])
-    return out, lo, hi
+    power = {}
+    for t, b, q in pw:
+        if lo <= t < hi:
+            power.setdefault(b, []).append(q)
+    return out, lo, hi, power
+
+
+def power_line(power):
+    """the boards' transmit power during the check, as they reported it"""
+    if not power:
+        return "transmit power: not reported (firmware before tw_node 1.1)"
+    each = {}
+    for b, qs in sorted(power.items()):
+        most = max(set(qs), key=qs.count)
+        each[b] = (most / 4 if most else 20.0, len(set(qs)) > 1)   # 0 = never set: full power, 20 dBm
+    vals = {v for v, _ in each.values()}
+    changed = [b for b, (_, c) in each.items() if c]
+    if len(vals) == 1:
+        s = f"transmit power: {vals.pop():g} dBm on every board ({', '.join(map(str, each))})"
+    else:
+        s = ("transmit power: " + ", ".join(f"board {b} {v:g} dBm" for b, (v, _) in each.items())
+             + "  NOT ALL THE SAME: links are not compared fairly")
+    if changed:
+        s += f"  (changed during the check on board {', '.join(map(str, changed))})"
+    return s
 
 
 def fit(links, pos):
@@ -494,9 +531,10 @@ def check(folder, minutes=2.0, at=None):
         lay = tw_map.layout_file()
     _, rows = read(lay)
     pos = {int(r["id"]): (r["x"], r["y"]) for r in rows if r["id"].isdigit()}
-    dirs, lo, hi = read_quiet(folder, minutes, at)
+    dirs, lo, hi, power = read_quiet(folder, minutes, at)
     out = [f"Layout check: {lay}",
            f"recording {dt.datetime.fromtimestamp(lo):%H:%M:%S}-{dt.datetime.fromtimestamp(hi):%H:%M:%S} in {folder}",
+           power_line(power),
            f"(each link's signal against its length in the layout; expected = the links' own level, "
            f"falling {10 * N_PATH:g} dB per tenfold distance)", ""]
     moved = [f"{a}->{b}" for (a, b), v in sorted(dirs.items()) if v["spread"] >= 3 or v["jumpy"] >= 15]
