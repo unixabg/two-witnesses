@@ -51,6 +51,19 @@ Events: seconds where a direction passes its threshold (the 99.9th percentile
 of its quietest hour, but no more than its median + 20 x its usual spread,
 and at least 1.3), merged across gaps of up to 15 s, kept
 when 2 s or longer or one second at 1.5x the threshold.
+Watch runs (watch.sh): the camera's events (detect/events.csv, with the label
+and note you give them) are marked on the timeline and listed with the lasting
+changes, events the camera kept frames for are tagged "camera", and a camera
+panel shows the frame of the second under the cursor (the camera keeps one a
+second, around its events). The frames are linked, not copied: the page shows
+them while it sits in its watch folder. To look at it from another computer,
+serve the folder:
+    cd ~/tw-data/watch/<run> && python3 -m http.server 8000
+and open http://localhost:8000/replay.html on the Chromebook; for other
+computers at home add --bind 0.0.0.0, let ChromeOS forward the port (Settings,
+Linux development environment, Port forwarding: 8000), and open
+http://<the Chromebook's address>:8000/replay.html. Anyone on the network can
+then read the whole folder (recordings and frames) until Ctrl-C stops it.
 Stretches: an event of 2 minutes or more (a link that stays restless, as after
 a car has left) is listed as a stretch, with the peaks inside it as events of
 their own (E48a, E48b, ...): moments when at least two directions rise to 1.8x
@@ -518,6 +531,50 @@ def find_peaks(dirs, epoch, size, loss, events, near):
                                   near=int(vals[cnt.argmax()]) if len(vals) and cnt.max() >= 2 else 0))
 
 
+def read_camera(folder, epoch):
+    """a watch run's camera (watch.sh): its events (detect/events.csv, with your label and
+    note) and the frames kept around them (detect/events/<event>/*.jpg, one a second, named
+    by the time); the frames are linked from the page, not copied into it"""
+    import csv
+    det = os.path.join(folder, "detect")
+    events, frames = [], []
+    try:
+        rows = list(csv.DictReader(open(os.path.join(det, "events.csv"))))
+    except OSError:
+        return events, frames
+
+    def index(t):
+        i = int(np.searchsorted(epoch, t))
+        for k in (i, i - 1):
+            if 0 <= k < len(epoch) and abs(int(epoch[k]) - t) <= 1:
+                return k
+        return None
+    for r in rows:
+        eid = (r.get("event") or "").strip()
+        try:
+            t0 = int(dt.datetime.strptime(eid, "%Y%m%d-%H%M%S").timestamp())
+            h, m, s = (int(x) for x in r.get("end", "").split(":"))
+            end = dt.datetime.fromtimestamp(t0).replace(hour=h, minute=m, second=s)
+            t1 = int(end.timestamp()) + (86400 if end.timestamp() < t0 else 0)
+        except ValueError:
+            continue
+        i = int(np.searchsorted(epoch, t0)); j = int(np.searchsorted(epoch, t1))
+        if i >= len(epoch) or j <= 0:
+            continue
+        events.append(dict(i=i, j=max(i, min(j, len(epoch) - 1)), event=eid, kind=r.get("kind", ""),
+                           label=r.get("label", "").strip(), note=r.get("note", "").strip()))
+        for f in sorted(glob.glob(os.path.join(det, "events", eid, "*.jpg"))):
+            try:
+                tf = int(dt.datetime.strptime(os.path.basename(f)[:15], "%Y%m%d-%H%M%S").timestamp())
+            except ValueError:
+                continue
+            k = index(tf)
+            if k is not None:
+                frames.append((k, os.path.relpath(f, folder)))
+    frames = sorted(set(frames))
+    return events, [dict(i=k, src=src) for k, src in frames]
+
+
 def find_steps(dirs, epoch, out, rssi):
     """links whose average shape steps by >= 1 dB, or whose RSSI steps by >= 3 dB, in both
     directions, and stays"""
@@ -580,7 +637,7 @@ def find_steps(dirs, epoch, out, rssi):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="a page that replays a many-board run on the board layout")
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("folder")
     ap.add_argument("--title")
     ap.add_argument("--from", dest="t_from", help="HH:MM: start here")
@@ -636,6 +693,7 @@ def main():
         if len(vals) and cnt.max() >= max(2, 0.25 * len(seg)):
             e["near"] = int(vals[cnt.argmax()])
     find_peaks(dirs, epoch, size, loss, events, near)
+    cam_events, cam_frames = read_camera(folder, epoch)
     names = [f"{tx}-{rx}" for tx, rx in dirs]
     power, about, power_notes = describe(acc.inst, epoch, a.settle, thr, names, layout, own)
 
@@ -689,7 +747,7 @@ def main():
     span = f"{loc(epoch[0]):%Y-%m-%d %H:%M} to {loc(epoch[-1]):%H:%M}"
     data = dict(
         title=title, view=a.view,
-        about=about,
+        about=about, camera=dict(events=cam_events, frames=cam_frames),
         sub=" · ".join(x for x in [os.path.basename(folder), span, f"{len(boards)} boards", power, scene,
                                     "" if own else "layout as it is now (none kept in the run folder)"] if x),
         segs=[dict(a=a_, n=b_ - a_, t=int(epoch[a_]),
@@ -716,6 +774,9 @@ def main():
     print("thresholds: " + "  ".join(f"{n} {t:.2f}" for n, t in zip(names, thr)))
     nb = {x: int((near == x).sum()) for x in np.unique(near[near > 0])}
     print(power)
+    if cam_events:
+        print(f"camera: {len(cam_events)} watch events, {len(cam_frames)} frames linked "
+              f"(the page shows them while it sits in this folder)")
     for e in events:
         if e.get("stretch"):
             print(f"stretch {loc(epoch[e['i']]):%H:%M:%S}, {int(epoch[e['j']] - epoch[e['i']]) + 1} s: "
@@ -738,21 +799,21 @@ PAGE = r"""<!doctype html>
   --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink2: #52514e; --muted: #898781;
   --grid: #e1e0d9; --axis: #c3c2b7; --quiet: #d6d5ce;
   --s1: #cde2fb; --s2: #86b6ef; --s3: #3987e5; --s4: #1c5cab; --s5: #0d366b;
-  --shape: #eb6834; --note: #0b0b0b; --sel: #fde7c2;
+  --shape: #eb6834; --note: #0b0b0b; --sel: #fde7c2; --cam: #6250d6;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink2: #c3c2b7; --muted: #898781;
     --grid: #2c2c2a; --axis: #383835; --quiet: #3a3a37;
     --s1: #184f95; --s2: #2a78d6; --s3: #5598e7; --s4: #9ec5f4; --s5: #e3eefc;
-    --shape: #d95926; --note: #f0efec; --sel: #4a3410;
+    --shape: #d95926; --note: #f0efec; --sel: #4a3410; --cam: #9085e9;
   }
 }
 :root[data-theme="dark"] {
   --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink2: #c3c2b7; --muted: #898781;
   --grid: #2c2c2a; --axis: #383835; --quiet: #3a3a37;
   --s1: #184f95; --s2: #2a78d6; --s3: #5598e7; --s4: #9ec5f4; --s5: #e3eefc;
-  --shape: #d95926; --note: #f0efec; --sel: #4a3410;
+  --shape: #d95926; --note: #f0efec; --sel: #4a3410; --cam: #9085e9;
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--page); color: var(--ink);
@@ -801,6 +862,10 @@ details.about td { text-align: left; }
   font-variant-numeric: tabular-nums; max-width: 280px; }
 .notes { color: var(--ink2); font-size: 13px; padding: 2px 16px 16px; }
 .notes p { margin: 4px 0; }
+#camcard img { width: 100%; display: block; border-radius: 8px; background: var(--grid); aspect-ratio: 4 / 3; object-fit: contain; }
+#camnote { color: var(--ink2); font-size: 12px; margin: 4px 0 10px; }
+#camnote button { font: inherit; font-size: 12px; color: var(--ink); background: var(--surface); border: 1px solid var(--axis); border-radius: 6px; padding: 1px 8px; cursor: pointer; margin-left: 6px; }
+.cam { color: var(--cam); font-weight: 600; font-size: 11px; margin-left: 4px; }
 .os { color: var(--muted); font-size: 11px; margin-left: 6px; }
 .nr { font-weight: 600; color: var(--ink); }
 .maphead { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; }
@@ -845,6 +910,7 @@ kbd { font: 11px ui-monospace, monospace; border: 1px solid var(--axis); border-
     </div>
   </div>
   <div class="card">
+    <div id="camcard" hidden><h2>Camera</h2><img id="camimg" alt="the camera's frame at this second"><div id="camnote"></div></div>
     <h2>Now</h2>
     <table id="now"><thead><tr><th>direction</th><th>change &times;</th><th>loss %</th><th>shape dB</th></tr></thead><tbody></tbody></table>
     <h2 style="margin-top:12px">Lasting changes and notes</h2>
@@ -854,7 +920,7 @@ kbd { font: 11px ui-monospace, monospace; border: 1px solid var(--axis); border-
   </div>
 </div>
 <div class="notes">
-  <p><b>What this shows:</b> which links were disturbed, when, and how much. It cannot place a person: a lit link means something moved in or near that path, or (with no shape change) somewhere its signal reflects through. Orange marks on the timeline are lasting changes (a link&rsquo;s shape stepped and stayed: something parked, moved or opened); black marks are your notes.</p>
+  <p><b>What this shows:</b> which links were disturbed, when, and how much. It cannot place a person: a lit link means something moved in or near that path, or (with no shape change) somewhere its signal reflects through. Orange marks on the timeline are lasting changes (a link&rsquo;s shape stepped and stayed: something parked, moved or opened); black marks are your notes; violet marks are the camera&rsquo;s events (watch runs), with your label.</p>
   <details class="about"><summary><b>About this recording</b>: the instrument as the boards reported it</summary><table id="abouttbl"></table></details>
   <p><kbd>space</kbd> play/pause &middot; <kbd>&larr;</kbd><kbd>&rarr;</kbd> &plusmn;1 s (shift &plusmn;1 min) &middot; <kbd>n</kbd><kbd>p</kbd> next/previous event &middot; click or drag the timeline to jump.</p>
 </div>
@@ -1028,12 +1094,19 @@ function stepText(s, short) {
   const sh = s.db >= 1 ? `shape ${s.db} dB` : "", rs = Math.abs(s.rssi) >= (short ? 3 : 1) ? `RSSI ${s.rssi > 0 ? "+" : ""}${s.rssi} dB` : "";
   return `${s.link} ` + [sh, rs].filter(Boolean).join(", ");
 }
+const CAM = D.camera || { events: [], frames: [] };
+const frameAt = new Map(CAM.frames.map(f => [f.i, f.src]));
+ITEMS.forEach(e => {                     // events the camera kept frames for
+  if (CAM.frames.some(f => f.i >= e.i - 2 && f.i <= e.j + 2)) e.el.lastChild.insertAdjacentHTML("beforeend", ` <span class="cam">camera</span>`);
+});
 const marklist = document.getElementById("marklist");
 const mk2 = D.steps.map(s => ({ i: s.i, kind: "change", text: "link " + stepText(s, false) }))
-  .concat(D.notes.map(n => ({ i: n.i, kind: "note", text: n.label }))).sort((a, b) => a.i - b.i);
+  .concat(D.notes.map(n => ({ i: n.i, kind: "note", text: n.label })))
+  .concat(CAM.events.map(c => ({ i: c.i, kind: "cam", text: "camera: " + (c.label || c.kind) + (c.note ? " (" + c.note + ")" : "") })))
+  .sort((a, b) => a.i - b.i);
 mk2.forEach(m => {
   const div = document.createElement("div"); div.className = "ev";
-  div.innerHTML = `<span class="m" style="color:var(${m.kind === "change" ? "--shape" : "--note"})">${m.kind === "change" ? "▮" : "▸"}</span><span>${clk(m.i)}</span><span></span><span></span>`;
+  div.innerHTML = `<span class="m" style="color:var(${m.kind === "change" ? "--shape" : m.kind === "cam" ? "--cam" : "--note"})">${m.kind === "change" ? "▮" : m.kind === "cam" ? "◉" : "▸"}</span><span>${clk(m.i)}</span><span></span><span></span>`;
   div.lastChild.textContent = m.text;
   div.addEventListener("click", () => seek(Math.max(0, m.i - 20)));
   marklist.appendChild(div);
@@ -1111,6 +1184,7 @@ function drawTL() {
     taken[y].push([a, b]); cx.textAlign = "left"; cx.fillText(text, a, y);
   }
   D.steps.forEach(s => { const x = xOfI(s.i); cx.fillStyle = css("--shape"); cx.fillRect(x - .5, TL.top - 4, 2, ND * ROWH + 4); label(x, 9, stepText(s, true)); });
+  CAM.events.forEach(c => { const x = xOfI(c.i); cx.fillStyle = css("--cam"); cx.fillRect(x - .5, TL.top - 4, 2, ND * ROWH + 4); label(x, 22, c.label || c.kind); });
   D.notes.forEach(n => { const x = xOfI(n.i); cx.fillStyle = css("--note"); cx.fillRect(x - .5, TL.top - 4, 2, ND * ROWH + 4); label(x, 22, n.label); });
   cx.fillStyle = css("--ink2");
   D.events.forEach(e => {
@@ -1167,6 +1241,7 @@ function render() {
     tds[2].textContent = raw(D.loss, d, cur) < 0 ? "–" : raw(D.loss, d, cur);
     tds[3].textContent = raw(D.shape, d, cur) < 0 ? "–" : (raw(D.shape, d, cur) / 10).toFixed(1);
   });
+  showFrame();
   const X = String(D.near[cur] || "");
   for (const id in ringEls) {
     const R = ringEls[id], show = id === X;
@@ -1189,6 +1264,26 @@ function render() {
   drawTL();
 }
 function seek(i) { cur = Math.max(0, Math.min(N - 1, i)); render(); }
+const camcard = document.getElementById("camcard"), camimg = document.getElementById("camimg"), camnote = document.getElementById("camnote");
+if (CAM.frames.length) camcard.hidden = false;
+camimg.addEventListener("error", () => { camimg.hidden = true;
+  camnote.textContent = "frame not found: open this page in its watch folder, or through a web server started there (see replay.py)"; });
+function showFrame() {
+  if (!CAM.frames.length) return;
+  const src = frameAt.get(cur) || frameAt.get(cur - 1);
+  const ev = CAM.events.find(c => c.i - 6 <= cur && cur <= c.j + 11);
+  if (src) {
+    camimg.hidden = false;
+    if (camimg.getAttribute("src") !== src) camimg.setAttribute("src", src);
+    camnote.textContent = (ev ? `watch event ${ev.event}: ${ev.label || ev.kind}${ev.note ? " (" + ev.note + ")" : ""}` : "");
+  } else {
+    camimg.hidden = true;
+    const nx = CAM.frames.find(f => f.i > cur) || CAM.frames[0];
+    camnote.innerHTML = "no frame kept for this moment (the camera keeps frames around the watch's events)";
+    const b = document.createElement("button"); b.textContent = `${clk(nx.i)} →`;
+    b.addEventListener("click", () => seek(nx.i)); camnote.appendChild(b);
+  }
+}
 const still = matchMedia("(prefers-reduced-motion: reduce)");
 function echoes(dt) {                    // waves: rings travel out along each active path
   if (mode !== "waves" || still.matches) return;

@@ -5,7 +5,18 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
-- **`replay.py`: stretches with their peaks, and the instrument on the page.**
+- **`replay.py` on watch runs: the camera beside the radio.** A watch run's
+  camera events (detect/events.csv, with your label and note) are marked on
+  the timeline in their own color and listed with the lasting changes; events
+  the camera kept frames for are tagged "camera"; and a camera panel shows the
+  frame of the second under the cursor (one a second, around the watch's
+  events; between them it says so and offers the next one). The frames are
+  linked, not copied into the page, so it stays small and shows them while it
+  sits in its watch folder; `replay.py`'s help says how to share it through a
+  small web server (`python3 -m http.server` in the folder). Moved away from
+  its folder, the page says the frames were not found and why.
+
+
   An event of 2 minutes or more is now a *stretch* (a link that stays
   restless, as after a car has left), and the moments inside it that rise
   well above the stretch's own recent level are listed under it as events of
