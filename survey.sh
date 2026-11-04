@@ -20,7 +20,10 @@
 # placement.csv, layout-check.txt, and the layout and scene it started with:
 # boards.csv, scene.txt)
 # The board on the Chromebook's cable stays put; move the others (on power
-# banks). With the old two-board images: move the sender.
+# banks). With the old two-board images: move the sender. After m, it asks if a
+# board was moved to that spot (its number and new x y): the map shows it at
+# once, and "survey.sh stop" offers to write the moves into the layout (a
+# survey that ended by itself: the next one asks).
 #
 # Settings: TW_DATA=~/tw-data PORT=/dev/ttyACM0 VENV=~/scratch-esp DASH_TAP=47001
 set -u
@@ -35,9 +38,15 @@ SYSTEMCTL=$(command -v systemctl || echo /usr/bin/systemctl)
 case "${1:-}" in
   stop)
     tmux has-session -t survey 2>/dev/null || { echo "no survey is running"; exit 1; }
+    DIR=$(tmux show-environment -t survey TW_RUN 2>/dev/null | sed -n 's/^TW_RUN=//p')
     tmux send-keys -t survey:0 C-c
-    echo "stopping the survey"; exit 0 ;;
-  -h|--help) sed -n '4,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    echo "stopping the survey"
+    # boards moved during it (m, then the board's new position): into the layout?
+    if [ -n "$DIR" ] && [ -r "$DIR/moves.csv" ]; then
+      echo; TW_DATA=$TW_DATA "$PY" "$KIT/tw_layout.py" moves "$DIR"
+    fi
+    exit 0 ;;
+  -h|--help) sed -n '4,28p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 esac
 UNTIL=${1:-$(date -d '+2 hours' +%H:%M)}
 

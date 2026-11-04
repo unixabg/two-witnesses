@@ -12,6 +12,10 @@ edit it, and keep every version.
     ~/scratch-esp/bin/python ~/tw-kit/tw_layout.py keep       keep a copy if it changed (run.sh,
                                                                survey.sh, watch.sh do this at the start)
     ~/scratch-esp/bin/python ~/tw-kit/tw_layout.py path       which file it is
+    ~/scratch-esp/bin/python ~/tw-kit/tw_layout.py moves SURVEY_FOLDER
+                         write the boards moved in a survey (moves.csv) into the layout;
+                         survey.sh stop offers it, and so does the next confirm if it
+                         was never answered
     ~/scratch-esp/bin/python ~/tw-kit/tw_layout.py check RUN_FOLDER [--minutes 2] [--at HH:MM]
                          the layout against the radio, from a quiet stretch of a recording
                          (survey.sh does this after its start; any run folder will do)
@@ -297,8 +301,87 @@ def restore(path):
     return True
 
 
+def read_moves(folder):
+    """the last position typed for each board moved in a survey (moves.csv): {board: (x, y, clock)}"""
+    import csv
+    out = {}
+    try:
+        for r in csv.DictReader(open(os.path.join(folder, "moves.csv"))):
+            try:
+                out[r["board"].strip()] = (float(r["x_ft"]), float(r["y_ft"]), r.get("clock", ""))
+            except (ValueError, KeyError):
+                pass
+    except OSError:
+        pass
+    return out
+
+
+def moves(path, folder):
+    """offer a survey's moved boards for the layout you keep; the answer is noted in the folder
+    (moves-done.txt), so it is asked once"""
+    folder = os.path.abspath(os.path.expanduser(folder))
+    mv = read_moves(folder)
+    if not mv:
+        print(f"no boards were moved in {folder} (no moves.csv)")
+        return False
+    comments, rows = read(path)
+    new = [dict(r) for r in rows]
+    unknown = []
+    for b, (x, y, _) in mv.items():
+        r = next((r for r in new if r["id"] == b), None)
+        if r:
+            r["x"], r["y"] = x, y
+        else:
+            unknown.append(b)
+    ch = changes(rows, new)
+    print(f"survey {os.path.basename(folder)}: boards moved (the last position typed for each):")
+    for b, (x, y, c) in sorted(mv.items()):
+        print(f"  board {b} to {num(x)},{num(y)}" + (f" at {c}" if c else "") + ("  (not in the layout: skipped)" if b in unknown else ""))
+    done = os.path.join(folder, "moves-done.txt")
+    if not ch:
+        print(f"the layout ({path}) already has these positions")
+        open(done, "w").write(f"{dt.datetime.now():%Y-%m-%d %H:%M} already in the layout\n")
+        return False
+    print(f"\nfor the layout {path}:\n  " + "\n  ".join(ch))
+    if not sys.stdin.isatty():
+        print(f"\nnot changed (nobody at the keyboard); to write them in: {os.path.abspath(__file__)} moves {folder}")
+        return False
+    if ask("\nwrite these into the layout? Enter = yes, n = no", "").lower().startswith("n"):
+        open(done, "w").write(f"{dt.datetime.now():%Y-%m-%d %H:%M} not written into the layout\n")
+        print("layout not changed")
+        return False
+    keep(path, quiet=True)
+    comments = [c for c in comments if not c.startswith("# edited ")] + \
+        [f"# edited {dt.datetime.now():%Y-%m-%d %H:%M} with tw_layout.py (moves of survey {os.path.basename(folder)})"]
+    write(path, comments, new)
+    keep(path, quiet=True)
+    open(done, "w").write(f"{dt.datetime.now():%Y-%m-%d %H:%M} written into {path}\n")
+    print(f"saved {path} (earlier versions in {backup_dir(path)})")
+    return True
+
+
+def pending_survey():
+    """the newest survey folder, if boards were moved in it and nobody has said yet whether
+    to write them into the layout"""
+    data = os.path.expanduser(os.environ.get("TW_DATA", "~/tw-data"))
+    folders = sorted(glob.glob(os.path.join(data, "survey", "*")))
+    if folders and os.path.exists(os.path.join(folders[-1], "moves.csv")) \
+            and not os.path.exists(os.path.join(folders[-1], "moves-done.txt")):
+        return folders[-1]
+    return None
+
+
 def confirm(path):
     show(path)
+    pend = pending_survey()
+    if pend:
+        print(f"\nthe last survey ({os.path.basename(pend)}) moved boards that are not in the layout yet:")
+        if sys.stdin.isatty():
+            moves(path, pend)
+            print()
+            show(path)
+        else:
+            print(f"  {os.path.abspath(__file__)} moves {pend}")
     if not sys.stdin.isatty():
         return
     while True:
@@ -514,6 +597,8 @@ def main():
         restore(path)
     elif cmd == "keep":
         keep(path)
+    elif cmd == "moves" and len(sys.argv) > 2:
+        moves(path, sys.argv[2])
     else:
         sys.exit(__doc__)
 

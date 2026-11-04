@@ -16,7 +16,9 @@ any browser, offline. Without --title it asks at a keyboard (Enter keeps
 "Link replay") and uses that name when nobody is there (cron). --from/--to
 keep part of the run (clock times, as listen.py --until: the next time that
 clock time comes round after the run started). --note puts your own marks on
-the timeline (any number of them).
+the timeline (any number of them). A survey folder's own marks (the m key:
+placement.csv) and boards moved (moves.csv) are shown as notes by themselves;
+the boards are drawn where they were when it started.
 
 Two ways to draw the links (a switch on the page flips between them; --view
 says which the page opens with):
@@ -513,6 +515,27 @@ def main():
             notes.append(dict(i=i, label=m[2] or m[1]))
         else:
             print(f"note outside the recorded part, skipped: {s}", file=sys.stderr)
+    # a survey's own marks (m: placement.csv, one row per link) and boards moved (moves.csv)
+    import csv
+    for name, text in (("placement.csv", lambda r: r.get("label", "")),
+                       ("moves.csv", lambda r: f"board {r['board']} moved to {r['x_ft']},{r['y_ft']}")):
+        seen = set()
+        try:
+            for r in csv.DictReader(open(os.path.join(folder, name))):
+                try:
+                    t = int(float(r["time"]))
+                    label = text(r)
+                except (KeyError, ValueError):
+                    continue
+                if (t, label) in seen or not label:
+                    continue
+                seen.add((t, label))
+                i = int(np.searchsorted(epoch, t))
+                if i < len(epoch) and abs(int(epoch[i]) - t) <= 60:
+                    notes.append(dict(i=i, label=label))
+        except OSError:
+            pass
+    notes.sort(key=lambda n: n["i"])
 
     scene = ""
     sp = os.path.join(folder, "scene.txt")

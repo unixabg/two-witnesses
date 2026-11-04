@@ -21,7 +21,10 @@ Usage (run.sh, watch.sh and survey.sh start it for you, in a tmux window):
     python3 dash.py --tap 47001 [--folder RUN_FOLDER] [--until HH:MM] [--survey]
 Keys:
     m   mark this spot: type where the board is (e.g. "sender 6 m, chest
-        height"); the last 30 s are averaged and saved to placement.csv
+        height"); the last 30 s are averaged and saved to placement.csv. In a
+        survey it then asks if a board was moved there (its number and new x y
+        in feet, as in boards.csv): saved to moves.csv, drawn on the map at
+        once, and offered for the layout when the survey stops
     p   placement view on/off: big RSSI and link-quality readouts, for
         walking a board around (survey.sh starts in it)
     c   CSI view of the chosen link (many boards), press again to switch, a
@@ -681,7 +684,11 @@ class Screen:
     def draw_map(self, links, y, h, w):
         now = time.time()
         if now - getattr(self, "boards_t", 0) > 30:
-            self.boards_xy = tw_map.load_boards(tw_map.find_boards(self.a.folder))
+            bxy, marks = tw_map.load_boards(tw_map.find_boards(self.a.folder))
+            for b, (x, y) in (self.read_moves().items() if self.a.survey else ()):
+                if b in bxy:                    # boards moved during this survey, where they are now
+                    bxy[b] = (x, y) + tuple(bxy[b][2:])
+            self.boards_xy = (bxy, marks)
             self.boards_t = now
         bxy, marks = self.boards_xy
         if not bxy:
@@ -733,21 +740,64 @@ class Screen:
         except OSError:
             return []
 
-    def mark(self, links):
+    def ask_line(self, prompt):
+        """one line typed at the bottom of the screen"""
         h, w = self.scr.getmaxyx()
         curses.echo()
         curses.curs_set(1)
         self.scr.nodelay(False)
         self.put(h - 2, 1, " " * (w - 2))
-        self.put(h - 2, 1, "where is the board? (Enter to save, empty to cancel): ", self.color(4))
+        self.put(h - 2, 1, prompt, self.color(4))
         self.scr.refresh()
         try:
-            label = self.scr.getstr(h - 2, 56, 120).decode(errors="replace").strip()
+            text = self.scr.getstr(h - 2, min(len(prompt) + 2, w - 10), 120).decode(errors="replace").strip()
         except curses.error:
-            label = ""
+            text = ""
         curses.noecho()
         curses.curs_set(0)
         self.scr.nodelay(True)
+        return text
+
+    def moves_path(self):
+        return os.path.join(self.a.folder or os.path.expanduser("~/tw-data"), "moves.csv")
+
+    def read_moves(self):
+        """the last position typed for each board moved in this survey: {board: (x, y)}"""
+        try:
+            return {int(r["board"]): (float(r["x_ft"]), float(r["y_ft"])) for r in csv.DictReader(open(self.moves_path()))}
+        except (OSError, ValueError, KeyError):
+            return {}
+
+    def ask_move(self, label):
+        """survey: was a board moved to this spot? its number and new position go to moves.csv"""
+        bxy, _ = tw_map.load_boards(tw_map.find_boards(self.a.folder))
+        if not bxy:
+            return ""
+        while True:
+            ans = self.ask_line("moved a board here? its number and new x y in feet, e.g. 3 -14 -2 (Enter: none): ")
+            if not ans:
+                return ""
+            p = ans.replace(",", " ").split()
+            try:
+                b, x, y = int(p[0]), float(p[1]), float(p[2])
+            except (ValueError, IndexError):
+                self.msg, self.msg_t = "type the board's number, then x and y (feet), e.g. 3 -14 -2", time.time()
+                continue
+            if b not in bxy:
+                self.msg, self.msg_t = f"no board {b} in the layout ({', '.join(map(str, sorted(bxy)))})", time.time()
+                continue
+            path = self.moves_path()
+            new = not os.path.exists(path)
+            with open(path, "a", newline="") as fh:
+                wr = csv.writer(fh)
+                if new:
+                    wr.writerow(["time", "clock", "board", "x_ft", "y_ft", "label"])
+                wr.writerow([f"{time.time():.0f}", f"{dt.datetime.now():%H:%M:%S}", b, f"{x:g}", f"{y:g}", label])
+            self.boards_t = 0                   # the map shows it at once
+            return f"; board {b} now at {x:g},{y:g} (moves.csv)"
+
+    def mark(self, links):
+        label = self.ask_line("where is the board? (Enter to save, empty to cancel): ")
         if not label:
             self.msg, self.msg_t = "mark cancelled", time.time()
             return
@@ -770,7 +820,8 @@ class Screen:
                              f"{s['rssi'] - s['noise']:.1f}", f"{s['pps']:.1f}", f"{s['lost']:.1f}",
                              f"{s['xmed']:.2f}" if s["xmed"] is not None else ""])
                 saved += 1
-        self.msg = f"saved '{label}' ({saved} link{'s' if saved != 1 else ''}, last {MARK_S} s) to placement.csv"
+        moved = self.ask_move(label) if self.a.survey else ""
+        self.msg = f"saved '{label}' ({saved} link{'s' if saved != 1 else ''}, last {MARK_S} s) to placement.csv" + moved
         self.msg_t = time.time()
 
 

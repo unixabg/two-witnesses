@@ -19,11 +19,11 @@ esp-radar replay, and the desk tests.
 | `live.sh` | the dashboard with nothing saved |
 | `version.sh`, `VERSION` | which kit this is, and whether every file is intact |
 | `tools/sums.sh` | refresh SHA256SUMS after a change (before each commit) |
-| `tw_layout.py` | the board layout you keep: show it, `confirm` (is it still right?), `edit` (value by value), `backups` (put an earlier version back), `check RUN_FOLDER` (the layout against the radio: each link's signal against its length, swapped numbers, a board heard much worse one way), `keep`, `path`; every version kept in `layouts/` beside it; `TW_DATA` other than ~/tw-data: that site's own |
+| `tw_layout.py` | the board layout you keep: show it, `confirm` (is it still right?), `edit` (value by value), `backups` (put an earlier version back), `moves SURVEY_FOLDER` (write a survey's moved boards into the layout), `check RUN_FOLDER` (the layout against the radio: each link's signal against its length, swapped numbers, a board heard much worse one way), `keep`, `path`; every version kept in `layouts/` beside it; `TW_DATA` other than ~/tw-data: that site's own |
 | `tw_map.py`, `boards-example.csv` | the board layout drawn to scale (dashboard map, maps in across.txt) |
 | `tw_lib.sh` | shared by the .sh scripts (sessions that close themselves) |
 | `ROADMAP.md` | what is planned and what is being looked into |
-| `survey.sh` | placement test: first the layout (still right? edit, earlier versions), the scene; 2 quiet minutes to check the layout against the radio (layout-check.txt); then the dashboard in placement view, marks to placement.csv; the folder keeps the layout and scene it started with |
+| `survey.sh` | placement test: first the layout (still right? edit, earlier versions), the scene; 2 quiet minutes to check the layout against the radio (layout-check.txt); then the dashboard; at each mark, which board was moved there and to which x y (moves.csv, on the map at once); `survey.sh stop` offers the moves for the layout in placement view, marks to placement.csv; the folder keeps the layout and scene it started with |
 | `watch.sh`, `watch.py` | detection mode: live radio + camera detector, kept frames, events to label |
 | `listen.py` | the listener itself: hourly gzip, flushed each minute (a power cut loses at most a minute), reconnects if the board is unplugged, refuses to write into RAM |
 | `radar_replay.py` | Espressif's esp-radar detector replayed on a recorded run, compared with watch events and labels (`radar_emu.py`, `radar_c3.elf`, `radar_c3_harness.c`, `LICENSE-esp-radar.txt` go with it) |

@@ -52,7 +52,7 @@ without sudo). Then flash the boards: [FLASH-README.md](FLASH-README.md).
 | record with the camera too | `~/tw-kit/watch.sh 07:00` (or `--nocam`) |
 | look at the boards without recording | `~/tw-kit/live.sh` (`q` quits) |
 | watch a run that is going | `~/tw-kit/dash.sh` (`g` map, `q` closes the view, the run goes on) |
-| test where to put a board | `~/tw-kit/survey.sh` (it first shows the layout and asks if it is still right, then checks it against the radio in 2 quiet minutes; then walk a board around, `m` marks a spot) |
+| test where to put a board | `~/tw-kit/survey.sh` (it first shows the layout and asks if it is still right, then checks it against the radio in 2 quiet minutes; then walk a board around, `m` marks a spot and asks if a board was moved there and to which x y; `survey.sh stop` offers to write the moves into the layout) |
 | stop a run early | `~/tw-kit/run.sh stop` (or `watch.sh stop`, `survey.sh stop`) |
 | set every board's transmit power | `~/scratch-esp/bin/python ~/tw-kit/tw_setid.py /dev/ttyACM0 power 11` (`default` = 20 dBm; nothing running on the port) |
 | relaying off / on (every board) | `~/scratch-esp/bin/python ~/tw-kit/tw_setid.py /dev/ttyACM0 relay off` (`relay on` is the default) |

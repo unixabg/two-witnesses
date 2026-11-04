@@ -5,7 +5,18 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
-- **The layout checked against the radio: `tw_layout.py check`.** With nobody
+- **Moving boards in a survey keeps the layout right.** After `m` (the spot's
+  label), the survey dashboard asks if a board was moved there: its number
+  and new x y in feet, as in boards.csv (Enter: none). The move goes to
+  moves.csv in the survey folder and the map shows the board there at once.
+  `survey.sh stop` then offers to write the moves into the layout (the last
+  position typed for each board), with the usual backups; a survey that ended
+  by itself is offered at the next `survey.sh` (or `tw_layout.py confirm`),
+  and the answer is noted in the folder (moves-done.txt) so it is asked once.
+  `tw_layout.py moves SURVEY_FOLDER` does it by hand. `replay.py` shows a
+  survey's marks and moves as notes on its timeline.
+
+ With nobody
   moving, a link's signal falls with its length, so each link's median RSSI
   is set against its length in the layout. It flags a link 8 dB or more off
   (a board in the wrong place in the file, or something solid in the path), a
