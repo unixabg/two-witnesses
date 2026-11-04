@@ -12,9 +12,13 @@
 #   ./survey.sh stop          stop early
 # First it shows the board layout and asks if it is still right (Enter = yes,
 # e = edit it, b = an earlier version; tw_layout.py): every replay of the survey
-# draws it. Then the scene, as run.sh asks it.
+# draws it. Then the scene, as run.sh asks it. Once it records, 2 quiet minutes
+# check the layout against the radio (tw_layout.py check: each link's signal
+# against its length, a swapped board number, a board heard much worse one way
+# than the other); the result goes to layout-check.txt in the folder.
 # Folder: ~/tw-data/survey/<date>_<start time>/  (csi-*.csv.gz, listen.log,
-# placement.csv, and the layout and scene it started with: boards.csv, scene.txt)
+# placement.csv, layout-check.txt, and the layout and scene it started with:
+# boards.csv, scene.txt)
 # The board on the Chromebook's cable stays put; move the others (on power
 # banks). With the old two-board images: move the sender.
 #
@@ -33,7 +37,7 @@ case "${1:-}" in
     tmux has-session -t survey 2>/dev/null || { echo "no survey is running"; exit 1; }
     tmux send-keys -t survey:0 C-c
     echo "stopping the survey"; exit 0 ;;
-  -h|--help) sed -n '4,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  -h|--help) sed -n '4,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 esac
 UNTIL=${1:-$(date -d '+2 hours' +%H:%M)}
 
@@ -85,5 +89,15 @@ fi
 echo "survey running until $UNTIL; folder $DIR"
 echo "dashboard: ~/tw-kit/dash.sh   stop: $0 stop"
 if [ -t 0 ] && [ -t 1 ]; then
+  # the layout against the radio: 2 quiet minutes, then each link's signal against its length
+  echo
+  read -r -p "Layout check: 2 minutes with nobody moving. Enter starts it, s skips: " q
+  if [ "${q:-}" != s ] && [ "${q:-}" != S ]; then
+    for left in 120 110 100 90 80 70 60 50 40 30 20 10; do printf '\r  keep still: %3d s ' "$left"; sleep 10; done
+    printf '\r  %-20s\n\n' "done"
+    "$PY" "$KIT/tw_layout.py" check "$DIR" --minutes 2 | tee "$DIR/layout-check.txt"
+    echo
+    read -r -p "(saved in $DIR/layout-check.txt) Enter opens the dashboard: " _
+  fi
   exec "$KIT/dash.sh"
 fi

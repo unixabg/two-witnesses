@@ -12,6 +12,9 @@ edit it, and keep every version.
     ~/scratch-esp/bin/python ~/tw-kit/tw_layout.py keep       keep a copy if it changed (run.sh,
                                                                survey.sh, watch.sh do this at the start)
     ~/scratch-esp/bin/python ~/tw-kit/tw_layout.py path       which file it is
+    ~/scratch-esp/bin/python ~/tw-kit/tw_layout.py check RUN_FOLDER [--minutes 2] [--at HH:MM]
+                         the layout against the radio, from a quiet stretch of a recording
+                         (survey.sh does this after its start; any run folder will do)
 
 The one file you keep up to date: the kit's private/boards.csv (git ignores
 private/). For a second site, run the kit with TW_DATA set to that site's
@@ -25,6 +28,17 @@ Every version is kept, in a folder layouts/ beside the file
 (private/layouts/boards-2026-11-03_181905.csv): before and after each edit here,
 and at the start of each run or survey when the file changed since the last
 copy (an edit with a text editor). Nothing is ever overwritten.
+
+check: with nobody moving, a link's signal falls with its length, so each link's
+median RSSI is set against its length in the layout (the level from the links
+themselves, falling 25 dB per tenfold distance, as indoors). It flags a link
+8 dB or more off what its length suggests (a board in the wrong place in the
+file, or something solid in the path), a better fit with two board numbers
+swapped, a board the others hear much better (or worse) than it hears them on
+all its paths (its receiving or sending side), loss at rest over 20%, and
+whether anything moved during the check (the numbers may then be off). It
+cannot prove a layout right: it catches the common mistakes before a night is
+recorded on a wrong map. With three boards the fit is rough (about 4 dB).
 
 The format (also tw_map.py): one row per board, and any landmarks:
     id,x_ft,y_ft,facing,label
@@ -302,8 +316,190 @@ def confirm(path):
         show(path)
 
 
+N_PATH = 2.5             # how fast the signal falls with distance indoors: -10 x n x log10(d)
+OFF_DB = 8               # a link this far from what its length suggests is flagged
+ONEWAY_DB = 6            # a link this much stronger one way than the other is flagged
+LOSS_PCT = 20            # at rest, more loss than this is flagged
+
+
+def read_quiet(folder, minutes, at=None):
+    """per direction (tx, rx): rssi values, frame numbers, and the RSSI spread, from the
+    last `minutes` of the recording (or from clock time `at`, HH:MM)"""
+    import gzip
+    import zlib
+    files = sorted(glob.glob(os.path.join(folder, "csi-*.csv.gz")))
+    if not files:
+        sys.exit(f"no recording (csi-*.csv.gz) in {folder}")
+
+    def lines(path):
+        try:
+            with gzip.open(path, "rt", errors="replace") as f:
+                yield from f
+        except (EOFError, gzip.BadGzipFile, zlib.error):
+            pass                 # still being written, or cut short: read up to there
+    t_from = None
+    if at:
+        h, m = (int(x) for x in at.split(":")[:2])
+        files_at = [f for f in files if re.search(rf"-{h:02d}(\.part\d+)?\.csv\.gz$", f)]
+        files = files_at or files
+    else:
+        files = files[-2:]        # the last minutes are in the newest file (or the one before)
+    rec = {}
+    for path in files:
+        for line in lines(path):
+            p = line.split(",", 12)
+            if len(p) < 12 or p[1] != "TWR":
+                continue
+            try:
+                t = int(p[0]) / 1e9
+                rx, tx, txseq, rssi = int(p[2]), int(p[3]), int(p[4]), int(p[10])
+            except ValueError:
+                continue
+            if at and t_from is None:
+                d = dt.datetime.fromtimestamp(t).replace(hour=h, minute=m, second=0, microsecond=0)
+                t_from = d.timestamp()
+            rec.setdefault((tx, rx), []).append((t, txseq, rssi))
+    if not rec:
+        sys.exit(f"no tw_node records in {folder}")
+    t_end = max(v[-1][0] for v in rec.values())
+    lo, hi = (t_from, t_from + minutes * 60) if t_from else (t_end - minutes * 60, t_end)
+    out = {}
+    for d, v in rec.items():
+        v = [x for x in v if lo <= x[0] < hi]
+        if len(v) < 100:
+            continue
+        rs = sorted(x[2] for x in v)
+        seqs = sorted({x[1] for x in v})
+        span = seqs[-1] - seqs[0] + 1
+        q1, q3 = rs[len(rs) // 4], rs[3 * len(rs) // 4]
+        win = {}                  # loss per 10 s: steady at rest, jumps when something moves
+        for x in v:
+            win.setdefault(int((x[0] - lo) // 10), []).append(x[1])
+        wl = [100 * (1 - len(set(s)) / (max(s) - min(s) + 1)) for s in win.values() if len(s) > 20]
+        out[d] = dict(rssi=rs[len(rs) // 2], spread=q3 - q1, n=len(v), jumpy=(max(wl) - min(wl)) if wl else 0,
+                      loss=100 * (1 - len(seqs) / span) if span > 0 else 0.0,
+                      secs=v[-1][0] - v[0][0])
+    return out, lo, hi
+
+
+def fit(links, pos):
+    """expected link RSSI from length: A - 10 n log10(d), A from the links themselves
+    (median, so one odd link does not pull it); -> {pair: (length, expected)}"""
+    import math
+    L = {}
+    for (a, b), r in links.items():
+        if a in pos and b in pos:
+            d = max(math.hypot(pos[a][0] - pos[b][0], pos[a][1] - pos[b][1]), 1.0)
+            L[(a, b)] = (d, r + 10 * N_PATH * math.log10(d))
+    if not L:
+        return {}
+    A = sorted(v[1] for v in L.values())[len(L) // 2]
+    return {k: (d, A - 10 * N_PATH * math.log10(d)) for k, (d, _) in L.items()}
+
+
+def rms(links, exp):
+    e = [links[k] - exp[k][1] for k in exp]
+    return (sum(x * x for x in e) / len(e)) ** 0.5 if e else 0.0
+
+
+def check(folder, minutes=2.0, at=None):
+    """the layout against the radio, from a quiet stretch of a recording; -> the report lines"""
+    import itertools
+    folder = os.path.abspath(os.path.expanduser(folder))
+    lay = os.path.join(folder, "boards.csv")
+    if not os.path.exists(lay):
+        lay = tw_map.layout_file()
+    _, rows = read(lay)
+    pos = {int(r["id"]): (r["x"], r["y"]) for r in rows if r["id"].isdigit()}
+    dirs, lo, hi = read_quiet(folder, minutes, at)
+    out = [f"Layout check: {lay}",
+           f"recording {dt.datetime.fromtimestamp(lo):%H:%M:%S}-{dt.datetime.fromtimestamp(hi):%H:%M:%S} in {folder}",
+           f"(each link's signal against its length in the layout; expected = the links' own level, "
+           f"falling {10 * N_PATH:g} dB per tenfold distance)", ""]
+    moved = [f"{a}->{b}" for (a, b), v in sorted(dirs.items()) if v["spread"] >= 3 or v["jumpy"] >= 15]
+    pairs = sorted({tuple(sorted(d)) for d in dirs})
+    links = {}
+    for a, b in pairs:
+        r = [dirs[d]["rssi"] for d in ((a, b), (b, a)) if d in dirs]
+        links[(a, b)] = sum(r) / len(r)
+    exp = fit(links, pos)
+    out.append("link    length  RSSI a->b  b->a   expected  off by   loss a->b  b->a")
+    flags = []
+    for a, b in pairs:
+        ab, ba = dirs.get((a, b)), dirs.get((b, a))
+        fmt = lambda v, k: f"{v[k]:5.0f}" if v else "    -"
+        if (a, b) in exp:
+            d, e = exp[(a, b)]
+            off = links[(a, b)] - e
+            out.append(f"{a}-{b}   {d:6.1f} ft  {fmt(ab, 'rssi')}  {fmt(ba, 'rssi')}   {e:6.0f}   {off:+5.0f} dB"
+                       f"   {fmt(ab, 'loss')}% {fmt(ba, 'loss')}%")
+            if abs(off) >= OFF_DB:
+                flags.append(f"link {a}-{b} is {abs(off):.0f} dB {'stronger' if off > 0 else 'weaker'} than its "
+                             f"length ({d:.0f} ft) suggests: check where boards {a} and {b} are in the layout "
+                             f"(or something solid stands in this path)")
+        else:
+            out.append(f"{a}-{b}   (a board missing from the layout)  {fmt(ab, 'rssi')}  {fmt(ba, 'rssi')}")
+            flags.append(f"boards {a} and {b} talk, but {'they are' if a not in pos and b not in pos else 'one is'} "
+                         f"not in the layout")
+        for d, v in ((a, b), ab), ((b, a), ba):
+            if v and v["loss"] >= LOSS_PCT and not moved:
+                flags.append(f"{d[0]}->{d[1]} loses {v['loss']:.0f}% of frames at rest")
+    # one way stronger than the other: said once per board when all its paths agree
+    diff = {}                     # (a, b): how much better a is heard by b than a hears b
+    for a, b in pairs:
+        if (a, b) in dirs and (b, a) in dirs:
+            diff[(a, b)] = dirs[(a, b)]["rssi"] - dirs[(b, a)]["rssi"]
+            diff[(b, a)] = -diff[(a, b)]
+    told = set()
+    for x in sorted({b for d in diff for b in d}):
+        mine = [diff[d] for d in diff if d[0] == x]
+        if len(mine) >= 2 and (all(m >= ONEWAY_DB * .75 for m in mine) or all(m <= -ONEWAY_DB * .75 for m in mine)):
+            m = sum(mine) / len(mine)
+            side = ("its receiving side: its antenna, or noise from a computer or charger near it"
+                    if m > 0 else "its sending side: its antenna, power setting or mounting")
+            flags.append(f"board {x}: on all its {len(mine)} paths the others hear it about {abs(m):.0f} dB "
+                         f"{'better' if m > 0 else 'worse'} than it hears them: {side}")
+            told |= {tuple(sorted(d)) for d in diff if x in d}
+    for a, b in pairs:
+        if (a, b) in diff and (a, b) not in told and abs(diff[(a, b)]) >= ONEWAY_DB:
+            weak = (a, b) if diff[(a, b)] < 0 else (b, a)
+            flags.append(f"link {a}-{b}: {weak[0]}->{weak[1]} is {abs(diff[(a, b)]):.0f} dB weaker than "
+                         f"{weak[1]}->{weak[0]} (one board's antenna, power or mounting)")
+    # a board number swapped in the file: does another assignment fit much better?
+    ids = sorted(pos)
+    if 3 <= len(ids) <= 7 and len(exp) >= 3:
+        base = rms(links, exp)
+        best = None
+        for perm in itertools.permutations(ids):
+            if perm == tuple(ids):
+                continue
+            p2 = {i: pos[j] for i, j in zip(ids, perm)}
+            r = rms(links, fit(links, p2))
+            if best is None or r < best[0]:
+                best = (r, perm)
+        if best and base >= 5 and best[0] < 0.6 * base and base - best[0] >= 3:
+            sw = [f"{i} where the layout has {j}" for i, j in zip(ids, best[1]) if i != j]
+            flags.append(f"the signals fit much better ({best[0]:.0f} dB off instead of {base:.0f}) with board "
+                         + ", ".join(sw) + ": are those numbers swapped in the layout?")
+    out.append("")
+    if moved:
+        out.append("note: the signal moved during the check on " + ", ".join(moved)
+                   + " (someone or something moving?); the numbers above may be off")
+    out += (["looks right: every link's signal fits its length"] if not flags else ["to check:"] + ["  " + f for f in flags])
+    return out
+
+
 def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else "show"
+    if cmd == "check":
+        import argparse
+        ap = argparse.ArgumentParser(prog="tw_layout.py check")
+        ap.add_argument("cmd"); ap.add_argument("folder")
+        ap.add_argument("--minutes", type=float, default=2.0, help="how long a quiet stretch (default 2)")
+        ap.add_argument("--at", help="HH:MM: from this clock time (default: the last minutes recorded)")
+        a = ap.parse_args()
+        print("\n".join(check(a.folder, a.minutes, a.at)))
+        return
     path = tw_map.layout_file()
     if cmd == "path":
         print(path)

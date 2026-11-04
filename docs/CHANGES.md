@@ -5,7 +5,25 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
-- **One layout to keep, every version kept: `tw_layout.py`.** The layout is
+- **The layout checked against the radio: `tw_layout.py check`.** With nobody
+  moving, a link's signal falls with its length, so each link's median RSSI
+  is set against its length in the layout. It flags a link 8 dB or more off
+  (a board in the wrong place in the file, or something solid in the path), a
+  much better fit with two board numbers swapped, a board the others hear
+  much better (or worse) than it hears them on all its paths, loss at rest,
+  and anything moving during the check. `survey.sh` runs it on 2 quiet
+  minutes once it records (layout-check.txt in the folder); it works on any
+  run folder (`--at HH:MM --minutes 10`).
+  Desk tests on a real night (3 boards): on a quiet stretch every link fits
+  its length within 6 dB, and 2 minutes say what 10 do; with two boards'
+  positions swapped in a copy of the layout it names the swap; during
+  movement it says so instead of reporting loss at rest. It found one thing
+  on the real layout: the cabled board hears the other two about 6 dB worse
+  than they hear it, on both its paths: its receiving side (possibly noise
+  from the computer on its cable), where a 31 s rhythm on that board's
+  receiving side had been seen before.
+
+ The layout is
   what every map, report and replay is drawn on, so it now has a tool of its
   own: `tw_layout.py` shows it (to scale, with a table), `edit` changes it
   value by value (Enter keeps each value; feet from one reference point you
