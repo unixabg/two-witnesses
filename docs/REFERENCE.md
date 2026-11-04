@@ -70,6 +70,32 @@ Board 1 not hearing board 2 at all: 93% got home (the relay sends each once).
 The relay switched off for 15 s mid-run: relaying stopped and resumed within a
 second. Path loss on the blocked direction is unchanged: it still shows.
 
+**Six boards, more cases (simulator, 2026-11-04;** 120 s, 3% random loss
+everywhere, seed 7): each board's reports that reached the computer.
+
+| case | reports home | airtime |
+|---|---|---|
+| 3 boards, healthy | 99.9% each | 9% |
+| 6 boards, healthy | 97.6-97.8% each | 26% |
+| 6: board 1 misses 75% of board 2 for 80 s, relay off / on | board 2: 51.5% / 96.2% (49% via relays) | 26% |
+| 6: board 1 hears nothing of board 2 for 80 s, relay on | board 2: 93.7% (65% via relays) | 25% |
+| 6: boards 2 and 3 both 75% shadowed from board 1, relay off | 51% / 52% | 26% |
+| same, relay on | board 2: 83%, board 3: 53% | 26% |
+| 6: board 1 misses 25% of every board | 73-75% for every board | 24% |
+| 6: board 1 misses 40% of every board | 59-64% | 26% |
+| same 40%, board 4 cabled instead | 97.4-97.7% everywhere | 26% |
+
+Why: a frame carries at most 1400 bytes, which is 6 full records (28-byte
+header + 192 amplitudes). With 6 boards each frame brings 5 new records of its
+own, so one place is left for second copies and relayed records. Hence 97.6%
+rather than 99.9% when healthy (most second copies no longer fit), one
+stranded board recovered (96%) but two at once only partly (83% and 53%: the
+relays have one place each per frame), and a cabled board that hears everyone
+somewhat badly (above the 70% that counts as stranded) costs every board what
+it misses, with nothing to carry it. The fix that needs no code: cable the
+board that hears all the others best (the survey's layout check and the
+dashboard's `heard N%` show which). Room for more: ROADMAP.
+
 ## How the view judges
 
 - **Movement**: each 10 s, how much the CSI amplitude wobbles (sd / mean per

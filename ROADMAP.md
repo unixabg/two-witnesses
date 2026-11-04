@@ -14,9 +14,15 @@ so boards are reflashed as rarely as possible.
   so the layout file can be checked and a moved board noticed; a nightly
   survey compared with a stored one. Needs a test first: that switching a
   board's radio to answer and back leaves the readings as they were.
-- At 5-6 boards the second copy of each record stops fitting in the frames
-  (simulator: 98% / 96% of records delivered); switch to compact records
-  earlier, or use larger frames.
+- **Room in the frames at 6 boards** (simulator: docs/REFERENCE.md, relaying):
+  a frame holds 6 full records and brings 5 new ones of its own, so second
+  copies mostly stop fitting (97.6% delivered instead of 99.9%) and relaying
+  can carry one stranded board but not two at once (83% and 53%). Proposal to
+  design and simulate first: a board sends a second frame in its own slot
+  when records are waiting (relayed ones, second copies); a slot is 3 ms and a
+  full frame takes under 1 ms, so the air has room (airtime would rise from
+  26% to at most about 50%). Alternatives: compact records sooner (loses the
+  HT-LTF part the views use), fewer bits per amplitude (coarser notches).
 - Irregular send timing, so fast rhythms (motors, fans) show at their true
   rates instead of folded down; keep the phase as well as the strength.
 
