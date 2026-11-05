@@ -51,9 +51,9 @@ Events: seconds where a direction passes its threshold (the 99.9th percentile
 of its quietest hour, but no more than its median + 20 x its usual spread,
 and at least 1.3), merged across gaps of up to 15 s, kept
 when 2 s or longer or one second at 1.5x the threshold.
-Watch runs (watch.sh): the camera's events (detect/events.csv, with the label
-and note you give them) are marked on the timeline and listed with the lasting
-changes, events the camera kept frames for are tagged "camera", and a camera
+Watch runs (watch.sh): the watch's events (detect/events.csv, radio or camera,
+with the label and note you give them) are marked on the timeline as "watch:"
+and listed with the lasting changes, events the camera kept frames for are tagged "camera", and a camera
 panel shows the frame of the second under the cursor (the camera keeps one a
 second, around its events). The frames are linked, not copied: the page shows
 them while it sits in its watch folder. To look at it from another computer,
@@ -920,7 +920,7 @@ kbd { font: 11px ui-monospace, monospace; border: 1px solid var(--axis); border-
   </div>
 </div>
 <div class="notes">
-  <p><b>What this shows:</b> which links were disturbed, when, and how much. It cannot place a person: a lit link means something moved in or near that path, or (with no shape change) somewhere its signal reflects through. Orange marks on the timeline are lasting changes (a link&rsquo;s shape stepped and stayed: something parked, moved or opened); black marks are your notes; violet marks are the camera&rsquo;s events (watch runs), with your label.</p>
+  <p><b>What this shows:</b> which links were disturbed, when, and how much. It cannot place a person: a lit link means something moved in or near that path, or (with no shape change) somewhere its signal reflects through. Orange marks on the timeline are lasting changes (a link&rsquo;s shape stepped and stayed: something parked, moved or opened); black marks are your notes; violet marks are the watch&rsquo;s events (watch runs, with or without the camera), with your label.</p>
   <details class="about"><summary><b>About this recording</b>: the instrument as the boards reported it</summary><table id="abouttbl"></table></details>
   <p><kbd>space</kbd> play/pause &middot; <kbd>&larr;</kbd><kbd>&rarr;</kbd> &plusmn;1 s (shift &plusmn;1 min) &middot; <kbd>n</kbd><kbd>p</kbd> next/previous event &middot; click or drag the timeline to jump.</p>
 </div>
@@ -1102,7 +1102,7 @@ ITEMS.forEach(e => {                     // events the camera kept frames for
 const marklist = document.getElementById("marklist");
 const mk2 = D.steps.map(s => ({ i: s.i, kind: "change", text: "link " + stepText(s, false) }))
   .concat(D.notes.map(n => ({ i: n.i, kind: "note", text: n.label })))
-  .concat(CAM.events.map(c => ({ i: c.i, kind: "cam", text: "camera: " + (c.label || c.kind) + (c.note ? " (" + c.note + ")" : "") })))
+  .concat(CAM.events.map(c => ({ i: c.i, kind: "cam", text: "watch: " + (c.label || c.kind) + (c.note ? " (" + c.note + ")" : "") })))
   .sort((a, b) => a.i - b.i);
 mk2.forEach(m => {
   const div = document.createElement("div"); div.className = "ev";

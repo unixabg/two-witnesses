@@ -5,6 +5,11 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **`replay.py`: the watch's events say "watch:", not "camera:".** A watch
+  run started without the camera (`--nocam`) still has events (radio only),
+  and they showed as "camera: radio only". They now read "watch: person",
+  "watch: radio only", accurate with or without a camera.
+
 - **`replay.py` on watch runs: the camera beside the radio.** A watch run's
   camera events (detect/events.csv, with your label and note) are marked on
   the timeline in their own color and listed with the lasting changes; events
