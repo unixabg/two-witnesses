@@ -5,6 +5,29 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **`replay.py`: a link's quiet level is learned again after a lasting change.**
+  A link's change (how much its shape fluctuates within a second) was measured
+  against its quiet level over the whole run. A parked car can leave a link
+  more restless (or steadier) for good: on a real run, two directions sat at
+  3-4x their threshold from the moment a car parked to the end of the run, one
+  dark band and one long stretch, and no new event could start on them. Their
+  thresholds also came from a mix of both scenes, so they fit neither. Now the
+  run is split into scenes at each link's lasting changes: a link keeps the
+  quiet level of the scene before for `--settle` minutes (+1) after the change,
+  so the change shows as long as the orange mark does, then its quiet level is
+  the new scene's own median. Only a lasting change does this: someone working
+  in the garage for half an hour stays loud. A scene under a minute long after
+  settling keeps the one before. "About this recording" lists when each link's
+  quiet level was learned again, and the terminal prints it under the lasting
+  changes. A run without lasting changes comes out as before (desk test: page
+  data identical but for "About").
+  Desk test (synthetic, `tests/gen_run.py` with a car on link 2-3 at 08:30 and
+  someone walking through at 08:55): before, 2->3 read 0.65x quiet before the
+  car and 1.1x after (the median sat between the scenes), its threshold was
+  6.8, and the walk came out as 20 of its 30 s; now 1.00x before, 1.9x for the
+  16 minutes after the car, relearned at 08:46:00, 1.00x after, the walk 30 s
+  in full.
+
 - **`replay.py`: the watch's events say "watch:", not "camera:".** A watch
   run started without the camera (`--nocam`) still has events (radio only),
   and they showed as "camera: radio only". They now read "watch: person",

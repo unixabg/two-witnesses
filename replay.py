@@ -40,7 +40,12 @@ keep it as private as the run itself.
 Per second and per direction of every link (from the records' amplitudes, in
 bands of 4 subcarriers, after taking out each record's overall level):
   change  how much the link's shape fluctuated within the second, in times its
-          quiet level (each band's median over the run); 1 = quiet
+          quiet level (each band's median over the scene); 1 = quiet. The scene
+          is the whole run until the link has a lasting change (below): a parked
+          car can leave a link steadier or more restless for good. Then its
+          quiet level is learned again from the new scene, at the same time
+          the shape mark clears (--settle, +1 minute); until then the change
+          shows. "About this recording" lists when it happened.
   loss    share of the sender's frames that left no record that second
   shape   how far the link's average shape that second is from its usual
           lately (the median of the 30 minutes before, ending a minute
@@ -203,7 +208,7 @@ def instrument(inst, p, t_from, t_to):
         pass
 
 
-def describe(inst, epoch, settle, thr, names, layout, own):
+def describe(inst, epoch, settle, thr, names, layout, own, relearned=()):
     """-> (one line for the title, rows for "About this recording", notes for power changes)"""
     dbm = lambda q: q / 4 if q else 20.0           # 0 = never set: full power
     per, changes = {}, []
@@ -246,7 +251,9 @@ def describe(inst, epoch, settle, thr, names, layout, own):
         ("channel", bw or "not reported"),
         ("layout", os.path.basename(layout) + (" kept in the run folder" if own else " as it is now (none in the run folder)")),
         ("thresholds", ", ".join(f"{n} {x:.2f}" for n, x in zip(names, thr))),
-        ("shape settles after", f"{settle:g} min"),
+        ("shape and quiet settle after", f"{settle:g} min"),
+        ("quiet relearned", ", ".join(f"link {link} at {dt.datetime.fromtimestamp(int(epoch[i])):%H:%M:%S}"
+                                      for i, link in relearned) or "none (after a lasting change, once it has settled)"),
         ("made by", f"replay.py, kit {kit}, {dt.datetime.now():%Y-%m-%d %H:%M}"),
     ]
     notes = [(s, f"board {b} power {a:g} -> {c:g} dBm") for s, b, a, c in changes]
@@ -374,23 +381,61 @@ def recent_usual(mean, ok, epoch, settle):
     return base
 
 
+def usable(o):
+    """the seconds of a direction with enough records to use"""
+    ok = o["n"] >= MIN_REC
+    if ok.sum() < 60:
+        ok = o["n"] >= max(5, np.percentile(o["n"], 50) * 0.6)
+    return ok
+
+
 def measures(dirs, out, epoch, settle):
-    size, loss, shape, rssi = {}, {}, {}, {}
+    loss, shape, rssi = {}, {}, {}
     for d in dirs:
         o = out[d]
-        ok = o["n"] >= MIN_REC
-        if ok.sum() < 60:
-            ok = o["n"] >= max(5, np.percentile(o["n"], 50) * 0.6)
-        ref = np.median(o["std"][ok], axis=0) if ok.any() else np.ones(o["std"].shape[1])
-        s = (o["std"] / np.maximum(ref, 1e-3)).mean(axis=1)
+        ok = usable(o)
         base = recent_usual(o["mean"], ok, epoch, settle)
         sh = np.sqrt(((o["mean"] - base) ** 2).mean(axis=1))
         expect = max(np.percentile(o["n"], 95), 1)
-        size[d] = np.where(ok, s, np.nan)
         shape[d] = np.where(ok, sh, np.nan)
         loss[d] = np.clip(1 - o["n"] / expect, 0, 1) * 100
         rssi[d] = np.where(o["n"] > 0, o["r"], np.nan)
-    return size, loss, shape, rssi
+    return loss, shape, rssi
+
+
+def loudness(dirs, out, epoch, settle, steps):
+    """per second and direction, how much the shape fluctuated within the second, in times
+    its quiet level: each band's median over the scene. The run is split into scenes at
+    the link's lasting changes (find_steps); the seconds after a change keep the scene
+    before's quiet level until the change counts as usual (`settle` + 1 minute after it,
+    as the shape mark), then the new scene's own median takes over. A scene too short to
+    learn from (under a minute of usable seconds after that) keeps the one before.
+    -> (size, [(index, link) where a link's quiet level was relearned])"""
+    lag = 60
+    size, relearned = {}, set()
+    for d in dirs:
+        o = out[d]
+        ok, std = usable(o), o["std"]
+        flat = np.ones(std.shape[1], np.float32)
+        whole = np.median(std[ok], axis=0) if ok.any() else flat
+        link = f"{min(d)}-{max(d)}"
+        cuts = sorted({s["i"] for s in steps if s["link"] == link})
+        bounds = [0] + cuts + [len(epoch)]
+        ref = np.empty_like(std)
+        prev = None
+        for k in range(len(bounds) - 1):
+            a, b = bounds[k], bounds[k + 1]
+            learn = a if k == 0 else min(b, int(np.searchsorted(epoch, epoch[a] + lag + settle)))
+            w = np.flatnonzero(ok[learn:b]) + learn
+            r = np.median(std[w], axis=0) if len(w) >= 60 else (prev if prev is not None else whole)
+            ref[a:learn] = prev if prev is not None else whole
+            ref[learn:b] = r
+            if k > 0 and len(w) >= 60:
+                relearned.add((learn, link))
+            prev = r
+        s = (std / np.maximum(ref, 1e-3)).mean(axis=1)
+        size[d] = np.where(ok, s, np.nan)
+    return size, sorted(relearned)
 
 
 def find_events(dirs, epoch, size):
@@ -683,9 +728,10 @@ def main():
     print(f"reading {folder}" + (f" from {a.t_from}" if a.t_from else "") + (f" to {a.t_to}" if a.t_to else ""), file=sys.stderr)
     acc, total, dup, _ = read_run(folder, t_from, t_to)
     dirs, epoch, segs, out = assemble(acc)
-    size, loss, shape, rssi = measures(dirs, out, epoch, a.settle * 60)
-    events, thr = find_events(dirs, epoch, size)
+    loss, shape, rssi = measures(dirs, out, epoch, a.settle * 60)
     steps = find_steps(dirs, epoch, out, rssi)
+    size, relearned = loudness(dirs, out, epoch, a.settle * 60, steps)
+    events, thr = find_events(dirs, epoch, size)
     near, one = board_marks(dirs, size, thr)
     for e in events:                    # an event mostly near one board says so
         seg = near[e["i"]:e["j"] + 1]
@@ -695,7 +741,7 @@ def main():
     find_peaks(dirs, epoch, size, loss, events, near)
     cam_events, cam_frames = read_camera(folder, epoch)
     names = [f"{tx}-{rx}" for tx, rx in dirs]
-    power, about, power_notes = describe(acc.inst, epoch, a.settle, thr, names, layout, own)
+    power, about, power_notes = describe(acc.inst, epoch, a.settle, thr, names, layout, own, relearned)
 
     notes = []
     for s in a.note:
@@ -786,6 +832,8 @@ def main():
           + "; lasting changes:" + ("" if steps else " none"))
     for s in steps:
         print(f"  {loc(epoch[s['i']]):%H:%M:%S}  link {s['link']}: shape {s['db']} dB, RSSI {s['rssi']:+.1f} dB")
+    for i, link in relearned:
+        print(f"  {loc(epoch[i]):%H:%M:%S}  link {link}: quiet level relearned from the new scene")
 
 
 PAGE = r"""<!doctype html>
@@ -900,7 +948,7 @@ kbd { font: 11px ui-monospace, monospace; border: 1px solid var(--axis); border-
       <div class="seg" role="group" aria-label="Map view"><button id="vWaves" type="button">Waves</button><button id="vLines" type="button">Lines</button></div></div>
     <svg id="map" role="img" aria-label="The boards and their links, to scale"></svg>
     <div class="legend">
-      <span><span class="ramp"></span>&nbsp; change: quiet &rarr; 6&times; its quiet level or more</span>
+      <span><span class="ramp"></span>&nbsp; change: quiet &rarr; 6&times; its quiet level or more (learned again __SETTLE__ min after a link&rsquo;s lasting change)</span>
       <span><svg width="26" height="8"><line x1="1" y1="4" x2="25" y2="4" stroke="var(--shape)" stroke-width="3" stroke-dasharray="4 3"/></svg> shape moved &ge;1.5 dB from its recent usual (something standing or parked differently; clears once it has stayed __SETTLE__ min)</span>
       <span><svg width="26" height="8"><line x1="1" y1="4" x2="25" y2="4" stroke="var(--muted)" stroke-width="3" stroke-dasharray="1 3" stroke-linecap="round"/></svg> no data that second (frames lost)</span>
       <span><svg width="26" height="14"><circle cx="13" cy="7" r="5.5" fill="none" stroke="var(--s3)" stroke-width="2"/><circle cx="13" cy="7" r="2" fill="var(--ink)"/></svg> rings around a board: everything lit touches that board and the path away from it is quiet: something near it, on any side (behind it too)</span>
