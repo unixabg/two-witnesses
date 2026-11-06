@@ -180,17 +180,18 @@ void tw_note_frame(tw_node_t *n, const tw_hdr_t *h, uint32_t rx_local)
     n->n_rx_frames++;
     uint8_t s = h->src;
     if (h->flags & TW_F_EXTRA) {
-        /* an extra frame: its records are used (by the caller), nothing else here. How long after
-           the sender's normal frame (same number) it arrived: no clock comes into it */
+        /* an extra frame: its records are used (by the caller), nothing else here. Counted when it
+           follows its own normal frame (same number), with the time between them: no clock
+           comes into it */
         if (n->heard[s] && n->hear_seq[s] == h->seq) {
             uint32_t gap = rx_local - n->heard_us[s];
             int16_t g = (int16_t)(gap > 32767u ? 32767 : gap);
             if (g > n->c_xgap[s]) {
                 n->c_xgap[s] = g;
             }
-        }
-        if (n->c_xheard[s] < 0xffff) {
-            n->c_xheard[s]++;
+            if (n->c_xheard[s] < 0xffff) {
+                n->c_xheard[s]++;
+            }
         }
         return;
     }
@@ -698,7 +699,8 @@ const tw_rec_t *tw_add_measurement(tw_node_t *n, uint32_t now, uint8_t tx, uint3
                                    int compact)
 {
     if (kflags & TW_KIND_EXTRA) {               /* measured from an extra frame */
-        if (valid_id(tx) && n->c_xcsi[tx] < 0xffff) {
+        /* counted, like c_xheard, when it follows its own normal frame */
+        if (valid_id(tx) && n->heard[tx] && n->hear_seq[tx] == txseq && n->c_xcsi[tx] < 0xffff) {
             n->c_xcsi[tx]++;
         }
         if (!(n->set_flags & TW_SET_MEASURE_EXTRA)) {

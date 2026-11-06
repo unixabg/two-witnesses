@@ -192,8 +192,8 @@ typedef struct {
     /* about each board heard, since tw_clear_counts (the firmware: once a second, after TWN) */
     uint16_t c_frames[TW_MAX_NODES + 1];    /* its normal frames heard */
     uint16_t c_xnext[TW_MAX_NODES + 1];     /* ... of them announcing an extra frame */
-    uint16_t c_xheard[TW_MAX_NODES + 1];    /* its extra frames heard */
-    uint16_t c_xcsi[TW_MAX_NODES + 1];      /* CSI measurements the radio gave on its extra frames */
+    uint16_t c_xheard[TW_MAX_NODES + 1];    /* its extra frames heard right after their normal frame */
+    uint16_t c_xcsi[TW_MAX_NODES + 1];      /* CSI the radio gave on them (after their normal frame) */
     int16_t  c_xgap[TW_MAX_NODES + 1];      /* longest time from its normal frame to its extra frame, here */
     uint8_t  c_xend_q[TW_MAX_NODES + 1];    /* what it last said about its own extra frame's end */
     uint16_t c_rxerr[TW_MAX_NODES + 1];     /* this board's records of it flagged TW_KIND_RXERR */
