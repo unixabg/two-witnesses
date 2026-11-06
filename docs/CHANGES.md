@@ -5,6 +5,20 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **Firmware (tw_node 2.1, with the second frame below): the radio's error flag
+  is kept.** A CSI measurement whose receive info says `rx_state != 0` (the
+  radio reports the frame as received with an error; Espressif does not
+  document the numbers) was recorded like any other. Now its record carries a
+  flag (`kind` bit 0x40; the record format is unchanged and older tools ignore
+  the bit), nothing is dropped. `split_links.py` writes it into the CSI_DATA
+  line's `rx_state` field (0 or 1) and lists flagged records per link in
+  `links/summary.txt`; the cabled board's TWF line counts them (`rx_err=`).
+  Idea from ESPectre, which drops such frames. Whether to leave them out of the
+  measures is for later, once a night shows what they line up with (the
+  one-direction blips on link 1-3? board 1's weaker receiving side?).
+  Simulator: `--rxerr P` flags a share of measurements; desk test: 327 flagged
+  in 60 s, all 327 counted on their links.
+
 - **`replay.py`: a link's quiet level is learned again after a lasting change.**
   A link's change (how much its shape fluctuates within a second) was measured
   against its quiet level over the whole run. A parked car can leave a link

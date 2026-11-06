@@ -70,6 +70,9 @@
 #define TW_KIND_FULL        0           /* amplitude of every bin of the CSI buffer */
 #define TW_KIND_LLTF        1           /* amplitude of the 52 L-LTF subcarriers */
 #define TW_KIND_FWI         0x80        /* flag: first_word_invalid (first 4 bytes bad) */
+#define TW_KIND_RXERR       0x40        /* flag: the radio reported this frame received with an error
+                                           (rx_state != 0; the numbers are not documented). Kept, only
+                                           marked: the computer decides what to do with it */
 
 /* frame header flags */
 #define TW_F_SYNCED         0x01        /* sender follows a leader's clock (or is the leader) */
@@ -171,10 +174,11 @@ typedef void (*tw_rec_cb)(void *ctx, const tw_rec_t *r);
 int      tw_parse_frame(const uint8_t *buf, int len, tw_hdr_t *h, tw_rec_cb cb, void *ctx);
 /* peek at the header only (for the CSI callback: who sent it, which frame) */
 int      tw_peek_header(const uint8_t *buf, int len, tw_hdr_t *h);
-/* make a record from one CSI measurement and queue it (returns it, for printing) */
+/* make a record from one CSI measurement and queue it (returns it, for printing). kflags: the
+   record flags the radio gave (TW_KIND_FWI, TW_KIND_RXERR) */
 const tw_rec_t *tw_add_measurement(tw_node_t *n, uint32_t now_local_us, uint8_t tx, uint32_t txseq,
                                    uint32_t rx_us, int8_t rssi, int8_t noise, uint8_t agc, int8_t fft,
-                                   uint8_t phy, uint8_t fwi, const int8_t *csi, int csi_len, float gain,
+                                   uint8_t phy, uint8_t kflags, const int8_t *csi, int csi_len, float gain,
                                    int compact);
 /* 1 if (rx, boot, recseq) was already seen (and marks it seen otherwise) */
 int      tw_seen(tw_node_t *n, uint8_t rx, uint8_t boot, uint32_t recseq);

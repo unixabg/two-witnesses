@@ -78,8 +78,9 @@ def csi_line(host_ns, r):
     ts = r["rx_us"] - (1 << 32) if r["rx_us"] >= (1 << 31) else r["rx_us"]      # signed, as the board prints
     data = ",".join(map(amp_text(r["step"]).__getitem__, r["q"]))
     fwi = 1 if r["kind"] & 0x80 else 0
+    rx_err = 1 if r["kind"] & 0x40 else 0       # tw_node 2.1+: the radio flagged the frame (rx_state != 0)
     return (f"{host_ns},CSI_DATA,{r['txseq']},1a:00:00:00:00:{r['tx']:02x},{r['rssi']},11,{sig},0,{cwb},0,0,0,"
-            f"{stbc},0,0,{r['noise']},0,11,{sec},{ts},0,0,0,{2 * r['n']},{fwi},\"[{data}]\"\n")
+            f"{stbc},0,0,{r['noise']},0,11,{sec},{ts},0,0,{rx_err},{2 * r['n']},{fwi},\"[{data}]\"\n")
 
 
 class Splitter:
@@ -92,6 +93,7 @@ class Splitter:
         self.boot_index = {}                            # (rx, boot) -> order the boots were seen
         self.seen = set()
         self.relayed = collections.Counter()           # link -> records that came home through a relay
+        self.rx_err = collections.Counter()            # link -> records the radio flagged (rx_state != 0)
         self.boards = {}
         self.dups = self.bad = 0
         self.hour_span = (0, 0, "")
@@ -150,6 +152,8 @@ class Splitter:
             fh.write(f"# name=csi-{hour} link={link} (board {r['rx']} measuring board {r['tx']}) "
                      f"split from {os.path.abspath(self.folder)}\n")
         fh.write(csi_line(host_ns, r))
+        if r["kind"] & 0x40:
+            self.rx_err[link] += 1
         s = self.stats[link]
         s["n"] += 1
         s["first"] = host_ns if s["first"] is None else s["first"]
@@ -319,6 +323,12 @@ class Splitter:
             for link in sorted(self.relayed, key=lambda k: [int(x) for x in k.split("-")]):
                 n = self.stats[link]["n"] if link in self.stats else 0
                 L.append(f"  {link:>6}  {self.relayed[link]:9,d}  ({100 * self.relayed[link] / max(n, 1):.1f}% of its records)")
+        if self.rx_err:
+            L += ["", "flagged by the measuring board's radio as received with an error (rx_state; kept, "
+                  "and marked in the CSI_DATA line's rx_state field):"]
+            for link in sorted(self.rx_err, key=lambda k: [int(x) for x in k.split("-")]):
+                n = self.stats[link]["n"] if link in self.stats else 0
+                L.append(f"  {link:>6}  {self.rx_err[link]:9,d}  ({100 * self.rx_err[link] / max(n, 1):.2f}% of its records)")
         L += ["", "missing = frames of the sender with no report here. path = the measuring board did not",
               "hear them (sensing: something in the way shows here); delivery = it heard them, but its",
               "report never reached the computer (plumbing: the measuring board's path to the cabled one).",

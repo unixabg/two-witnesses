@@ -535,9 +535,10 @@ int tw_lltf_ranges(uint8_t secondary, uint8_t sig_mode, uint8_t cwb, uint8_t stb
 
 const tw_rec_t *tw_add_measurement(tw_node_t *n, uint32_t now, uint8_t tx, uint32_t txseq,
                                    uint32_t rx_us, int8_t rssi, int8_t noise, uint8_t agc, int8_t fft,
-                                   uint8_t phy, uint8_t fwi, const int8_t *csi, int csi_len, float gain,
+                                   uint8_t phy, uint8_t kflags, const int8_t *csi, int csi_len, float gain,
                                    int compact)
 {
+    int fwi = (kflags & TW_KIND_FWI) != 0;
     float amp[TW_MAX_AMPS];
     int cnt = 0;
     int ranges[4];
@@ -597,7 +598,7 @@ const tw_rec_t *tw_add_measurement(tw_node_t *n, uint32_t now, uint8_t tx, uint3
         step = 255;
     }
     r->rx = n->id; r->tx = tx; r->hop = 0; r->boot = n->boot;
-    r->kind = (uint8_t)((compact ? TW_KIND_LLTF : TW_KIND_FULL) | (fwi ? TW_KIND_FWI : 0));
+    r->kind = (uint8_t)((compact ? TW_KIND_LLTF : TW_KIND_FULL) | (kflags & (TW_KIND_FWI | TW_KIND_RXERR)));
     r->recseq = ++n->recseq;
     r->txseq = txseq;
     r->rx_us = rx_us;

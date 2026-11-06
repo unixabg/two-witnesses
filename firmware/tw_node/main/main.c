@@ -82,7 +82,7 @@ typedef struct {
     uint32_t  local_us;
     union {
         struct {
-            uint8_t  src, fwi, agc, phy;
+            uint8_t  src, kflags, agc, phy;     /* kflags: TW_KIND_FWI, TW_KIND_RXERR */
             int8_t   rssi, noise, fft;
             uint32_t seq, rx_us;
             uint16_t len;
@@ -101,7 +101,7 @@ static QueueHandle_t s_q;
 static uint8_t s_id;
 static uint8_t s_fake_mac[6] = {0x1a, 0x00, 0x00, 0x00, 0x00, 0x00};
 static int s_max_payload = TW_MAX_PAYLOAD;
-static uint32_t s_usb_drops, s_q_full, s_send_err, s_csi_count;
+static uint32_t s_usb_drops, s_q_full, s_send_err, s_csi_count, s_rx_err;
 static tw_hdr_t s_last_hdr[TW_MAX_NODES + 1];
 static int8_t s_last_rssi[TW_MAX_NODES + 1];
 
@@ -271,12 +271,12 @@ static void csi_cb(void *ctx, wifi_csi_info_t *info)
         return;
     }
     const wifi_pkt_rx_ctrl_t *rx = &info->rx_ctrl;
-    static ev_t ev;
+    static ev_t ev;                     /* the Wi-Fi task calls us one at a time */
     ev.kind = EV_CSI;
     ev.local_us = (uint32_t)esp_timer_get_time();
     ev.c.src = h.src;
     ev.c.seq = h.seq;
-    ev.c.fwi = info->first_word_invalid;
+    ev.c.kflags = (uint8_t)((info->first_word_invalid ? TW_KIND_FWI : 0) | (rx->rx_state ? TW_KIND_RXERR : 0));
     ev.c.rssi = rx->rssi;
     ev.c.noise = rx->noise_floor;
     ev.c.rx_us = rx->timestamp;
@@ -361,7 +361,10 @@ static void handle(ev_t *ev)
     int compact = __builtin_popcount(tw_active(&s_node, ev->local_us)) > TW_FULL_MAX_ACTIVE;
     const tw_rec_t *r = tw_add_measurement(&s_node, ev->local_us, ev->c.src, ev->c.seq, ev->c.rx_us,
                                            ev->c.rssi, ev->c.noise, ev->c.agc, ev->c.fft, ev->c.phy,
-                                           ev->c.fwi, ev->c.csi, ev->c.len, ev->c.gain, compact);
+                                           ev->c.kflags, ev->c.csi, ev->c.len, ev->c.gain, compact);
+    if (ev->c.kflags & TW_KIND_RXERR) {
+        s_rx_err++;
+    }
     s_last_rssi[ev->c.src] = ev->c.rssi;
     if (s_node.is_exit) {
         out(line, tw_format_record(r, line, sizeof(line)));
@@ -478,12 +481,13 @@ static void work_task(void *arg)
             next_hello = now + 10000000u;
             hello();
             /* TWF: health. csi = CSI measurements made, frames = ESP-NOW frames received: if csi
-               grows and frames stays 0, relaying is not arriving (see FLASH-README.md) */
+               grows and frames stays 0, relaying is not arriving (see FLASH-README.md). rx_err =
+               measurements the radio flagged (rx_state != 0), since start */
             int k = snprintf(line, sizeof(line), "TWF,%u,usb_drops=%lu,queue_full=%lu,send_err=%lu,heap=%lu,"
-                             "queue=%lu,csi=%lu,frames=%lu\n", s_id, (unsigned long)s_usb_drops,
+                             "queue=%lu,csi=%lu,frames=%lu,rx_err=%lu\n", s_id, (unsigned long)s_usb_drops,
                              (unsigned long)s_q_full, (unsigned long)s_send_err,
                              (unsigned long)esp_get_free_heap_size(), (unsigned long)uxQueueMessagesWaiting(s_q),
-                             (unsigned long)s_csi_count, (unsigned long)s_node.n_rx_frames);
+                             (unsigned long)s_csi_count, (unsigned long)s_node.n_rx_frames, (unsigned long)s_rx_err);
             out(line, k);
         }
     }

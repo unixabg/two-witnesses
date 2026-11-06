@@ -10,11 +10,12 @@
  *
  *   sim --nodes 3 --seconds 60 [--loss 0.05] [--exit 1[,2]] [--kill 1@20-40]
  *       [--seed 7] [--realtime] [--out FILE] [--setpower 20@11[@1],40@20]
- *       [--block 2-1@10-50@0.75,...] [--setrelay 30@off,60@on]
+ *       [--block 2-1@10-50@0.75,...] [--setrelay 30@off,60@on] [--rxerr 0.01]
  *
  * --block S-R@A-B@P: from A to B seconds, board R misses each of board S's frames with
  * probability P (on top of --loss): something in the way of that one direction.
  * --setrelay T@on|off: at T seconds the computer turns relaying on or off (first exit).
+ * --rxerr P: each measurement is flagged by the radio (rx_state != 0) with probability P.
  *
  * --setpower T@DBM[@BOARD]: at T seconds, the computer sets the network's transmit
  * power at BOARD (default: the first exit). The JSON summary says how long every
@@ -54,9 +55,9 @@ typedef struct {
 
 static simnode_t N_[MAXN + 1];
 static int n_nodes = 3, realtime = 0, exits[MAXN + 1];
-static double seconds = 60, p_loss = 0.05, t0_unix;
+static double seconds = 60, p_loss = 0.05, p_rxerr = 0, t0_unix;
 static double walk_a = 30e6, walk_b = 40e6;    /* planted walk across the 1-2 link (--walk A-B seconds) */
-static long collisions = 0, frames = 0, lost_random = 0, lost_blocked = 0;
+static long collisions = 0, frames = 0, lost_random = 0, lost_blocked = 0, rx_err_made = 0;
 static double air_used_us = 0;
 static FILE *out;
 static unsigned rng_state = 7;
@@ -139,6 +140,7 @@ static int parse_args(int argc, char **argv, char *kill_spec, char *exit_spec, u
         if (!strcmp(argv[i], "--nodes") && i + 1 < argc) n_nodes = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--seconds") && i + 1 < argc) seconds = atof(argv[++i]);
         else if (!strcmp(argv[i], "--loss") && i + 1 < argc) p_loss = atof(argv[++i]);
+        else if (!strcmp(argv[i], "--rxerr") && i + 1 < argc) p_rxerr = atof(argv[++i]);
         else if (!strcmp(argv[i], "--exit") && i + 1 < argc) strncpy(exit_spec, argv[++i], 63);
         else if (!strcmp(argv[i], "--kill") && i + 1 < argc) strncpy(kill_spec, argv[++i], 255);
         else if (!strcmp(argv[i], "--seed") && i + 1 < argc) *seed = (unsigned)atoi(argv[++i]);
@@ -261,8 +263,10 @@ int main(int argc, char **argv)
                 int compact = __builtin_popcount(tw_active(&r->st, now_l)) > TW_FULL_MAX_ACTIVE;
                 uint8_t phy = (uint8_t)(1 | (1 << 3) | (2 << 5));   /* HT40, HT, secondary below */
                 int8_t rssi = (int8_t)(-50 - 3 * abs(id - h.src));
+                uint8_t kflags = (p_rxerr > 0 && urand() < p_rxerr) ? TW_KIND_RXERR : 0;
+                rx_err_made += kflags != 0;
                 const tw_rec_t *rec = tw_add_measurement(&r->st, now_l, h.src, h.seq, now_l, rssi, -92, 30, 0,
-                                                         phy, 0, csi, CSI_LEN, 1.0f, compact);
+                                                         phy, kflags, csi, CSI_LEN, 1.0f, compact);
                 r->made[h.src]++;
                 rctx_t c = { r, busy_until };
                 cur_src = h.src;
@@ -365,9 +369,10 @@ int main(int argc, char **argv)
     for (int id = 1; id <= n_nodes; id++) leader_changes_total += N_[id].st.leader_changes;
     /* ground truth for check_sim.py */
     fprintf(stderr, "{\"nodes\": %d, \"seconds\": %.1f, \"loss\": %.3f, \"frames\": %ld, \"collisions\": %ld, "
-                    "\"lost_random\": %ld, \"lost_blocked\": %ld, \"airtime_pct\": %.2f, \"leader_changes\": %ld, \"made\": {",
+                    "\"lost_random\": %ld, \"lost_blocked\": %ld, \"airtime_pct\": %.2f, \"leader_changes\": %ld, "
+                    "\"rx_err_made\": %ld, \"made\": {",
             n_nodes, seconds, p_loss, frames, collisions, lost_random, lost_blocked, 100 * air_used_us / end,
-            leader_changes_total);
+            leader_changes_total, rx_err_made);
     int first = 1;
     for (int rx = 1; rx <= n_nodes; rx++)
         for (int tx = 1; tx <= n_nodes; tx++)
