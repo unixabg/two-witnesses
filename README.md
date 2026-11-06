@@ -56,6 +56,7 @@ without sudo). Then flash the boards: [FLASH-README.md](FLASH-README.md).
 | stop a run early | `~/tw-kit/run.sh stop` (or `watch.sh stop`, `survey.sh stop`) |
 | set every board's transmit power | `~/scratch-esp/bin/python ~/tw-kit/tw_setid.py /dev/ttyACM0 power 11` (`default` = 20 dBm; nothing running on the port) |
 | relaying off / on (every board) | `~/scratch-esp/bin/python ~/tw-kit/tw_setid.py /dev/ttyACM0 relay off` (`relay on` is the default) |
+| the second frame: tests (tw_node 2.1) | `tw_setid.py PORT second off\|on\|force`, `measure-second on\|off`, `cap N\|off`; after a test put back `second on`, `measure-second off`, `cap off`; read a test run with `~/scratch-esp/bin/python ~/tw-kit/second_check.py ~/tw-data/runs/<run>` (docs/SECOND-FRAME.md) |
 | check the installed kit | `~/tw-kit/version.sh` |
 
 - Runs live in tmux, so you can close the terminal or the SSH session; they
@@ -79,12 +80,20 @@ without sudo). Then flash the boards: [FLASH-README.md](FLASH-README.md).
 - **Relaying (on by default):** only the cabled board talks to the computer,
   so a board it cannot hear well (a car parked between them) would lose its
   reports. With relaying, the boards that hear both carry them home, in room
-  left in the frames they send anyway: no extra frames. What that board
+  left in their own frames (and, from tw_node 2.1, in a second frame in their
+  own slot when the first is full). What that board
   measured still arrives, and the blocked line still shows as path loss on the
   map: relaying saves reports, it does not hide what is in the way. Turn it
   off only for a comparison run (`tw_setid.py ... relay off`, then `relay on`).
 - **Placing:** the board with the clearest view of all the others is the best
   one to cable to the computer.
+- **The second frame (tw_node 2.1, on by default):** when a board's frame is
+  full (6 boards: its own 5 new measurements leave one place), it sends a
+  second one right after, in its own slot, for the records still waiting
+  (second copies, relayed ones). It carries reports only: nothing is measured
+  from it, so every link is still measured once per period, as before. With 3
+  boards everything fits in one frame, so it hardly ever goes. Turn it off
+  for a comparison run: `tw_setid.py ... second off` (then `second on`).
 
 ## After a run
 

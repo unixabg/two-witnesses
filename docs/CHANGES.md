@@ -5,6 +5,23 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **Computer side for the second frame (tw_node 2.1).** `tw_setid.py PORT
+  second on|off|force`, `measure-second on|off`, `cap N|off`, each confirmed
+  by the board on the cable like the power; `tw_setid.py PORT` now shows these
+  settings for every board, the test ones loudly (they survive restarts: put
+  them back after a test). `second_check.py RUN` (new) reads a run's own
+  files: per board, second frames announced / heard / with CSI, the gap after
+  the normal frame, where the sender says its second frame ended in its slot
+  (limit 3200 us), rx_state-flagged measurements; the cabled board's own
+  second frames; and with `measure-second on`, the second frame's CSI against
+  the normal frame 1 ms before (RSSI, shape dB) next to two normal frames one
+  period apart. `split_links.py` keeps records measured from second frames out
+  of the link files (each link stays one measurement per period) but counts
+  them as delivered, so they do not show as lost reports; `summary.txt` lists
+  them. Desk test (simulator, 2 boards forced and measured, 3% loss): 97.3% of
+  announced second frames heard, all with CSI, gap 1085 us, own end 2460 /
+  2660 us; delivery 0.0-0.1% lost, as without.
+
 - **Firmware (tw_node 2.1): a second frame in a board's own slot.** At 6 boards
   a frame's 6 places are mostly taken by the sender's own 5 new records, so
   second copies and relayed records stopped fitting (simulator: 97.6% home,

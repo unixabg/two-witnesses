@@ -94,6 +94,7 @@ class Splitter:
         self.seen = set()
         self.relayed = collections.Counter()           # link -> records that came home through a relay
         self.rx_err = collections.Counter()            # link -> records the radio flagged (rx_state != 0)
+        self.extra = collections.Counter()             # link -> records measured from second frames (test)
         self.boards = {}
         self.dups = self.bad = 0
         self.hour_span = (0, 0, "")
@@ -112,25 +113,33 @@ class Splitter:
             self.dups += 1
             return
         self.seen.add(key)
-        if r["hop"]:
-            self.relayed[f"{r['tx']}-{r['rx']}"] += 1
         w10 = host_ns // 10**10 * 10
-        w = self.win[w10][r["rx"]]
-        w[0] += 1
-        w[1] += r["noise"]
         link = f"{r['tx']}-{r['rx']}"
-        self.lw[(w10, link)] += 1
-        t = self.txw.get((w10, r["tx"]))
-        if t is None:
-            self.txw[(w10, r["tx"])] = [r["txseq"], r["txseq"]]
-        else:
-            t[0], t[1] = min(t[0], r["txseq"]), max(t[1], r["txseq"])
+        # every record the measuring board made counts for its delivery (record numbers), the
+        # second-frame ones too: leaving them out would look like reports lost on the way
         q = self.rxw.get((w10, r["rx"], r["boot"]))
         if q is None:
             self.rxw[(w10, r["rx"], r["boot"])] = [1, r["recseq"], r["recseq"]]
         else:
             q[0] += 1
             q[1], q[2] = min(q[1], r["recseq"]), max(q[2], r["recseq"])
+        if r["kind"] & 0x20:
+            # measured from a second frame (tw_node 2.1, test setting measure-second): kept out of
+            # the link files, so each link stays one measurement per period (second_check.py
+            # compares them, from the run's own files)
+            self.extra[link] += 1
+            return
+        if r["hop"]:
+            self.relayed[link] += 1
+        w = self.win[w10][r["rx"]]
+        w[0] += 1
+        w[1] += r["noise"]
+        self.lw[(w10, link)] += 1
+        t = self.txw.get((w10, r["tx"]))
+        if t is None:
+            self.txw[(w10, r["tx"])] = [r["txseq"], r["txseq"]]
+        else:
+            t[0], t[1] = min(t[0], r["txseq"]), max(t[1], r["txseq"])
         bi = self.boot_index.setdefault((r["rx"], r["boot"]), len(self.boot_index))
         heap = self.pending[link]
         heapq.heappush(heap, (bi, r["recseq"], host_ns, len(self.seen), r))
@@ -329,6 +338,11 @@ class Splitter:
             for link in sorted(self.rx_err, key=lambda k: [int(x) for x in k.split("-")]):
                 n = self.stats[link]["n"] if link in self.stats else 0
                 L.append(f"  {link:>6}  {self.rx_err[link]:9,d}  ({100 * self.rx_err[link] / max(n, 1):.2f}% of its records)")
+        if self.extra:
+            L += ["", "measured from second frames (test setting measure-second; kept out of the link files, "
+                  "compared by second_check.py):"]
+            for link in sorted(self.extra, key=lambda k: [int(x) for x in k.split("-")]):
+                L.append(f"  {link:>6}  {self.extra[link]:9,d}")
         L += ["", "missing = frames of the sender with no report here. path = the measuring board did not",
               "hear them (sensing: something in the way shows here); delivery = it heard them, but its",
               "report never reached the computer (plumbing: the measuring board's path to the cabled one).",
