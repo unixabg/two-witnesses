@@ -94,7 +94,9 @@ relays have one place each per frame), and a cabled board that hears everyone
 somewhat badly (above the 70% that counts as stranded) costs every board what
 it misses, with nothing to carry it. The fix that needs no code: cable the
 board that hears all the others best (the survey's layout check and the
-dashboard's `heard N%` show which). Room for more: ROADMAP.
+dashboard's `heard N%` show which). Room for more: tw_node 2.1 sends a second
+frame in the slot when records wait (docs/SECOND-FRAME.md: the same cases
+with it: 6 boards healthy 99.9%, two stranded boards 98.6% each).
 
 ## How the view judges
 

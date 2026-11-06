@@ -14,15 +14,16 @@ so boards are reflashed as rarely as possible.
   so the layout file can be checked and a moved board noticed; a nightly
   survey compared with a stored one. Needs a test first: that switching a
   board's radio to answer and back leaves the readings as they were.
-- **Room in the frames at 6 boards** (simulator: docs/REFERENCE.md, relaying):
-  a frame holds 6 full records and brings 5 new ones of its own, so second
-  copies mostly stop fitting (97.6% delivered instead of 99.9%) and relaying
-  can carry one stranded board but not two at once (83% and 53%). Proposal to
-  design and simulate first: a board sends a second frame in its own slot
-  when records are waiting (relayed ones, second copies); a slot is 3 ms and a
-  full frame takes under 1 ms, so the air has room (airtime would rise from
-  26% to at most about 50%). Alternatives: compact records sooner (loses the
-  HT-LTF part the views use), fewer bits per amplitude (coarser notches).
+- **Room in the frames at 6 boards**: built in tw_node 2.1, a second frame in
+  a board's own slot when records wait (docs/SECOND-FRAME.md: design and
+  simulator, 6 boards 97.6% -> 99.9%, two stranded boards 83% / 53% -> 98.6%).
+  Still to do: the desk test and the crowded-night test (`cap 2`) on real
+  boards; then decide whether to keep it on by default.
+- **The followers' clock lag**: a follower assumes 150 us on the air for the
+  timekeeper's frames, but long frames take up to 890 us, so every follower
+  runs a fixed few hundred us behind (docs/SECOND-FRAME.md). Harmless while
+  all lag alike; counting each frame's length into the estimate would remove
+  it. Matters for tight periods (above 6 boards).
 - Irregular send timing, so fast rhythms (motors, fans) show at their true
   rates instead of folded down; keep the phase as well as the strength.
 

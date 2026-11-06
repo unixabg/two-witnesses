@@ -138,15 +138,20 @@ int tw_set_power(tw_node_t *n, uint8_t power_q)
     return 0;
 }
 
-void tw_set_relay(tw_node_t *n, int on)
+void tw_set_flags(tw_node_t *n, uint8_t mask, uint8_t value)
 {
     n->set_seq = (uint8_t)(n->set_seq + 1);
     if (n->set_power == 0) {
         n->set_power = TW_POWER_MAX_Q;      /* a setting always carries a power: full, as before */
     }
-    n->set_flags = (uint8_t)(on ? (n->set_flags & ~TW_SET_RELAY_OFF) : (n->set_flags | TW_SET_RELAY_OFF));
+    n->set_flags = (uint8_t)((n->set_flags & ~mask) | (value & mask));
     n->set_pending = 1;
     n->set_changes++;
+}
+
+void tw_set_relay(tw_node_t *n, int on)
+{
+    tw_set_flags(n, TW_SET_RELAY_OFF, on ? 0 : TW_SET_RELAY_OFF);
 }
 
 void tw_note_settings(tw_node_t *n, const tw_hdr_t *h)
@@ -173,10 +178,34 @@ void tw_note_frame(tw_node_t *n, const tw_hdr_t *h, uint32_t rx_local)
         return;
     }
     n->n_rx_frames++;
+    uint8_t s = h->src;
+    if (h->flags & TW_F_EXTRA) {
+        /* an extra frame: its records are used (by the caller), nothing else here. How long after
+           the sender's normal frame (same number) it arrived: no clock comes into it */
+        if (n->heard[s] && n->hear_seq[s] == h->seq) {
+            uint32_t gap = rx_local - n->heard_us[s];
+            int16_t g = (int16_t)(gap > 32767u ? 32767 : gap);
+            if (g > n->c_xgap[s]) {
+                n->c_xgap[s] = g;
+            }
+        }
+        if (n->c_xheard[s] < 0xffff) {
+            n->c_xheard[s]++;
+        }
+        return;
+    }
+    if (n->c_frames[s] < 0xffff) {
+        n->c_frames[s]++;
+    }
+    if (h->xend_q) {
+        n->c_xend_q[s] = h->xend_q;
+    }
+    if ((h->flags & TW_F_EXTRA_NEXT) && n->c_xnext[s] < 0xffff) {
+        n->c_xnext[s]++;
+    }
     tw_note_settings(n, h);
     /* hearing: a smoothed share of src's frames (its frame numbers tell how many were missed) */
     const float a = 1.0f / 32.0f;
-    uint8_t s = h->src;
     if (!n->heard[s] || (uint32_t)(rx_local - n->heard_us[s]) >= TW_ACTIVE_US) {
         n->hear_r[s] = 1.0f;                        /* (re)appeared: start from "all heard" */
     } else {
@@ -247,6 +276,40 @@ uint32_t tw_next_tx_local(tw_node_t *n, uint32_t now)
         wait += p;
     }
     return now + wait;
+}
+
+int32_t tw_slot_pos(const tw_node_t *n, uint32_t now, uint8_t id)
+{
+    uint32_t p = (uint32_t)tw_period_ms(n, now) * 1000u;
+    uint32_t raw = ((uint32_t)(id - 1) * TW_SLOT_US) % p;
+    uint32_t d = ((now + n->offset) % p + p - raw) % p;
+    return d >= p / 2 ? (int32_t)d - (int32_t)p : (int32_t)d;
+}
+
+void tw_note_sent(tw_node_t *n, uint32_t now, int extra)
+{
+    if (!extra) {
+        return;
+    }
+    int32_t pos = tw_slot_pos(n, now, n->id);
+    int q = (pos + 10) / 20;
+    n->xend_q = (uint8_t)(q < 1 ? 1 : q > 255 ? 255 : q);
+}
+
+uint32_t tw_air_us(int len)
+{
+    return TW_PREAMBLE_US + (uint32_t)(len + TW_MAC_BYTES) * 16u / 27u;    /* 13.5 Mbit/s */
+}
+
+void tw_clear_counts(tw_node_t *n)
+{
+    memset(n->c_frames, 0, sizeof(n->c_frames));
+    memset(n->c_xnext, 0, sizeof(n->c_xnext));
+    memset(n->c_xheard, 0, sizeof(n->c_xheard));
+    memset(n->c_xcsi, 0, sizeof(n->c_xcsi));
+    memset(n->c_xgap, 0, sizeof(n->c_xgap));
+    memset(n->c_xend_q, 0, sizeof(n->c_xend_q));
+    memset(n->c_rxerr, 0, sizeof(n->c_rxerr));
 }
 
 /* ---------------- hearing and relaying ---------------- */
@@ -391,6 +454,96 @@ static void put_rec(uint8_t *p, const tw_rec_t *r)
     memcpy(p + TW_REC_HDR_LEN, r->q, r->n);
 }
 
+static int cap_of(const tw_node_t *n)
+{
+    int c = n->set_flags >> TW_SET_CAP_SHIFT;
+    return c ? c : 255;
+}
+
+/* the records a frame takes, in this order (pass): own never-sent records, relayed ones (sent
+   once), own second copies. An extra frame does not take a copy of a record that went out in
+   this slot's normal frame (a copy 1 ms later protects less than one a frame later), unless the
+   test setting forces extra frames (then anything goes, to fill them) */
+static int wants(const tw_node_t *n, const tw_qent_t *e, int pass, int extra, int force)
+{
+    static const uint8_t pass_relay[3] = {0, 1, 0}, pass_sent[3] = {0, 0, 1};
+    if (!e->used || e->relay != pass_relay[pass] || e->sent != pass_sent[pass]) {
+        return 0;
+    }
+    return !(extra && !force && e->sent && e->slot == n->slot_no);
+}
+
+/* put records from the queue into buf from pos, up to max bytes; returns the new end */
+static int put_records(tw_node_t *n, uint8_t *buf, int pos, int max, int copies, int extra, int force,
+                       int *count)
+{
+    uint8_t in_frame[TW_QUEUE_LEN];
+    memset(in_frame, 0, sizeof(in_frame));
+    int cap = cap_of(n);
+    for (int pass = 0; pass < 3; pass++) {
+        if (pass == 2 && copies < 2) {
+            break;
+        }
+        for (;;) {
+            int pick = -1;
+            for (int i = 0; i < TW_QUEUE_LEN; i++) {
+                if (!in_frame[i] && wants(n, &n->q[i], pass, extra, force) &&
+                        (pick < 0 || (int32_t)(n->q[i].made_us - n->q[pick].made_us) < 0)) {
+                    pick = i;
+                }
+            }
+            if (pick < 0 || pos + rec_len(&n->q[pick].rec) > max || *count >= cap || *count >= 255) {
+                break;
+            }
+            put_rec(buf + pos, &n->q[pick].rec);
+            pos += rec_len(&n->q[pick].rec);
+            (*count)++;
+            n->q[pick].sent++;
+            n->q[pick].slot = n->slot_no;
+            in_frame[pick] = 1;
+            if (n->q[pick].relay) {
+                n->n_relayed_out++;
+            }
+        }
+    }
+    return pos;
+}
+
+/* records still waiting that an extra frame would take */
+static int waiting(const tw_node_t *n, int copies)
+{
+    for (int i = 0; i < TW_QUEUE_LEN; i++) {
+        for (int pass = 0; pass < (copies < 2 ? 2 : 3); pass++) {
+            if (wants(n, &n->q[i], pass, 1, 0)) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+static void put_header(tw_node_t *n, uint32_t now, uint8_t *buf, uint32_t seq, uint8_t more_flags, int count,
+                       uint16_t act)
+{
+    buf[0] = TW_MAGIC0; buf[1] = TW_MAGIC1; buf[2] = TW_VERSION; buf[3] = n->id;
+    put32(buf + 4, seq);
+    put32(buf + 8, now + n->offset);
+    buf[12] = n->leader;
+    buf[13] = (uint8_t)((n->synced ? TW_F_SYNCED : 0) | (n->is_exit ? TW_F_EXIT : 0) |
+                        (n->leader == n->id ? TW_F_LEADER : 0) | more_flags);
+    put16(buf + 14, act);
+    buf[16] = tw_period_ms(n, now);
+    buf[17] = (uint8_t)count;
+    put16(buf + 18, (uint16_t)(now / 1000000u));
+    buf[20] = n->set_seq;
+    buf[21] = n->set_power;
+    buf[22] = n->set_flags;
+    buf[23] = n->xend_q;
+    for (int i = 1; i <= TW_MAX_NODES; i++) {
+        buf[23 + i] = tw_hear_pct(n, now, (uint8_t)i);
+    }
+}
+
 int tw_build_frame(tw_node_t *n, uint32_t now, uint8_t *buf, int max)
 {
     if (max > TW_MAX_PAYLOAD) {
@@ -398,7 +551,6 @@ int tw_build_frame(tw_node_t *n, uint32_t now, uint8_t *buf, int max)
     }
     tw_update_roles(n, now);
     uint16_t act = tw_active(n, now);
-    int pos = TW_HDR_LEN, count = 0;
     int copies = popcount16(act) <= TW_FULL_MAX_ACTIVE ? TW_COPIES : 1;     /* airtime budget */
     /* expire old records */
     for (int i = 0; i < TW_QUEUE_LEN; i++) {
@@ -413,53 +565,59 @@ int tw_build_frame(tw_node_t *n, uint32_t now, uint8_t *buf, int max)
     }
     /* own never-sent records first (oldest first), then relayed ones (sent once), then own
        second copies; a record goes into a given frame at most once */
-    uint8_t in_frame[TW_QUEUE_LEN];
-    memset(in_frame, 0, sizeof(in_frame));
-    static const uint8_t pass_relay[3] = {0, 1, 0}, pass_sent[3] = {0, 0, 1};
-    for (int pass = 0; pass < 3; pass++) {
-        if (pass == 2 && copies < 2) {
-            break;
-        }
-        for (;;) {
-            int pick = -1;
-            for (int i = 0; i < TW_QUEUE_LEN; i++) {
-                tw_qent_t *e = &n->q[i];
-                if (e->used && !in_frame[i] && e->relay == pass_relay[pass] && e->sent == pass_sent[pass] &&
-                        (pick < 0 || (int32_t)(e->made_us - n->q[pick].made_us) < 0)) {
-                    pick = i;
-                }
-            }
-            if (pick < 0 || pos + rec_len(&n->q[pick].rec) > max || count >= 255) {
-                break;
-            }
-            put_rec(buf + pos, &n->q[pick].rec);
-            pos += rec_len(&n->q[pick].rec);
-            count++;
-            n->q[pick].sent++;
-            in_frame[pick] = 1;
-            if (n->q[pick].relay) {
-                n->n_relayed_out++;
-            }
-        }
+    n->slot_no++;
+    int force = (n->set_flags & TW_SET_SECOND_FORCE) != 0, count = 0;
+    int pos = put_records(n, buf, TW_HDR_LEN, max, copies, 0, force, &count);
+    /* an extra frame after this one? Only in step, in our own slot, and not from an exit (it
+       prints its records itself) unless forced */
+    uint32_t start, p;
+    int fits = slot_of(n, now, &start, &p);
+    int allowed = n->synced && fits &&
+                  (force || (!(n->set_flags & TW_SET_SECOND_OFF) && !n->is_exit));
+    n->extra_planned = (uint8_t)(allowed && (force || waiting(n, copies)));
+    if (force) {
+        memset(buf + pos, 0, (size_t)(max - pos));      /* full length: test airtime */
+        pos = max;
     }
-    buf[0] = TW_MAGIC0; buf[1] = TW_MAGIC1; buf[2] = TW_VERSION; buf[3] = n->id;
-    put32(buf + 4, n->seq++);
-    put32(buf + 8, now + n->offset);
-    buf[12] = n->leader;
-    buf[13] = (uint8_t)((n->synced ? TW_F_SYNCED : 0) | (n->is_exit ? TW_F_EXIT : 0) |
-                        (n->leader == n->id ? TW_F_LEADER : 0));
-    put16(buf + 14, act);
-    buf[16] = tw_period_ms(n, now);
-    buf[17] = (uint8_t)count;
-    put16(buf + 18, (uint16_t)(now / 1000000u));
-    buf[20] = n->set_seq;
-    buf[21] = n->set_power;
-    buf[22] = n->set_flags;
-    buf[23] = 0;
-    for (int i = 1; i <= TW_MAX_NODES; i++) {
-        buf[23 + i] = tw_hear_pct(n, now, (uint8_t)i);
-    }
+    put_header(n, now, buf, n->seq++, n->extra_planned ? TW_F_EXTRA_NEXT : 0, count, act);
     n->n_tx++;
+    return pos;
+}
+
+int tw_build_extra(tw_node_t *n, uint32_t now, uint8_t *buf, int max)
+{
+    if (!n->extra_planned) {
+        return 0;
+    }
+    n->extra_planned = 0;
+    if (max > TW_MAX_PAYLOAD) {
+        max = TW_MAX_PAYLOAD;
+    }
+    /* it must end by our slot's end + TW_SLOT_SLACK_US (the next board's guard is 400 us) */
+    int32_t at = tw_slot_pos(n, now, n->id);
+    int32_t left = (int32_t)(TW_SLOT_US + TW_SLOT_SLACK_US) - at - (int32_t)(TW_ACCESS_US + TW_PREAMBLE_US);
+    int room = (at < 0 || at > (int32_t)TW_SLOT_US || left <= 0) ? 0 : (int)(left * 27 / 16) - TW_MAC_BYTES;
+    if (room < max) {
+        max = room;
+    }
+    if (max < TW_HDR_LEN + TW_REC_HDR_LEN) {
+        n->n_extra_skipped++;
+        return 0;
+    }
+    uint16_t act = tw_active(n, now);
+    int copies = popcount16(act) <= TW_FULL_MAX_ACTIVE ? TW_COPIES : 1;
+    int force = (n->set_flags & TW_SET_SECOND_FORCE) != 0, count = 0;
+    int pos = put_records(n, buf, TW_HDR_LEN, max, copies, 1, force, &count);
+    if (count == 0 && !force) {
+        n->n_extra_skipped++;                           /* nothing waiting fitted in the time left */
+        return 0;
+    }
+    if (force) {
+        memset(buf + pos, 0, (size_t)(max - pos));
+        pos = max;
+    }
+    put_header(n, now, buf, n->seq - 1, TW_F_EXTRA, count, act);   /* the same number as the frame before */
+    n->n_extra_sent++;
     return pos;
 }
 
@@ -481,6 +639,7 @@ int tw_peek_header(const uint8_t *buf, int len, tw_hdr_t *h)
     h->set_seq = buf[20];
     h->set_power = buf[21];
     h->set_flags = buf[22];
+    h->xend_q = buf[23];
     memcpy(h->hear, buf + 24, TW_MAX_NODES);
     return valid_id(h->src) ? 0 : -1;
 }
@@ -538,6 +697,17 @@ const tw_rec_t *tw_add_measurement(tw_node_t *n, uint32_t now, uint8_t tx, uint3
                                    uint8_t phy, uint8_t kflags, const int8_t *csi, int csi_len, float gain,
                                    int compact)
 {
+    if (kflags & TW_KIND_EXTRA) {               /* measured from an extra frame */
+        if (valid_id(tx) && n->c_xcsi[tx] < 0xffff) {
+            n->c_xcsi[tx]++;
+        }
+        if (!(n->set_flags & TW_SET_MEASURE_EXTRA)) {
+            return NULL;                            /* counted only: one measurement per period */
+        }
+    }
+    if ((kflags & TW_KIND_RXERR) && valid_id(tx) && n->c_rxerr[tx] < 0xffff) {
+        n->c_rxerr[tx]++;
+    }
     int fwi = (kflags & TW_KIND_FWI) != 0;
     float amp[TW_MAX_AMPS];
     int cnt = 0;
@@ -598,7 +768,7 @@ const tw_rec_t *tw_add_measurement(tw_node_t *n, uint32_t now, uint8_t tx, uint3
         step = 255;
     }
     r->rx = n->id; r->tx = tx; r->hop = 0; r->boot = n->boot;
-    r->kind = (uint8_t)((compact ? TW_KIND_LLTF : TW_KIND_FULL) | (kflags & (TW_KIND_FWI | TW_KIND_RXERR)));
+    r->kind = (uint8_t)((compact ? TW_KIND_LLTF : TW_KIND_FULL) | (kflags & (TW_KIND_FWI | TW_KIND_RXERR | TW_KIND_EXTRA)));
     r->recseq = ++n->recseq;
     r->txseq = txseq;
     r->rx_us = rx_us;
@@ -691,13 +861,21 @@ int tw_format_record(const tw_rec_t *r, char *out, int max)
     return k;
 }
 
-int tw_format_node(const tw_hdr_t *h, int8_t rssi, uint8_t heard_pct, char *out, int max)
+int tw_format_node(const tw_node_t *n, const tw_hdr_t *h, int8_t rssi, uint8_t heard_pct, char *out, int max)
 {
     /* ...,rssi,setting number,its transmit power (quarter dBm; 0 = never set: full power),
-       relaying on (1) / off (0), how well this (the printing) board hears it, % */
-    return snprintf(out, (size_t)max, "TWN,%u,%lu,%u,%u,%04x,%u,%u,%d,%u,%u,%u,%u\n", h->src, (unsigned long)h->seq,
-                    h->leader, h->flags, h->active, h->period_ms, h->uptime_s, rssi, h->set_seq, h->set_power,
-                    (h->set_flags & TW_SET_RELAY_OFF) ? 0u : 1u, heard_pct);
+       relaying on (1) / off (0), how well this (the printing) board hears it, %,
+       2.1+: its setting flags; since the last TWN: its normal frames heard, of them announcing an
+       extra frame, its extra frames heard, CSI on them, the longest time from its normal frame
+       to its extra frame arriving here (us), when it says its last extra frame ended (us after
+       its slot start, by its own clock; 0 = none), this board's records of it flagged by the
+       radio (rx_state) */
+    uint8_t s = h->src <= TW_MAX_NODES ? h->src : 0;
+    return snprintf(out, (size_t)max, "TWN,%u,%lu,%u,%u,%04x,%u,%u,%d,%u,%u,%u,%u,%u,%u,%u,%u,%u,%d,%u,%u\n", h->src,
+                    (unsigned long)h->seq, h->leader, h->flags, h->active, h->period_ms, h->uptime_s, rssi,
+                    h->set_seq, h->set_power, (h->set_flags & TW_SET_RELAY_OFF) ? 0u : 1u, heard_pct,
+                    h->set_flags, n->c_frames[s], n->c_xnext[s], n->c_xheard[s], n->c_xcsi[s],
+                    n->c_xgap[s], 20u * n->c_xend_q[s], n->c_rxerr[s]);
 }
 
 int tw_format_status(const tw_node_t *n, uint32_t now, char *out, int max)
@@ -709,8 +887,9 @@ int tw_format_status(const tw_node_t *n, uint32_t now, char *out, int max)
         used += n->q[i].used;
     }
     /* ...,queue_used,setting number,setting power,power the radio reports (quarter dBm),
-       relaying on/off, records this board relayed, relayed records it had no room for */
-    return snprintf(out, (size_t)max, "TWS,%u,%u,%u,%u,%04x,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%u,%d,%u,%u,%u,%u,%lu,%lu\n",
+       relaying on/off, records this board relayed, relayed records it had no room for,
+       2.1+: setting flags, extra frames sent, extra frames skipped (nothing fitted in time) */
+    return snprintf(out, (size_t)max, "TWS,%u,%u,%u,%u,%04x,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%u,%d,%u,%u,%u,%u,%lu,%lu,%u,%lu,%lu\n",
                     n->id, TW_VERSION, n->leader, (unsigned)((n->synced ? TW_F_SYNCED : 0) |
                     (n->is_exit ? TW_F_EXIT : 0) | (n->leader == n->id ? TW_F_LEADER : 0)),
                     tw_active(n, now), (unsigned long)(p / 1000u), (unsigned long)(fits ? start : 0),
@@ -718,5 +897,6 @@ int tw_format_status(const tw_node_t *n, uint32_t now, char *out, int max)
                     (unsigned long)n->n_bad_frames, (unsigned long)n->n_meas, (unsigned long)n->n_dup,
                     (unsigned long)n->n_dropped, n->leader_changes, used, n->set_seq, n->set_power,
                     n->tx_power_q, (n->set_flags & TW_SET_RELAY_OFF) ? 0u : 1u, (unsigned long)n->n_relayed_out,
-                    (unsigned long)n->n_relay_full);
+                    (unsigned long)n->n_relay_full, n->set_flags, (unsigned long)n->n_extra_sent,
+                    (unsigned long)n->n_extra_skipped);
 }

@@ -11,4 +11,7 @@ sim/       the same tw_proto.c in a pretend garage: boards with drifting clocks,
              gcc -O2 -o sim sim.c ../tw_node/main/tw_proto.c -lm
              ./sim --nodes 3 --seconds 60 > out.txt 2> truth.json && python3 check_sim.py out.txt truth.json
            options: --nodes N  --seconds S  --loss P  --exit 1[,2]  --kill 1@20-40  --walk 30-40
-                    --seed N  --realtime (for a pty feeding listen.py)
+                    --seed N  --realtime (for a pty feeding listen.py)  --block 2-1@20-100@0.75
+                    --setpower T@DBM  --setrelay T@on|off  --rxerr P
+                    --set T@second=on|off|force,T@measure=on|off,T@cap=N|off (2.1 settings)
+           the second frame: ../docs/SECOND-FRAME.md (design, and the simulator's results)

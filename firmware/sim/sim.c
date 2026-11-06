@@ -11,11 +11,17 @@
  *   sim --nodes 3 --seconds 60 [--loss 0.05] [--exit 1[,2]] [--kill 1@20-40]
  *       [--seed 7] [--realtime] [--out FILE] [--setpower 20@11[@1],40@20]
  *       [--block 2-1@10-50@0.75,...] [--setrelay 30@off,60@on] [--rxerr 0.01]
+ *       [--set 0@cap=3,0@second=off,...]
  *
  * --block S-R@A-B@P: from A to B seconds, board R misses each of board S's frames with
  * probability P (on top of --loss): something in the way of that one direction.
  * --setrelay T@on|off: at T seconds the computer turns relaying on or off (first exit).
  * --rxerr P: each measurement is flagged by the radio (rx_state != 0) with probability P.
+ * --set T@KEY=VALUE: at T seconds the computer changes a setting (first exit): second=on|off|force,
+ *   measure=on|off (receivers measure extra frames), cap=N|off (records per frame).
+ * Extra frames (a second frame in a board's slot, tw_node 2.1) go on the air 50 us after the
+ * board's frame ends (ESP-NOW's send-done) plus up to TW_ACCESS_US of channel access, and
+ * collide like any other frame; the summary counts them and their latest end in the slot.
  *
  * --setpower T@DBM[@BOARD]: at T seconds, the computer sets the network's transmit
  * power at BOARD (default: the first exit). The JSON summary says how long every
@@ -39,8 +45,12 @@
 #define MAXN TW_MAX_NODES
 #define CSI_LEN 384
 
+#define MAXSET_F 16
 typedef struct {
     tw_node_t st;
+    double extra_at;            /* true time its pending extra frame is built (< 0: none) */
+    int32_t extra_end_max;      /* latest end of its extra frames, us after its slot start (own clock) */
+    long extra_late;            /* extra frames that ended after the slot + TW_SLOT_SLACK_US */
     double drift;               /* clock rate error */
     double off0;                /* clock offset at t = 0 (us) */
     double next_tx;             /* true time of the next send */
@@ -59,6 +69,8 @@ static double seconds = 60, p_loss = 0.05, p_rxerr = 0, t0_unix;
 static double walk_a = 30e6, walk_b = 40e6;    /* planted walk across the 1-2 link (--walk A-B seconds) */
 static long collisions = 0, frames = 0, lost_random = 0, lost_blocked = 0, rx_err_made = 0;
 static double air_used_us = 0;
+static long extra_frames = 0, collisions_extra = 0, extra_measured = 0;
+static struct { double t; uint8_t mask, value; int fired; } fsets[MAXSET_F];
 static FILE *out;
 static unsigned rng_state = 7;
 #define MAXSET 16
@@ -68,7 +80,7 @@ static int n_sets = 0;
 static struct { int s, r; double a, b, p; } blks[MAXBLK];
 static int n_blks = 0;
 static struct { double t; int on, fired; } rsets[MAXSET];
-static int n_rsets = 0;
+static int n_rsets = 0, n_fsets = 0;
 
 static double urand(void)
 {
@@ -168,6 +180,23 @@ static int parse_args(int argc, char **argv, char *kill_spec, char *exit_spec, u
                 if (*p == ',') p++; else break;
             }
         }
+        else if (!strcmp(argv[i], "--set") && i + 1 < argc) {
+            for (char *p = argv[++i]; *p && n_fsets < MAXSET_F;) {
+                fsets[n_fsets].t = strtod(p, &p) * 1e6;
+                if (*p == '@') p++;
+                uint8_t m = 0, v = 0;
+                if (!strncmp(p, "second=off", 10)) { m = TW_SET_SECOND_OFF | TW_SET_SECOND_FORCE; v = TW_SET_SECOND_OFF; }
+                else if (!strncmp(p, "second=on", 9)) { m = TW_SET_SECOND_OFF | TW_SET_SECOND_FORCE; v = 0; }
+                else if (!strncmp(p, "second=force", 12)) { m = TW_SET_SECOND_OFF | TW_SET_SECOND_FORCE; v = TW_SET_SECOND_FORCE; }
+                else if (!strncmp(p, "measure=on", 10)) { m = TW_SET_MEASURE_EXTRA; v = TW_SET_MEASURE_EXTRA; }
+                else if (!strncmp(p, "measure=off", 11)) { m = TW_SET_MEASURE_EXTRA; v = 0; }
+                else if (!strncmp(p, "cap=", 4)) { m = 0xF0; v = (uint8_t)((atoi(p + 4) & 15) << TW_SET_CAP_SHIFT); }
+                else { fprintf(stderr, "--set: unknown %s\n", p); return -1; }
+                fsets[n_fsets].mask = m; fsets[n_fsets].value = v; n_fsets++;
+                while (*p && *p != ',') p++;
+                if (*p == ',') p++; else break;
+            }
+        }
         else if (!strcmp(argv[i], "--setpower") && i + 1 < argc) {
             for (char *p = argv[++i]; *p && n_sets < MAXSET;) {
                 double t = strtod(p, &p), dbm = 0; int at = 0;
@@ -207,6 +236,7 @@ int main(int argc, char **argv)
         s->exit = exits[id];
         s->dead_from = s->dead_to = -1;
         s->next_tx = urand() * 20000;
+        s->extra_at = -1;
         s->last_status = -1e9;
         tw_init(&s->st, (uint8_t)id, (uint8_t)s->exit, seed * 31u + (unsigned)id);
     }
@@ -227,20 +257,25 @@ int main(int argc, char **argv)
     double busy_until = 0;      /* the channel: end of the frame on the air */
     int busy_src = 0;
     uint8_t frame[TW_MAX_PAYLOAD], last_frame[TW_MAX_PAYLOAD];
-    int last_len = 0, last_collided = 0;
+    int last_len = 0, last_collided = 0, last_extra = 0;
     double last_start = 0;
     long leader_changes_total = 0;
     struct timespec wall0;
     clock_gettime(CLOCK_MONOTONIC, &wall0);
 
     while (t < end) {
-        /* next sender */
-        int who = 0;
+        /* next sender: a board's slot, or the extra frame it has pending */
+        int who = 0, is_extra = 0;
+        double when = 0;
         for (int id = 1; id <= n_nodes; id++) {
-            if (!who || N_[id].next_tx < N_[who].next_tx) who = id;
+            double tt = N_[id].next_tx;
+            int ex = 0;
+            if (N_[id].extra_at >= 0 && N_[id].extra_at <= tt) { tt = N_[id].extra_at; ex = 1; }
+            if (!who || tt < when) { who = id; when = tt; is_extra = ex; }
         }
         simnode_t *s = &N_[who];
-        double tx_t = s->next_tx + urand() * 300;         /* queueing delay before the air */
+        double tx_t = is_extra ? when + urand() * TW_ACCESS_US      /* channel access after send-done */
+                               : s->next_tx + urand() * 300;        /* queueing delay before the air */
         /* deliver the previous frame if it ended before this one starts */
         if (last_len && busy_until <= tx_t) {
             /* receivers */
@@ -264,17 +299,23 @@ int main(int argc, char **argv)
                 uint8_t phy = (uint8_t)(1 | (1 << 3) | (2 << 5));   /* HT40, HT, secondary below */
                 int8_t rssi = (int8_t)(-50 - 3 * abs(id - h.src));
                 uint8_t kflags = (p_rxerr > 0 && urand() < p_rxerr) ? TW_KIND_RXERR : 0;
-                rx_err_made += kflags != 0;
+                if (h.flags & TW_F_EXTRA) kflags |= TW_KIND_EXTRA;
                 const tw_rec_t *rec = tw_add_measurement(&r->st, now_l, h.src, h.seq, now_l, rssi, -92, 30, 0,
                                                          phy, kflags, csi, CSI_LEN, 1.0f, compact);
-                r->made[h.src]++;
+                if (rec) {
+                    rx_err_made += (kflags & TW_KIND_RXERR) != 0;
+                    extra_measured += (kflags & TW_KIND_EXTRA) != 0;
+                    r->made[h.src]++;
+                }
                 rctx_t c = { r, busy_until };
                 cur_src = h.src;
                 if (r->exit) {
                     char line[600];
-                    if (tw_format_record(rec, line, sizeof(line)) > 0) emit(busy_until, line);
-                    r->node_hdr[h.src] = h;
-                    r->node_rssi[h.src] = rssi;
+                    if (rec && tw_format_record(rec, line, sizeof(line)) > 0) emit(busy_until, line);
+                    if (!(h.flags & TW_F_EXTRA)) {
+                        r->node_hdr[h.src] = h;
+                        r->node_rssi[h.src] = rssi;
+                    }
                 }
                 if (tw_parse_frame(last_frame, last_len, &h, on_record, &c) < 0) r->st.n_bad_frames++;
             }
@@ -296,6 +337,14 @@ int main(int argc, char **argv)
                 sets[k].fired = 1;
                 tw_set_power(&N_[sets[k].at].st, sets[k].q);
                 sets[k].seq = N_[sets[k].at].st.set_seq;
+            }
+        }
+        for (int k = 0; k < n_fsets; k++) {
+            if (!fsets[k].fired && tx_t >= fsets[k].t) {
+                fsets[k].fired = 1;
+                int at = 1;
+                for (int id = 1; id <= n_nodes; id++) if (exits[id]) { at = id; break; }
+                tw_set_flags(&N_[at].st, fsets[k].mask, fsets[k].value);
             }
         }
         for (int k = 0; k < n_rsets; k++) {
@@ -322,28 +371,52 @@ int main(int argc, char **argv)
             }
             if (all) sets[k].done_t = tx_t;
         }
-        if (!dead) {
-            int len = tw_build_frame(&s->st, lnow, frame, TW_MAX_PAYLOAD);
-            double air = 40 + (len + 30) * 8 / 13.5;
+        int len = 0;
+        if (is_extra) {
+            s->extra_at = -1;
+            if (!dead) len = tw_build_extra(&s->st, local_us(s, when), frame, TW_MAX_PAYLOAD);
+        } else if (!dead) {
+            len = tw_build_frame(&s->st, lnow, frame, TW_MAX_PAYLOAD);
+        }
+        if (len > 0) {
+            double air = tw_air_us(len);
             air_used_us += air;
             frames++;
+            if (is_extra) {
+                extra_frames++;
+                tw_note_sent(&s->st, local_us(s, tx_t + air), 1);        /* its send-done */
+                int32_t end_pos = tw_slot_pos(&s->st, local_us(s, tx_t + air), (uint8_t)who);
+                if (end_pos > s->extra_end_max) s->extra_end_max = end_pos;
+                if (end_pos > (int32_t)(TW_SLOT_US + TW_SLOT_SLACK_US)) s->extra_late++;
+            }
             if (last_len && tx_t < busy_until) {             /* overlaps the frame still on the air */
                 collisions++;
+                if (is_extra || last_extra) collisions_extra++;
                 last_collided = 1;                           /* both lost */
             } else {
                 memcpy(last_frame, frame, (size_t)len);
                 last_len = len;
                 last_collided = 0;
+                last_extra = is_extra;
                 last_start = tx_t;
                 busy_until = tx_t + air;
                 busy_src = who;
             }
-        } else if (s->st.n_rx_frames || s->st.n_tx) {
+            if (!is_extra && s->st.extra_planned) {
+                s->extra_at = tx_t + air + 50;               /* ESP-NOW's send-done, then the build */
+            }
+        }
+        if (is_extra) {
+            t = tx_t;
+            continue;
+        }
+        if (dead && (s->st.n_rx_frames || s->st.n_tx)) {
             /* a dead board forgets everything: it reboots when it comes back */
             int was_exit = s->exit;
             tw_init(&s->st, (uint8_t)who, (uint8_t)was_exit, (unsigned)(t + who));
         }
         (void)last_start;
+        if (dead) s->extra_at = -1;
         s->next_tx = true_after(s, tx_t, lnow, tw_next_tx_local(&s->st, lnow));
         if (dead) s->next_tx = tx_t + 20000;
         t = tx_t;
@@ -360,19 +433,23 @@ int main(int argc, char **argv)
             emit(t, line);
             for (int k = 1; k <= n_nodes; k++) {
                 if (k != id && r->st.heard[k] && (uint32_t)(lr - r->st.heard_us[k]) < TW_ACTIVE_US) {
-                    tw_format_node(&r->node_hdr[k], r->node_rssi[k], tw_hear_pct(&r->st, lr, (uint8_t)k), line, sizeof(line));
+                    tw_format_node(&r->st, &r->node_hdr[k], r->node_rssi[k], tw_hear_pct(&r->st, lr, (uint8_t)k),
+                                   line, sizeof(line));
                     emit(t, line);
                 }
             }
+            tw_clear_counts(&r->st);
         }
     }
     for (int id = 1; id <= n_nodes; id++) leader_changes_total += N_[id].st.leader_changes;
     /* ground truth for check_sim.py */
     fprintf(stderr, "{\"nodes\": %d, \"seconds\": %.1f, \"loss\": %.3f, \"frames\": %ld, \"collisions\": %ld, "
                     "\"lost_random\": %ld, \"lost_blocked\": %ld, \"airtime_pct\": %.2f, \"leader_changes\": %ld, "
-                    "\"rx_err_made\": %ld, \"made\": {",
+                    "\"rx_err_made\": %ld, \"extra_frames\": %ld, \"collisions_extra\": %ld, \"extra_measured\": %ld, "
+                    "\"slot_end_us\": %u, \"made\": {",
             n_nodes, seconds, p_loss, frames, collisions, lost_random, lost_blocked, 100 * air_used_us / end,
-            leader_changes_total, rx_err_made);
+            leader_changes_total, rx_err_made, extra_frames, collisions_extra, extra_measured,
+            TW_SLOT_US + TW_SLOT_SLACK_US);
     int first = 1;
     for (int rx = 1; rx <= n_nodes; rx++)
         for (int tx = 1; tx <= n_nodes; tx++)
@@ -387,6 +464,11 @@ int main(int argc, char **argv)
     for (int id = 1; id <= n_nodes; id++)
         fprintf(stderr, "%s\"%d\": [%lu, %lu]", id > 1 ? ", " : "", id, (unsigned long)N_[id].st.n_relayed_out,
                 (unsigned long)N_[id].st.n_relay_full);
+    fprintf(stderr, "}, \"extra\": {");
+    for (int id = 1; id <= n_nodes; id++)
+        fprintf(stderr, "%s\"%d\": [%lu, %lu, %d, %ld]", id > 1 ? ", " : "", id, (unsigned long)N_[id].st.n_extra_sent,
+                (unsigned long)N_[id].st.n_extra_skipped, N_[id].st.n_extra_sent ? N_[id].extra_end_max : 0,
+                N_[id].extra_late);
     fprintf(stderr, "}, \"settings\": [");
     for (int k = 0; k < n_sets; k++)
         fprintf(stderr, "%s{\"t\": %.3f, \"dbm\": %.2f, \"at\": %d, \"seq\": %u, \"all_after_s\": %.3f}",

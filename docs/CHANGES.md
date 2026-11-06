@@ -5,6 +5,27 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **Firmware (tw_node 2.1): a second frame in a board's own slot.** At 6 boards
+  a frame's 6 places are mostly taken by the sender's own 5 new records, so
+  second copies and relayed records stopped fitting (simulator: 97.6% home,
+  two stranded boards 83% / 53%). Now, when records are still waiting after a
+  board's frame has gone out (ESP-NOW's send-done), it sends an extra frame
+  right after, in the same slot, cut to end within 200 us of the next board's
+  400 us guard. It has the same frame number and a flag, carries records as
+  usual, and counts for nothing else (hearing, clock, settings), and no
+  measurement is made from it by default, so each link is still measured once
+  per period. Exits send none. Simulator, same cases: 6 boards 99.9%, two
+  stranded boards 98.6% each, airtime 26% -> 40%, every extra frame ended by
+  2834 us into its slot (limit 3200); 3 boards unchanged (all fits: no extra
+  frames). Test settings, spread like the power: `second on|off|force` (force:
+  every board, full-length frames), `measure-second on|off`, `cap N|off`
+  (records per frame; `cap 2` crowds 3 boards like 6). The cabled board
+  reports per board (TWN): extra frames announced, heard, with CSI, the gap
+  after the normal frame, and where the sender says its extra frame ended
+  (header byte 23, by its own clock). Design, results and the tests to run:
+  docs/SECOND-FRAME.md. Found on the way: followers' clocks lag the
+  timekeeper by a few hundred us (long frames; ROADMAP).
+
 - **Firmware (tw_node 2.1, with the second frame below): the radio's error flag
   is kept.** A CSI measurement whose receive info says `rx_state != 0` (the
   radio reports the frame as received with an error; Espressif does not

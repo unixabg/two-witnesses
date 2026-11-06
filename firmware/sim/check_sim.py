@@ -44,6 +44,22 @@ def main():
     dups = sum(c - 1 for c in keys.values() if c > 1)
     print(f"nodes {truth['nodes']}, {truth['seconds']:.0f} s, random loss {100 * truth['loss']:.0f}%: "
           f"{truth['frames']} frames, {truth['collisions']} collisions, airtime {truth['airtime_pct']:.1f}%")
+    if "extra" in truth:            # tw_node 2.1: a second frame in the slot
+        ex = truth["extra"]
+        sent = sum(v[0] for v in ex.values())
+        print(f"  extra frames: {sent} sent, {sum(v[1] for v in ex.values())} skipped (no time), "
+              f"{truth.get('collisions_extra', 0)} collisions involving one; latest end "
+              f"{max((v[2] for v in ex.values() if v[0]), default=0)} us into the slot "
+              f"(may end by {truth.get('slot_end_us', 3200)}), late {sum(v[3] for v in ex.values())}"
+              + (f"; measured {truth['extra_measured']}" if truth.get("extra_measured") else ""))
+    made_by = collections.Counter()
+    got_by = collections.Counter()
+    for link, made in truth["made"].items():
+        rx = link.split("-")[1]
+        made_by[rx] += made
+        got_by[rx] += got.get(link, 0)
+    print("  reports home per measuring board: " +
+          ", ".join(f"{rx}: {100 * got_by[rx] / made_by[rx]:.1f}%" for rx in sorted(made_by, key=int)))
     worst = 1.0
     for link, made in sorted(truth["made"].items(), key=lambda kv: [int(x) for x in kv[0].split("-")]):
         share = got.get(link, 0) / made

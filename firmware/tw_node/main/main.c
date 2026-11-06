@@ -30,11 +30,18 @@
  *   tw_setid.py /dev/ttyACM0 relay off      (relay on: back to the default)
  * a network setting like the power.
  *
+ * A second frame in the slot (2.1, on by default; docs/SECOND-FRAME.md): when
+ * records are still waiting after a board's frame has gone out (ESP-NOW's
+ * send-done), it sends an extra frame in the same slot. Test settings, network
+ * settings like the power: tw_setid.py PORT second on|off|force,
+ * measure-second on|off, cap N|off.
+ *
  * Output on the native USB port (text lines; listen.py adds the computer's time):
  *   TWR,...  one measurement record   TWN,...  a board heard (once a second)
  *   TWS,...  this board's status      TWH,...  hello: board number, MAC, version
  * Debug messages (warnings only) go to the COM/UART port.
  */
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -75,7 +82,7 @@ static const struct { uint8_t mac[6]; uint8_t id; } KNOWN[] = {
     /* {{0x30, 0x30, 0xf9, 0x12, 0x34, 0x56}, 1},     example: board 1 */
 };
 
-typedef enum { EV_CSI, EV_FRAME } ev_kind_t;
+typedef enum { EV_CSI, EV_FRAME, EV_SENT } ev_kind_t;
 
 typedef struct {
     ev_kind_t kind;
@@ -93,6 +100,9 @@ typedef struct {
             uint16_t len;
             uint8_t  data[TW_MAX_PAYLOAD];
         } f;
+        struct {
+            uint8_t  ok;                /* ESP-NOW's send status */
+        } s;
     };
 } ev_t;
 
@@ -102,6 +112,11 @@ static uint8_t s_id;
 static uint8_t s_fake_mac[6] = {0x1a, 0x00, 0x00, 0x00, 0x00, 0x00};
 static int s_max_payload = TW_MAX_PAYLOAD;
 static uint32_t s_usb_drops, s_q_full, s_send_err, s_csi_count, s_rx_err;
+/* the frames of our slot: 0 none going out, 1 the normal frame, 2 the extra frame (work task only) */
+static uint8_t s_tx_state;
+static uint8_t s_frame2[TW_MAX_PAYLOAD];
+static uint32_t s_extra_err;
+static int32_t s_extra_end_max = INT32_MIN;     /* latest end of our extra frames since the last TWF */
 static tw_hdr_t s_last_hdr[TW_MAX_NODES + 1];
 static int8_t s_last_rssi[TW_MAX_NODES + 1];
 
@@ -235,6 +250,20 @@ static void espnow_recv_cb(const esp_now_recv_info_t *info, const uint8_t *data,
     }
 }
 
+/* a frame we sent has gone out (or failed): tell the work task first of all, ahead of anything
+   queued, so an extra frame can follow at once */
+static void espnow_send_cb(const esp_now_send_info_t *info, esp_now_send_status_t status)
+{
+    (void)info;
+    static ev_t ev;                     /* the Wi-Fi task calls us one at a time */
+    ev.kind = EV_SENT;
+    ev.local_us = (uint32_t)esp_timer_get_time();
+    ev.s.ok = status == ESP_NOW_SEND_SUCCESS;
+    if (xQueueSendToFront(s_q, &ev, 0) != pdTRUE) {
+        s_q_full++;
+    }
+}
+
 static void espnow_init(void)
 {
     ESP_ERROR_CHECK(esp_now_init());
@@ -254,6 +283,7 @@ static void espnow_init(void)
         ESP_LOGW(TAG, "ESP-NOW v%lu: frames limited to 250 bytes", (unsigned long)ver);
     }
     ESP_ERROR_CHECK(esp_now_register_recv_cb(espnow_recv_cb));
+    ESP_ERROR_CHECK(esp_now_register_send_cb(espnow_send_cb));
 }
 
 /* ---------------- CSI ---------------- */
@@ -276,7 +306,8 @@ static void csi_cb(void *ctx, wifi_csi_info_t *info)
     ev.local_us = (uint32_t)esp_timer_get_time();
     ev.c.src = h.src;
     ev.c.seq = h.seq;
-    ev.c.kflags = (uint8_t)((info->first_word_invalid ? TW_KIND_FWI : 0) | (rx->rx_state ? TW_KIND_RXERR : 0));
+    ev.c.kflags = (uint8_t)((info->first_word_invalid ? TW_KIND_FWI : 0) | (rx->rx_state ? TW_KIND_RXERR : 0) |
+                            ((h.flags & TW_F_EXTRA) ? TW_KIND_EXTRA : 0));
     ev.c.rssi = rx->rssi;
     ev.c.noise = rx->noise_floor;
     ev.c.rx_us = rx->timestamp;
@@ -339,9 +370,41 @@ static void relay_cb(void *ctx, const tw_rec_t *r)
     out(line, tw_format_record(r, line, sizeof(line)));
 }
 
+static const uint8_t BCAST[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+
+/* ESP-NOW says a frame of ours has gone out: after the normal frame, the extra one if planned */
+static void sent(const ev_t *ev)
+{
+    if (s_tx_state == 1) {
+        s_tx_state = 0;
+        int len = tw_build_extra(&s_node, (uint32_t)esp_timer_get_time(), s_frame2, s_max_payload);
+        if (len > 0) {
+            if (esp_now_send(BCAST, s_frame2, (size_t)len) == ESP_OK) {
+                s_tx_state = 2;
+            } else {
+                s_extra_err++;
+            }
+        }
+    } else if (s_tx_state == 2) {
+        s_tx_state = 0;
+        tw_note_sent(&s_node, ev->local_us, 1);
+        int32_t pos = tw_slot_pos(&s_node, ev->local_us, s_id);
+        if (pos > s_extra_end_max) {
+            s_extra_end_max = pos;
+        }
+        if (!ev->s.ok) {
+            s_extra_err++;
+        }
+    }
+}
+
 static void handle(ev_t *ev)
 {
     static char line[600];
+    if (ev->kind == EV_SENT) {
+        sent(ev);
+        return;
+    }
     if (ev->kind == EV_FRAME) {
         tw_hdr_t h;
         if (tw_peek_header(ev->f.data, ev->f.len, &h) < 0) {
@@ -349,7 +412,7 @@ static void handle(ev_t *ev)
             return;
         }
         tw_note_frame(&s_node, &h, ev->local_us);
-        if (h.src >= 1 && h.src <= TW_MAX_NODES) {
+        if (h.src >= 1 && h.src <= TW_MAX_NODES && !(h.flags & TW_F_EXTRA)) {
             s_last_hdr[h.src] = h;
         }
         rctx_t c = {h.src, ev->local_us};
@@ -362,6 +425,9 @@ static void handle(ev_t *ev)
     const tw_rec_t *r = tw_add_measurement(&s_node, ev->local_us, ev->c.src, ev->c.seq, ev->c.rx_us,
                                            ev->c.rssi, ev->c.noise, ev->c.agc, ev->c.fft, ev->c.phy,
                                            ev->c.kflags, ev->c.csi, ev->c.len, ev->c.gain, compact);
+    if (!r) {
+        return;                         /* an extra frame: counted only (tw_add_measurement) */
+    }
     if (ev->c.kflags & TW_KIND_RXERR) {
         s_rx_err++;
     }
@@ -387,6 +453,41 @@ static void poll_commands(void)
                 char msg[64];
                 int k = snprintf(msg, sizeof(msg), "TWOK relay %s, setting %u\n",
                                  (s_node.set_flags & TW_SET_RELAY_OFF) ? "off" : "on", s_node.set_seq);
+                out_wait(msg, k);
+            } else if (n && (!strncmp(cmd, "TWSET second ", 13) || !strncmp(cmd, "TWSET measure-second ", 21) ||
+                             !strncmp(cmd, "TWSET cap ", 10))) {
+                const uint8_t sec = TW_SET_SECOND_OFF | TW_SET_SECOND_FORCE;
+                uint8_t mask = 0, val = 0;
+                int cap = 0;
+                if (!strcmp(cmd, "TWSET second on")) {
+                    mask = sec;
+                } else if (!strcmp(cmd, "TWSET second off")) {
+                    mask = sec;
+                    val = TW_SET_SECOND_OFF;
+                } else if (!strcmp(cmd, "TWSET second force")) {
+                    mask = sec;
+                    val = TW_SET_SECOND_FORCE;
+                } else if (!strcmp(cmd, "TWSET measure-second on") || !strcmp(cmd, "TWSET measure-second off")) {
+                    mask = TW_SET_MEASURE_EXTRA;
+                    val = strcmp(cmd, "TWSET measure-second on") ? 0 : TW_SET_MEASURE_EXTRA;
+                } else if (!strcmp(cmd, "TWSET cap off")) {
+                    mask = 0xF0;
+                } else if (sscanf(cmd, "TWSET cap %d", &cap) == 1 && cap >= 1 && cap <= 15) {
+                    mask = 0xF0;
+                    val = (uint8_t)(cap << TW_SET_CAP_SHIFT);
+                }
+                char msg[128];
+                int k;
+                if (mask) {
+                    tw_set_flags(&s_node, mask, val);
+                    apply_settings();
+                    uint8_t f = s_node.set_flags;
+                    k = snprintf(msg, sizeof(msg), "TWOK flags %u: second %s, measure-second %s, cap %u, setting %u\n", f,
+                                 (f & TW_SET_SECOND_FORCE) ? "force" : (f & TW_SET_SECOND_OFF) ? "off" : "on",
+                                 (f & TW_SET_MEASURE_EXTRA) ? "on" : "off", f >> TW_SET_CAP_SHIFT, s_node.set_seq);
+                } else {
+                    k = snprintf(msg, sizeof(msg), "TWERR second on|off|force, measure-second on|off, cap 1..15|off\n");
+                }
                 out_wait(msg, k);
             } else if (n && (!strcmp(cmd, "TWSET power default") ||
                       (sscanf(cmd, "TWSET power %f", &dbm) == 1))) {
@@ -437,7 +538,6 @@ static void work_task(void *arg)
     static ev_t ev;
     static uint8_t frame[TW_MAX_PAYLOAD];
     static char line[300];
-    const uint8_t bcast[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
     uint32_t now = (uint32_t)esp_timer_get_time();
     uint32_t next_tx = now + 50000u + esp_random() % 50000u;
     uint32_t next_status = now + 1000000u;
@@ -448,8 +548,11 @@ static void work_task(void *arg)
         if (wait <= 0) {
             s_node.is_exit = (uint8_t)usb_up();
             int len = tw_build_frame(&s_node, now, frame, s_max_payload);
-            if (esp_now_send(bcast, frame, (size_t)len) != ESP_OK) {
+            if (esp_now_send(BCAST, frame, (size_t)len) != ESP_OK) {
                 s_send_err++;
+                s_tx_state = 0;
+            } else {
+                s_tx_state = 1;         /* its send-done brings the extra frame, if one is planned */
             }
             next_tx = tw_next_tx_local(&s_node, (uint32_t)esp_timer_get_time());
             continue;
@@ -471,10 +574,11 @@ static void work_task(void *arg)
             out(line, tw_format_status(&s_node, now, line, sizeof(line)));
             for (int k = 1; k <= TW_MAX_NODES; k++) {
                 if (k != s_id && s_node.heard[k] && (uint32_t)(now - s_node.heard_us[k]) < TW_ACTIVE_US) {
-                    out(line, tw_format_node(&s_last_hdr[k], s_last_rssi[k], tw_hear_pct(&s_node, now, (uint8_t)k),
-                                             line, sizeof(line)));
+                    out(line, tw_format_node(&s_node, &s_last_hdr[k], s_last_rssi[k],
+                                             tw_hear_pct(&s_node, now, (uint8_t)k), line, sizeof(line)));
                 }
             }
+            tw_clear_counts(&s_node);
             poll_commands();
         }
         if ((int32_t)(now - next_hello) >= 0) {
@@ -482,12 +586,19 @@ static void work_task(void *arg)
             hello();
             /* TWF: health. csi = CSI measurements made, frames = ESP-NOW frames received: if csi
                grows and frames stays 0, relaying is not arriving (see FLASH-README.md). rx_err =
-               measurements the radio flagged (rx_state != 0), since start */
+               measurements the radio flagged (rx_state != 0), since start. 2.1: extra frames sent,
+               skipped (nothing fitted in the time left), failed; the latest end of one since the
+               last TWF, us after our slot start by our clock (0: none) */
             int k = snprintf(line, sizeof(line), "TWF,%u,usb_drops=%lu,queue_full=%lu,send_err=%lu,heap=%lu,"
-                             "queue=%lu,csi=%lu,frames=%lu,rx_err=%lu\n", s_id, (unsigned long)s_usb_drops,
+                             "queue=%lu,csi=%lu,frames=%lu,rx_err=%lu,extra_sent=%lu,extra_skipped=%lu,"
+                             "extra_err=%lu,extra_end_us=%ld\n", s_id, (unsigned long)s_usb_drops,
                              (unsigned long)s_q_full, (unsigned long)s_send_err,
                              (unsigned long)esp_get_free_heap_size(), (unsigned long)uxQueueMessagesWaiting(s_q),
-                             (unsigned long)s_csi_count, (unsigned long)s_node.n_rx_frames, (unsigned long)s_rx_err);
+                             (unsigned long)s_csi_count, (unsigned long)s_node.n_rx_frames, (unsigned long)s_rx_err,
+                             (unsigned long)s_node.n_extra_sent, (unsigned long)s_node.n_extra_skipped,
+                             (unsigned long)s_extra_err,
+                             (long)(s_extra_end_max == INT32_MIN ? 0 : s_extra_end_max));
+            s_extra_end_max = INT32_MIN;
             out(line, k);
         }
     }
