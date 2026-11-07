@@ -5,6 +5,12 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **Firmware (tw_node 2.3): the normal frame built ahead.** A board builds its
+  frame 800 us before its slot time, stamped for that time, and hands it to
+  ESP-NOW at the time: in 2.2 the build took the first 300-400 us of the slot
+  (frames handed over at about 740 us, target 400). Records that arrive in
+  those 800 us go in the next frame. TWF `tx_at` should now be close to 400.
+
 - **Firmware (tw_node 2.3): two more timing figures in TWF.** `build=` how long
   building the normal frame takes (mean/max, us: is the 340 us before a frame
   goes out the build?); `rxcb=` how late the ESP-NOW receive callback comes

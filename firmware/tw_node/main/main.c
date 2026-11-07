@@ -128,6 +128,7 @@ static tstat_t s_t_at, s_t_radio, s_t_wake, s_t_xradio, s_t_len, s_t_xlen;
 /* 2.3: how long building the normal frame takes (build), and how late the ESP-NOW receive callback
    comes after a frame's end, as the radio's own receive time says (rxcb) */
 static tstat_t s_t_build, s_t_rxcb;
+#define BUILD_AHEAD_US          800u        /* 2.3: build the normal frame this long before its slot time */
 
 /* 2.3: the radio stamps each received frame (rx_ctrl timestamp, us) on a clock that runs with ours
    but starts elsewhere (about 984 ms apart on the 2.2 boards; it marks the frame's start). The
@@ -645,14 +646,23 @@ static void work_task(void *arg)
     uint32_t next_tx = now + 50000u + esp_random() % 50000u;
     uint32_t next_status = now + 1000000u;
     uint32_t next_hello = now;
+    int len = 0, built = 0;
     for (;;) {
         now = (uint32_t)esp_timer_get_time();
         int32_t wait = (int32_t)(next_tx - now);
-        if (wait <= 0) {
+        if (!built && wait <= (int32_t)BUILD_AHEAD_US) {
+            /* 2.3: build the frame ahead, for its slot time (its time stamp and its place in the
+               slot are the slot time's), then hand it over at that time: building took the
+               first 300-400 us of the slot in 2.2 */
             s_node.is_exit = (uint8_t)usb_up();
-            int len = tw_build_frame(&s_node, now, frame, s_max_payload);
+            len = tw_build_frame(&s_node, wait > 0 ? next_tx : now, frame, s_max_payload);
+            tstat_add(&s_t_build, (int32_t)((uint32_t)esp_timer_get_time() - now));
+            built = 1;
+            continue;
+        }
+        if (wait <= 0) {
+            built = 0;
             s_hand1_us = (uint32_t)esp_timer_get_time();
-            tstat_add(&s_t_build, (int32_t)(s_hand1_us - now));
             if (s_node.synced) {
                 tstat_add(&s_t_at, tw_slot_pos(&s_node, s_hand1_us, s_id));
             }
@@ -666,8 +676,8 @@ static void work_task(void *arg)
             next_tx = tw_next_tx_local(&s_node, (uint32_t)esp_timer_get_time());
             continue;
         }
-        if (wait < 1500) {              /* close to our slot: wait precisely */
-            esp_rom_delay_us((uint32_t)wait);
+        if (wait < 1500) {              /* close to our slot: wait precisely (to the build, then the slot) */
+            esp_rom_delay_us((uint32_t)(built ? wait : wait - (int32_t)BUILD_AHEAD_US));
             continue;
         }
         TickType_t ticks = pdMS_TO_TICKS((wait - 1000) / 1000);
