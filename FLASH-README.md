@@ -7,14 +7,16 @@ cabled to a computer prints everything (its own measurements and those relayed
 to it), so the other boards need only a power bank.
 
 ```
-46b325f0edf4a42fddf6d868b7f8cb46abb9dc073e8efe864b62ec275e8280d9  tw_node-s3-ch11.bin
+a0d9e06463614fbdbd13e388301490dec9baecdef749817e3181e4086867c7dc  tw_node-s3-ch11.bin
 ```
-Firmware tw_node 2.1: a second frame in a board's own slot when its frame is
-full, and the radio's error flag kept on each record (below); relaying (2.0)
-and the transmit power setting (1.1). 2.1 and 2.0 boards hear each other (the
-frame format is the same), but **run every board on 2.1**: a 2.0 board takes
-a 2.1 board's second frames for normal ones and measures them too. 1.x boards
-do not hear 2.x boards. Built from Espressif's esp-csi examples (csi_send / csi_recv at commit
+Firmware tw_node 2.2: every board reports its firmware, the followers' clocks
+no longer lag the timekeeper's, the second frame's timing is measured, each
+core's load and the free memory are reported, PSRAM is on, and each board
+makes a movement score (below; design: docs/TW_NODE-2.2.md); the second frame
+and the radio's error flag (2.1), relaying (2.0) and the transmit power
+setting (1.1). 2.0, 2.1 and 2.2 boards hear each other (the frame format is
+the same), but **run every board on the same firmware**. 1.x boards do not
+hear 2.x boards. Built from Espressif's esp-csi examples (csi_send / csi_recv at commit
 8633d67, the same as the earlier images) with ESP-IDF v5.5.6: same channel
 (11, 40 MHz, secondary below), same ESP-NOW rate (HT40 MCS0), same CSI
 settings and gain compensation as the v2 receiver, so its measurements stay
@@ -32,6 +34,10 @@ comparable with the recordings so far. Source: `firmware/tw_node/`.
 | relaying | on by default: when the cabled board hears a board badly (a car between them), the boards that hear both carry its records too, in room left in their own frames; `tw_setid.py PORT relay off` / `relay on` for every board |
 | second frame (2.1) | on by default: when a board's frame is full and records still wait (second copies, relayed records), it sends a second frame right after, in its own slot, ending before the next board's slot; same frame number, records only: nothing is measured from it, so each link is still measured once per period. The cabled board sends none. With 3 boards everything fits, so it hardly ever goes. `tw_setid.py PORT second off` / `second on`; tests: `second force`, `measure-second on`, `cap N` (docs/SECOND-FRAME.md) |
 | radio's error flag (2.1) | a measurement of a frame the radio says it received with an error (`rx_state`) is kept and marked; `split_links.py` counts them per link |
+| firmware report (2.2) | every 5 s each board sends its firmware and build (TWV); `tw_setid.py PORT` shows it for every board |
+| load, memory, PSRAM (2.2) | the cabled board's TWF line says how busy each core was (`core0=`, `core1=` %), the lowest free memory (`heap_min=`) and free PSRAM (`psram_free=`); its hello says the PSRAM found (8 MB on the N16R8) |
+| second frame timing (2.2) | the cabled board times its own frames (`tx_at`, `tx_radio`, `x_wake`, `x_radio` in TWF); `second_check.py` explains them (run with `second force`) |
+| movement score (2.2) | once a second each board scores how much each link it measures moved, as the computer's "change" (TWM); `score_check.py` compares the two. Nothing uses it yet |
 | boards | up to 16; up to 6 every measurement keeps all 192 amplitudes and goes out twice |
 | exit | any board with a computer reading its native USB port; plug a second board into a second computer for a hot standby |
 | records | each measurement goes out in two frames (redundancy) while there are 6 boards or fewer; above that, one copy, and records shrink to the 52 L-LTF subcarriers (as esp-radar uses) to keep the air under ~25% |
@@ -45,9 +51,13 @@ wrap 99.8%; boards switched on late are heard and given slots within about a
 second; with a second listener on another board the two computers together had
 100%. 2.1, the same simulator: 6 boards 97.6% -> 99.9%, two boards stranded at
 once 83% / 53% -> 98.6% each, airtime 26% -> 40%, every second frame within its
-slot; 3 boards unchanged (docs/SECOND-FRAME.md). 2.0 has run on the real boards
-since 2026-10-31; **2.1's second frame is not tested on real radios yet**: the
-desk test in docs/SECOND-FRAME.md is the first.
+slot; 3 boards unchanged (docs/SECOND-FRAME.md); 2.1 has run on the real boards
+since 2026-11-06, its second frames heard and measured as well as the first
+but ending about 450 us late. 2.2, the same simulator: the followers' clocks
+within 6 us of the timekeeper's (were 360-740 us behind), every published
+case as before, the movement score about 10 during a walk across a link and
+1.0 elsewhere. **2.2 is not tested on real radios yet** (docs/TW_NODE-2.2.md,
+"Tests").
 
 ## Flash (each board, once)
 
@@ -68,7 +78,7 @@ Board on the native USB port, in download mode (hold BOOT, tap RST, release BOOT
 Tap RST. Then check who it is (it says hello every 10 s):
 ```
 ~/scratch-esp/bin/python tw_setid.py /dev/ttyACM0
-# -> board 16, factory address 30:30:f9:xx:xx:xx, firmware tw_node 2.1
+# -> board 16, factory address 30:30:f9:xx:xx:xx, firmware tw_node 2.2, PSRAM 8 MB
 ```
 A new board says it is board 16 and needs a number:
 `~/scratch-esp/bin/python tw_setid.py /dev/ttyACM0 1` (then 2, 3, ... for the
@@ -79,15 +89,16 @@ board kept in flash: its number and its settings. Set the number again after
 every reflash; the settings come back by themselves from the other boards if they
 still have them (or set them again).
 
-**Upgrading a board that already runs tw_node 2.0, keeping its number and
-settings:** write only the program part of the image (from 0x20000; the
-bootloader and partition table are the same as 2.0's):
+**Upgrading a board that already runs tw_node 2.0 or 2.1, keeping its number
+and settings:** write only the program part of the image (from 0x20000; the
+bootloader and partition table are the same as 2.0's and 2.1's):
 ```
 dd if=tw_node-s3-ch11.bin of=/tmp/tw_node-app.bin bs=4096 skip=32
 ~/scratch-esp/bin/esptool --chip esp32s3 --port /dev/ttyACM0 write-flash 0x20000 /tmp/tw_node-app.bin
 ```
 (no erase-flash). Tap RST; `tw_setid.py /dev/ttyACM0` should say
-`firmware tw_node 2.1` with the board's old number. If it says board 16, write
+`firmware tw_node 2.2` with the board's old number (and, once all are done,
+every board's firmware). If it says board 16, write
 the whole image as above and set the number again. `tw_setid.py` tries up to three times and
 says "done" only when the board reports the new number.
 

@@ -1,7 +1,9 @@
 # tw_node 2.2: design
 
-Status: design, 2026-11-07, agreed: these six, in this order, flash staying
-4 MB. Each commit that follows builds one of them.
+Status: built 2026-11-07 (six commits, then the version and image); the
+simulator checks are in each section and in docs/CHANGES.md; real boards
+still to run ("Tests" at the end). Found on the way and fixed in its own
+commit first: a reused queue slot kept a relayed record's mark.
 
 Six changes, one commit each, in this order, then the version and image.
 The frame and record formats stay those of 2.1 (protocol version 2): 2.1 and

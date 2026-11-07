@@ -5,6 +5,10 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **tw_node 2.2: version and image.** The six changes above (and the queue
+  slot fix) in `tw_node-s3-ch11.bin`, built with ESP-IDF v5.5.6. Upgrade from
+  2.0 or 2.1: the program part only (FLASH-README), numbers and settings kept.
+
 - **Firmware (tw_node 2.2): a movement score made on the board.** Each board
   computes, for each board it hears, the computer's "change": per record the
   amplitudes in dB in bands of 4 live bins, the record's own level out; per
