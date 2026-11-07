@@ -57,6 +57,7 @@ without sudo). Then flash the boards: [FLASH-README.md](FLASH-README.md).
 | set every board's transmit power | `~/scratch-esp/bin/python ~/tw-kit/tw_setid.py /dev/ttyACM0 power 11` (`default` = 20 dBm; nothing running on the port) |
 | relaying off / on (every board) | `~/scratch-esp/bin/python ~/tw-kit/tw_setid.py /dev/ttyACM0 relay off` (`relay on` is the default) |
 | does the boards' own movement score follow the computer's? (tw_node 2.2) | `~/scratch-esp/bin/python ~/tw-kit/score_check.py ~/tw-data/runs/<run>` |
+| how far behind the timekeeper do the boards' clocks run? (any run; 2.3 should be under 100 us) | `~/scratch-esp/bin/python ~/tw-kit/lag_check.py ~/tw-data/runs/<run>` |
 | the second frame: tests (tw_node 2.1) | `tw_setid.py PORT second off\|on\|force`, `measure-second on\|off`, `cap N\|off`; after a test put back `second on`, `measure-second off`, `cap off`; read a test run with `~/scratch-esp/bin/python ~/tw-kit/second_check.py ~/tw-data/runs/<run>` (docs/SECOND-FRAME.md) |
 | check the installed kit | `~/tw-kit/version.sh` |
 
