@@ -19,11 +19,8 @@ so boards are reflashed as rarely as possible.
   simulator, 6 boards 97.6% -> 99.9%, two stranded boards 83% / 53% -> 98.6%).
   Still to do: the desk test and the crowded-night test (`cap 2`) on real
   boards; then decide whether to keep it on by default.
-- **The followers' clock lag**: a follower assumes 150 us on the air for the
-  timekeeper's frames, but long frames take up to 890 us, so every follower
-  runs a fixed few hundred us behind (docs/SECOND-FRAME.md). Harmless while
-  all lag alike; counting each frame's length into the estimate would remove
-  it. Matters for tight periods (above 6 boards).
+- **The followers' clock lag**: fixed in tw_node 2.2 (each frame's own air
+  time counts; simulator: 360-740 us behind -> within 6 us).
 - Irregular send timing, so fast rhythms (motors, fans) show at their true
   rates instead of folded down; keep the phase as well as the strength.
 

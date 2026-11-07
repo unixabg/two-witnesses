@@ -5,6 +5,19 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **Firmware (tw_node 2.2): the followers' clocks no longer lag the
+  timekeeper's.** A follower set its clock from the timekeeper's frames adding
+  a fixed 150 us for the air, but it notes a frame when it has been received,
+  at its end, and a long frame is on the air up to 890 us: every follower ran
+  behind, more the fuller the timekeeper's frames. Now each frame's own air
+  time counts (from its length, `tw_air_us`). Simulator (it now reports the
+  followers' clock error): 3 boards -360 us -> 0 (at worst 2 us), 3 boards
+  forced and 6 boards -713..-737 -> 0, 16 boards -555 -> 0 (6 us); delivery
+  unchanged in every case. Real boards keep a small remainder (driver,
+  channel access). The lag had left the timekeeper's late second frames room
+  before the next board's slot; that room is gone, which matters in `second
+  force` tests until the second frame's timing is fixed.
+
 - **Firmware (tw_node 2.2): every board says which firmware it runs.** Until
   now only the cabled board's hello (TWH) said, over its USB. Every 5 s each
   board queues a record of a new kind (`TW_KIND_INFO`, 2) with its firmware and

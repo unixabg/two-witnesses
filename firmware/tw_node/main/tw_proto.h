@@ -121,6 +121,7 @@ typedef struct {
     uint8_t  xend_q;        /* 2.1+: when the sender's last extra frame ended, by its own clock, in
                                20 us steps after its slot start (0: none yet; byte 23, zero before) */
     uint8_t  hear[TW_MAX_NODES];   /* how well the sender hears board i+1, % (0 = not heard) */
+    uint16_t len;           /* the whole frame's length, bytes (from the receiver, not on the air) */
 } tw_hdr_t;
 
 typedef struct {

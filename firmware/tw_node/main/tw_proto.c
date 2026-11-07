@@ -10,7 +10,6 @@
 #include <stdio.h>
 #include <string.h>
 
-#define AIRTIME_US   150u          /* rough preamble + header time, added to offset candidates */
 
 /* ---------------- small helpers ---------------- */
 static int popcount16(uint16_t v)
@@ -226,9 +225,12 @@ void tw_note_frame(tw_node_t *n, const tw_hdr_t *h, uint32_t rx_local)
     if (h->src != n->leader) {
         return;
     }
-    /* the leader's clock: its frame says "net_us" when it was built; it went on the
-       air a little later (queueing), so each candidate is an underestimate: keep the max */
-    uint32_t cand = h->net_us - rx_local + AIRTIME_US;
+    /* the leader's clock: its frame says "net_us" when it was built, and rx_local is when it had
+       been received, i.e. its end: add its own time on the air (2.2: from its length; before, a
+       fixed 150 us, so long frames left the followers up to ~700 us behind). It went on the air a
+       little later than it was built (queueing, channel access), so each candidate is still an
+       underestimate: keep the max */
+    uint32_t cand = h->net_us - rx_local + tw_air_us(h->len);
     n->cand[n->cand_pos] = cand;
     n->cand_pos = (uint8_t)((n->cand_pos + 1) % 16);
     if (n->n_cand < 16) {
@@ -642,6 +644,7 @@ int tw_peek_header(const uint8_t *buf, int len, tw_hdr_t *h)
     h->set_flags = buf[22];
     h->xend_q = buf[23];
     memcpy(h->hear, buf + 24, TW_MAX_NODES);
+    h->len = (uint16_t)len;
     return valid_id(h->src) ? 0 : -1;
 }
 

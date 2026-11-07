@@ -52,6 +52,9 @@ def main():
               f"{max((v[2] for v in ex.values() if v[0]), default=0)} us into the slot "
               f"(may end by {truth.get('slot_end_us', 3200)}), late {sum(v[3] for v in ex.values())}"
               + (f"; measured {truth['extra_measured']}" if truth.get("extra_measured") else ""))
+    if "clock_err_us" in truth:
+        ce = truth["clock_err_us"]
+        print(f"  followers' clocks against the timekeeper's: {ce[0]:+.0f} us on average, at worst {ce[1]:.0f} us off")
     made_by = collections.Counter()
     got_by = collections.Counter()
     for link, made in truth["made"].items():

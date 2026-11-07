@@ -70,6 +70,8 @@ static double walk_a = 30e6, walk_b = 40e6;    /* planted walk across the 1-2 li
 static long collisions = 0, frames = 0, lost_random = 0, lost_blocked = 0, rx_err_made = 0;
 static double air_used_us = 0;
 static long extra_frames = 0, collisions_extra = 0, extra_measured = 0;
+static double clk_sum = 0, clk_max = 0, clk_last = 0;   /* followers' clock against the timekeeper's */
+static long clk_n = 0;
 static struct { double t; uint8_t mask, value; int fired; } fsets[MAXSET_F];
 static FILE *out;
 static unsigned rng_state = 7;
@@ -446,16 +448,32 @@ int main(int argc, char **argv)
             }
             tw_clear_counts(&r->st);
         }
+        /* once a second (after the first 10): how far each follower's clock is from its
+           timekeeper's, in truth (us; negative = behind) */
+        if (t >= 10e6 && t - clk_last >= 1e6) {
+            clk_last = t;
+            for (int id = 1; id <= n_nodes; id++) {
+                simnode_t *f = &N_[id];
+                uint8_t ld = f->st.leader;
+                if (!f->st.synced || ld == id || ld < 1 || ld > n_nodes) continue;
+                simnode_t *L = &N_[ld];
+                int32_t err = (int32_t)((local_us(f, t) + f->st.offset) - (local_us(L, t) + L->st.offset));
+                if (err > 100000 || err < -100000) continue;        /* a timekeeper change under way */
+                clk_sum += err;
+                clk_n++;
+                if (fabs((double)err) > clk_max) clk_max = fabs((double)err);
+            }
+        }
     }
     for (int id = 1; id <= n_nodes; id++) leader_changes_total += N_[id].st.leader_changes;
     /* ground truth for check_sim.py */
     fprintf(stderr, "{\"nodes\": %d, \"seconds\": %.1f, \"loss\": %.3f, \"frames\": %ld, \"collisions\": %ld, "
                     "\"lost_random\": %ld, \"lost_blocked\": %ld, \"airtime_pct\": %.2f, \"leader_changes\": %ld, "
                     "\"rx_err_made\": %ld, \"extra_frames\": %ld, \"collisions_extra\": %ld, \"extra_measured\": %ld, "
-                    "\"slot_end_us\": %u, \"made\": {",
+                    "\"slot_end_us\": %u, \"clock_err_us\": [%.0f, %.0f], \"made\": {",
             n_nodes, seconds, p_loss, frames, collisions, lost_random, lost_blocked, 100 * air_used_us / end,
             leader_changes_total, rx_err_made, extra_frames, collisions_extra, extra_measured,
-            TW_SLOT_US + TW_SLOT_SLACK_US);
+            TW_SLOT_US + TW_SLOT_SLACK_US, clk_n ? clk_sum / clk_n : 0.0, clk_max);
     int first = 1;
     for (int rx = 1; rx <= n_nodes; rx++)
         for (int tx = 1; tx <= n_nodes; tx++)
