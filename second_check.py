@@ -120,8 +120,11 @@ def main():
                     c["rx_err"] += int(f[21])
                     if int(f[17]):
                         gaps[s].append(int(f[19]))
-                    if int(f[20]):
-                        ends[s].append(int(f[20]))
+                        # the sender keeps saying where its *last* second frame ended, also long
+                        # after it stopped sending them: count it only in a second when its
+                        # second frames were heard here
+                        if int(f[20]):
+                            ends[s].append(int(f[20]))
                     flags_seen.setdefault(int(f[14]), t)
                 elif kind == "TWS" and len(f) >= 27:
                     cable = int(f[2])
@@ -217,7 +220,7 @@ def main():
           "the second frames that arrived too; with CSI = of those, the ones the radio gave a measurement",
           "for (measured, or only counted when measure-second is off). gap = from",
           "the normal frame to the second, as heard here; own end = where the sender says its second",
-          "frame ended, by its own clock (20 us steps)."]
+          "frame ended, by its own clock (20 us steps), in the seconds its second frames were heard here."]
     text = "\n".join(L) + "\n"
     print(text)
     out = os.path.join(a.folder, "second_check.txt")

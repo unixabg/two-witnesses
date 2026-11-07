@@ -5,6 +5,13 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **`second_check.py`: a board's reported end only counts while its second
+  frames are heard.** Each board keeps saying where its last second frame
+  ended, also after it has stopped sending them, so a normal run straight
+  after a forced test showed "own end 3560 us, 602 s over 3200" with no second
+  frame sent (2026-11-06). Now it shows "-" there. (The firmware will stop
+  repeating the old value in its next release.)
+
 - **Computer side for the second frame (tw_node 2.1).** `tw_setid.py PORT
   second on|off|force`, `measure-second on|off`, `cap N|off`, each confirmed
   by the board on the cable like the power; `tw_setid.py PORT` now shows these
