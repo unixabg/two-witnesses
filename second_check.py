@@ -41,6 +41,7 @@ import split_links as S  # noqa: E402  (parse_twr)
 
 LIMIT_US = 3200             # TW_SLOT_US + TW_SLOT_SLACK_US
 TIMING_KEYS = ("tx_at", "tx_radio", "x_wake", "x_radio", "tx_len", "x_len")
+TIMING_23 = ("build", "rxcb", "ovh")        # tw_node 2.3
 
 
 def air_us(length):
@@ -142,7 +143,7 @@ def main():
                         twf.append((t, {k: int(v) for k, v in d.items() if "/" not in v}))
                     if "tx_radio" in d:         # 2.2+: where the cabled board's frames' time goes
                         timing.append({k: tuple(int(x) for x in v.split("/")) for k, v in d.items()
-                                       if k in TIMING_KEYS})
+                                       if k in TIMING_KEYS + TIMING_23})
                 elif kind == "TWH" and len(f) >= 5:
                     fw.add(f[4])
                 elif kind == "TWR":
@@ -230,17 +231,33 @@ def main():
                      f"{air_us(ln[0]):.0f} us at {ln[0]:.0f} bytes: the rest, {rad[0] - air_us(ln[0]):.0f} us, "
                      "is channel access and driver)")
         if wake:
-            L.append(f"  {'send-done to second frame handed':36s}{wake[0]:6.0f} / {wake[1]:5.0f} us   (our task: the "
-                     "callback, the queue, building it)")
+            L.append(f"  {'send-done to second frame handed':36s}{wake[0]:6.0f} / {wake[1]:5.0f} us   (2.2: our task, "
+                     "the queue, building it; 2.3: sent from the callback itself)")
         if xrad and xln:
             L.append(f"  {"... until the second's send-done":36s}{xrad[0]:6.0f} / {xrad[1]:5.0f} us   (its air time "
                      f"{air_us(xln[0]):.0f} us at {xln[0]:.0f} bytes: the rest, {xrad[0] - air_us(xln[0]):.0f} us, "
                      "is channel access and driver)")
+        build = mm("build")
         if at and rad and wake and xrad:
             L.append(f"  so a second frame ends about {at[0] + rad[0] + wake[0] + xrad[0]:.0f} us into the slot "
-                     f"(limit {LIMIT_US}); the firmware allows 50 us for the send-done and 150 us of channel access")
+                     f"(limit {LIMIT_US}){'' if build else '; 2.2 cuts them for 50 us to the send-done and 150 us of access'}")
         elif not wake:
             L.append("  (no second frames from the cabled board: it sends them only in \"second force\")")
+        build, rxcb, ovh = (mm(k) for k in TIMING_23)
+        if build:                       # 2.3
+            L.append(f"  {'building the normal frame':36s}{build[0]:6.0f} / {build[1]:5.0f} us   (2.3 builds it 800 us "
+                     "ahead: it must stay under that)")
+        if rxcb:
+            L.append(f"  {'receive callback after a frame':36s}{rxcb[0]:6.0f} / {rxcb[1]:5.0f} us   (after its end, by the "
+                     "radio's own receive time; 2.3's clock no longer waits for it)")
+        if ovh:
+            L.append(f"  second frames are cut for a send-done {ovh[0]:.0f} + 2 x {tim[-1]['ovh'][1]:.0f} us after the "
+                     "air, and 310 us to get on the air (2.3)")
+        if twf and "x_cb" in twf[-1][1]:
+            f0, f1 = twf[0][1], twf[-1][1]
+            dd = {k: f1.get(k, 0) - f0.get(k, 0) for k in ("x_cb", "x_task", "x_refused", "extra_late")}
+            L.append(f"  second frames sent from the send-done {dd['x_cb']:,}, by the task {dd['x_task']:,} "
+                     f"(ESP-NOW refused the callback's {dd['x_refused']:,}), dropped as too late {dd['extra_late']:,}")
     if pair:
         L += ["", f"measured second frames ({n_extra_rec:,} records): second frame vs the normal frame 1 ms "
                   "before, against two normal frames one period apart",

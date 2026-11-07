@@ -5,6 +5,11 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **Computer side: `second_check.py` reads 2.3's timing**: the build time, the
+  receive callback after a frame's end, what second frames are cut for, and
+  second frames sent from the send-done, by the task, refused there, dropped
+  as too late.
+
 - **Firmware (tw_node 2.3): the clock from the radio's own receive time.**
   Each frame says its sender's delay: the least, over its last 16 frames, of
   time stamp to send-done less the air (20 us steps), in the sender's own
