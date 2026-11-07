@@ -54,6 +54,7 @@
 #include "esp_random.h"
 #include "esp_system.h"
 #include "esp_rom_sys.h"
+#include "esp_heap_caps.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "freertos/FreeRTOS.h"
@@ -123,6 +124,21 @@ static int32_t s_extra_end_max = INT32_MIN;     /* latest end of our extra frame
 typedef struct { uint32_t n; uint64_t sum; int32_t max; } tstat_t;
 static tstat_t s_t_at, s_t_radio, s_t_wake, s_t_xradio, s_t_len, s_t_xlen;
 static uint32_t s_hand1_us, s_cb1_us, s_hand2_us;
+
+/* 2.2: how busy each core was since the last call, % (FreeRTOS counts each core's idle time on
+   esp_timer, 1 MHz; 32 bits wrap after 71 min, so only differences over 10 s are used) */
+static uint32_t s_idle_prev[2], s_wall_prev;
+
+static void core_load(unsigned busy[2])
+{
+    uint32_t wall = (uint32_t)esp_timer_get_time(), dw = wall - s_wall_prev;
+    for (int c = 0; c < 2; c++) {
+        uint32_t idle = (uint32_t)ulTaskGetIdleRunTimeCounterForCore(c), di = idle - s_idle_prev[c];
+        busy[c] = (s_wall_prev == 0 || dw == 0 || di >= dw) ? 0u : (unsigned)(100u - (uint32_t)((uint64_t)di * 100u / dw));
+        s_idle_prev[c] = idle;
+    }
+    s_wall_prev = wall;
+}
 
 static void tstat_add(tstat_t *t, int32_t v)
 {
@@ -640,15 +656,22 @@ static void work_task(void *arg)
                              (unsigned long)s_extra_err,
                              (long)(s_extra_end_max == INT32_MIN ? 0 : s_extra_end_max));
             s_extra_end_max = INT32_MIN;
-            /* 2.2: where the frames' time goes (mean/max, us; lengths in bytes) */
+            /* 2.2: where the frames' time goes (mean/max, us; lengths in bytes); how busy each core
+               was over these 10 s (%; Wi-Fi runs on core 0, our work task on core 1), and the
+               lowest free internal memory since start (bytes) */
             char b1[24], b2[24], b3[24], b4[24], b5[24], b6[24];
+            unsigned busy[2];
+            core_load(busy);
             if (k > 0 && k < (int)sizeof(line)) {
                 k--;                    /* over the line end */
                 k += snprintf(line + k, sizeof(line) - (size_t)k,
-                              ",tx_at=%s,tx_radio=%s,x_wake=%s,x_radio=%s,tx_len=%s,x_len=%s\n",
+                              ",tx_at=%s,tx_radio=%s,x_wake=%s,x_radio=%s,tx_len=%s,x_len=%s,"
+                              "core0=%u,core1=%u,heap_min=%lu\n",
                               tstat_text(&s_t_at, b1, sizeof(b1)), tstat_text(&s_t_radio, b2, sizeof(b2)),
                               tstat_text(&s_t_wake, b3, sizeof(b3)), tstat_text(&s_t_xradio, b4, sizeof(b4)),
-                              tstat_text(&s_t_len, b5, sizeof(b5)), tstat_text(&s_t_xlen, b6, sizeof(b6)));
+                              tstat_text(&s_t_len, b5, sizeof(b5)), tstat_text(&s_t_xlen, b6, sizeof(b6)),
+                              busy[0], busy[1],
+                              (unsigned long)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
             }
             out(line, k);
         }

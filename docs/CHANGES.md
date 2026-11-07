@@ -5,6 +5,14 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **Firmware (tw_node 2.2): how busy each core is, and memory.** FreeRTOS now
+  counts each core's idle time (run-time statistics on `esp_timer`: a timer
+  read per task switch). The TWF line adds `core0=` and `core1=` (percent busy
+  over its 10 s; Wi-Fi runs on core 0, our work task on core 1) and `heap_min=`
+  (the lowest free internal memory since start). The dashboard's health line
+  shows them (`core0=23% core1=6% heap_min=131k`); its `usb_drops` item is
+  shorter.
+
 - **Firmware (tw_node 2.2): where a second frame's time goes.** In the 2.1
   tests second frames ended about 450 us past their limit, and the
   timestamps (callbacks) could not tell real delay from late callbacks. The

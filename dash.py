@@ -604,11 +604,18 @@ class Screen:
                     # drops since this dashboard started reading say anything about now
                     try:
                         n = int(x[10:])
-                        items.append(f"usb_drops=+{n - boards.get('usb_drops0', n)} since start ({n} since boot)")
+                        items.append(f"usb_drops=+{n - boards.get('usb_drops0', n)} ({n} since boot)")
                     except ValueError:
                         items.append(x)
                 elif x.startswith(("queue_full", "frames")):
                     items.append(x)
+                elif x.startswith(("core0=", "core1=")):
+                    items.append(x + "%")       # 2.2: how busy each core was over the last 10 s
+                elif x.startswith("heap_min="):
+                    try:
+                        items.append(f"heap_min={int(x[9:]) // 1024}k")
+                    except ValueError:
+                        pass
                 elif x.startswith(("rx_err=", "extra_sent=")):
                     # tw_node 2.1: since the dashboard started, as usb_drops
                     k, _, v = x.partition("=")
