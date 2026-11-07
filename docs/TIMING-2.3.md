@@ -1,6 +1,8 @@
 # Frame timing (tw_node 2.3?): simulator results, design, no firmware yet
 
-Status: 2026-11-07, simulator and the boards' own files; no firmware. The
+Status: 2026-11-07. Built as tw_node 2.3 (docs/TW_NODE-2.3.md), the "hwrx" clock
+learning the radio's offset from the CSI callbacks; this note is how it was
+chosen. The
 question was whether the delays the 2.2 boards measured (docs/TW_NODE-2.2.md,
 section 3) will hurt once there are 6 boards or more, and what fixing them
 would buy.

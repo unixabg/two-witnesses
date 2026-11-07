@@ -5,6 +5,12 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **tw_node 2.3: version and image.** The changes above in
+  `tw_node-s3-ch11.bin`, built with ESP-IDF v5.5.6; docs/TW_NODE-2.3.md (what
+  changes, the simulator, the tests). Upgrade from 2.0-2.2: the program part
+  only (FLASH-README), numbers and settings kept. Not yet tested on real
+  radios: first a desk test that ESP-NOW sends from its send-done callback.
+
 - **Firmware (tw_node 2.3): after one refusal, the callback leaves second
   frames to the work task.** If ESP-NOW refuses a send from its send-done
   callback, the callback stops trying (until the board restarts) and the
