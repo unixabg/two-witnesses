@@ -97,6 +97,13 @@
                                            text in q[] (n bytes); printed as TWV, never as TWR */
 #define TW_INFO_MAX         64
 #define TW_INFO_EVERY_US    5000000u    /* how often each board sends it */
+#define TW_KIND_SCORE       3           /* 2.2+: not a measurement: once a second, this board's movement
+                                           score for each board it heard (q[i]: board i+1, x10; 0 =
+                                           none); printed as TWM */
+#define TW_SCORE_BAND       4           /* subcarriers per band (as replay.py, dash.py) */
+#define TW_SCORE_BANDS      (TW_MAX_AMPS / TW_SCORE_BAND)
+#define TW_SCORE_LEARN      50          /* records that decide which bins are live */
+#define TW_SCORE_START      30          /* seconds whose spread starts the quiet level */
 #define TW_KIND_EXTRA       0x20        /* flag: measured from an extra frame (TW_SET_MEASURE_EXTRA only) */
 #define TW_KIND_RXERR       0x40        /* flag: the radio reported this frame received with an error
                                            (rx_state != 0; the numbers are not documented). Kept, only
@@ -153,6 +160,21 @@ typedef struct {
     uint8_t  boot, used;
 } tw_seen_t;
 
+/* the movement score for one board heard (tw_node 2.2): per record the amplitudes in dB, in
+   bands of 4 live bins, the record's own level out; per second each band's spread, against the
+   band's quiet level (its running median of those spreads); averaged over the bands */
+typedef struct {
+    uint8_t  n;                             /* record length it learned on (0: not started) */
+    uint8_t  learn;                         /* records seen while learning the live bins */
+    uint8_t  nb;                            /* bands (0 until learned) */
+    uint8_t  start;                         /* seconds into the quiet level's start */
+    uint8_t  bin[TW_MAX_AMPS];              /* while learning: records with that bin above 0; then
+                                               the live bins, TW_SCORE_BAND per band */
+    uint16_t recs;                          /* records this second */
+    float    s1[TW_SCORE_BANDS], s2[TW_SCORE_BANDS];   /* this second's sums of the band shape */
+    float    ref[TW_SCORE_BANDS];           /* each band's quiet level */
+} tw_score_t;
+
 typedef struct {
     uint8_t  id, is_exit, boot;
     uint32_t seq, recseq;
@@ -198,6 +220,9 @@ typedef struct {
     char     info[TW_INFO_MAX + 1];
     uint32_t info_us;
     uint8_t  info_sent;
+    /* 2.2: the movement score, per board heard, and when the last second was closed */
+    tw_score_t score[TW_MAX_NODES + 1];
+    uint32_t score_sec;
     uint8_t  xend_q;                        /* when our last extra frame ended (tw_note_sent), 20 us steps */
     uint32_t xend_us;                       /* ... and when that was (2.2: said only for 1 s after) */
     /* about each board heard, since tw_clear_counts (the firmware: once a second, after TWN) */

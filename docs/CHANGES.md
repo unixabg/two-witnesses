@@ -5,6 +5,22 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **Firmware (tw_node 2.2): a movement score made on the board.** Each board
+  computes, for each board it hears, the computer's "change": per record the
+  amplitudes in dB in bands of 4 live bins, the record's own level out; per
+  second each band's spread against its quiet level (a running median that
+  settles after a lasting change in 10-15 minutes), averaged over the bands.
+  Normal frames only. Once a second it queues a record of a new kind
+  (`TW_KIND_SCORE`, 3) with the 16 scores; the cabled board prints
+  `TWM,board,boot,record number,uptime,timekeeper's clock,s1..s16` (x10).
+  `listen.py` keeps TWM lines; `split_links.py` counts them as delivered and
+  writes `links/board_score.csv`; `score_check.py RUN` (new) compares them with
+  the computer's change for the same seconds (rank correlation, loud seconds
+  for both / either). Nothing uses the score yet: it is to be checked first.
+  Simulator, a 30-s walk across link 1-2: the score about 10 on 1-2 both ways,
+  1.0 elsewhere; 31 loud seconds for both on each direction, none for only one.
+  Memory: about 800 bytes per board heard.
+
 - **Firmware (tw_node 2.2): PSRAM on.** The boards (ESP32-S3-WROOM-1 N16R8)
   have 8 MB of octal PSRAM; the firmware now starts it, and starts without it
   on a module that has none (boards 4-6 may be another variant). It is used

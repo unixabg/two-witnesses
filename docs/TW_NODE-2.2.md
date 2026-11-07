@@ -90,8 +90,9 @@ subcarriers (the bins live in more than half of the link's first 50 records),
 each record's own level taken out; per second, each band's spread; divided by
 the band's quiet level, averaged over the bands. The quiet level is the
 band's running median of those per-second spreads (a slow step towards each
-new second: 2% of the level), started from the first 30 seconds. Only normal
-frames count (not second frames).
+new second: 0.2% of the level, so a lasting change becomes the usual in about
+10-15 minutes, like the replay's settle), started from the mean of the first
+30 seconds. Only normal frames count (not second frames).
 
 Once a second each board queues a record of kind `TW_KIND_SCORE` (3): 16
 bytes, the score of each board it heard that second (x10, 1..255; 0 = none),
@@ -103,8 +104,12 @@ closely they follow each other, and whether the loud seconds are the same.
 Nothing uses the score yet: it is there to be checked against the computer,
 before anything depends on it.
 
-Cost: about 600 bytes of internal memory per board heard, one record a second
-(44 bytes), and the arithmetic of the dB conversion (a few us a record).
+Cost: about 800 bytes of internal memory per board heard (static use 149.5 KB
+-> 169.6 KB for the whole of 2.2, of 341 KB), one record a second (44 bytes),
+and a log10 per live bin of each record. Simulator, a walk across link 1-2 for
+30 s: the board's score about 10 on 1-2 both ways during it, 1.0 elsewhere;
+`score_check.py`: 31 loud seconds for both on each direction, none for only
+one of them.
 
 ## Tests (real boards)
 

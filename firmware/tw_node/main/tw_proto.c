@@ -736,7 +736,7 @@ void tw_set_info(tw_node_t *n, const char *text)
 }
 
 /* queue a record that is not a measurement: its kind, and len bytes of content */
-static const tw_rec_t *queue_aux(tw_node_t *n, uint32_t now, uint8_t kind, const uint8_t *data, int len)
+static tw_rec_t *queue_aux(tw_node_t *n, uint32_t now, uint8_t kind, const uint8_t *data, int len)
 {
     tw_qent_t *e = new_entry(n);
     tw_rec_t *r = &e->rec;
@@ -756,8 +756,101 @@ static const tw_rec_t *queue_aux(tw_node_t *n, uint32_t now, uint8_t kind, const
     return r;
 }
 
+/* one record into the score of board tx (a normal frame's measurement) */
+static void score_add(tw_node_t *n, uint8_t tx, const tw_rec_t *r)
+{
+    tw_score_t *s = &n->score[tx];
+    if (s->n != r->n) {                         /* first record, or its length changed: start over */
+        memset(s, 0, sizeof(*s));
+        s->n = r->n;
+    }
+    if (s->nb == 0) {                           /* learning which bins are live */
+        for (int i = 0; i < r->n; i++) {
+            s->bin[i] = (uint8_t)(s->bin[i] + (r->q[i] > 0));       /* counts, while learning */
+        }
+        if (++s->learn < TW_SCORE_LEARN) {
+            return;
+        }
+        int k = 0;
+        for (int i = 0; i < r->n; i++) {        /* the counts become the list of live bins (k <= i) */
+            if (2 * s->bin[i] > TW_SCORE_LEARN) {
+                s->bin[k++] = (uint8_t)i;
+            }
+        }
+        s->nb = (uint8_t)(k / TW_SCORE_BAND);
+        if (s->nb == 0) {
+            s->n = 0;                           /* nothing live: try again */
+        }
+        return;
+    }
+    float bm[TW_SCORE_BANDS], level = 0;
+    float step = r->step / 4.0f;
+    for (int b = 0; b < s->nb; b++) {
+        float sum = 0;
+        for (int j = 0; j < TW_SCORE_BAND; j++) {
+            sum += 20.0f * log10f(r->q[s->bin[b * TW_SCORE_BAND + j]] * step + 0.5f);
+        }
+        bm[b] = sum / TW_SCORE_BAND;
+        level += bm[b];
+    }
+    level /= s->nb;
+    for (int b = 0; b < s->nb; b++) {
+        float v = bm[b] - level;                /* the record's own level out */
+        s->s1[b] += v;
+        s->s2[b] += v * v;
+    }
+    s->recs++;
+}
+
+/* close a second of board tx's score: x10 as a byte (0: none this second) */
+static uint8_t score_close(tw_score_t *s)
+{
+    uint8_t out = 0;
+    if (s->nb && s->recs >= 5) {
+        float tot = 0;
+        int started = s->start >= TW_SCORE_START;
+        for (int b = 0; b < s->nb; b++) {
+            float m = s->s1[b] / s->recs;
+            float sd = sqrtf(fmaxf(s->s2[b] / s->recs - m * m, 0.0f));
+            if (!started) {                     /* the quiet level starts as the mean of 30 seconds */
+                s->ref[b] += (sd - s->ref[b]) / (float)(s->start + 1);
+            } else {
+                tot += sd / fmaxf(s->ref[b], 1e-3f);
+                /* then a running median: a small step towards each new second (0.2%: a lasting
+                   change becomes the usual in about 10-15 minutes, as the replay's settle) */
+                s->ref[b] *= sd > s->ref[b] ? 1.002f : 1.0f / 1.002f;
+            }
+        }
+        if (!started) {
+            s->start++;
+        } else {
+            int v = (int)lrintf(tot / s->nb * 10.0f);
+            out = (uint8_t)(v < 1 ? 1 : v > 255 ? 255 : v);
+        }
+    }
+    memset(s->s1, 0, sizeof(s->s1));
+    memset(s->s2, 0, sizeof(s->s2));
+    s->recs = 0;
+    return out;
+}
+
 const tw_rec_t *tw_aux_record(tw_node_t *n, uint32_t now)
 {
+    uint32_t sec = now / 1000000u;
+    if (sec != n->score_sec) {                  /* once a second: close it, queue the scores */
+        n->score_sec = sec;
+        uint8_t sc[TW_MAX_NODES];
+        int any = 0;
+        for (int i = 1; i <= TW_MAX_NODES; i++) {
+            sc[i - 1] = i == n->id ? 0 : score_close(&n->score[i]);
+            any |= sc[i - 1];
+        }
+        if (any) {
+            tw_rec_t *r = queue_aux(n, now, TW_KIND_SCORE, sc, TW_MAX_NODES);
+            r->txseq = sec;                     /* this board's uptime, s */
+            return r;
+        }
+    }
     if (n->info[0] && (!n->info_sent || (uint32_t)(now - n->info_us) >= TW_INFO_EVERY_US)) {
         n->info_sent = 1;
         n->info_us = now;
@@ -843,6 +936,9 @@ const tw_rec_t *tw_add_measurement(tw_node_t *n, uint32_t now, uint8_t tx, uint3
     e->relay = 0;                       /* the slot may have held a relayed record before */
     e->made_us = now;
     n->n_meas++;
+    if (!(kflags & TW_KIND_EXTRA) && valid_id(tx) && tx != n->id) {
+        score_add(n, tx, r);            /* 2.2: the movement score (normal frames only) */
+    }
     tw_seen(n, n->id, n->boot, r->recseq);
     return r;
 }
@@ -913,6 +1009,19 @@ int tw_format_record(const tw_rec_t *r, char *out, int max)
         }
         text[n] = 0;
         return snprintf(out, (size_t)max, "TWV,%u,%u,%lu,%s\n", r->rx, r->boot, (unsigned long)r->recseq, text);
+    }
+    if ((r->kind & TW_KIND_MASK) == TW_KIND_SCORE) {
+        /* TWM,board,boot,record number,its uptime s,the timekeeper's clock,score of board 1..16 (x10) */
+        int k = snprintf(out, (size_t)max, "TWM,%u,%u,%lu,%lu,%lu", r->rx, r->boot, (unsigned long)r->recseq,
+                         (unsigned long)r->txseq, (unsigned long)r->net_us);
+        for (int i = 0; i < TW_MAX_NODES && k > 0 && k < max - 6; i++) {
+            k += snprintf(out + k, (size_t)(max - k), ",%u", i < r->n ? r->q[i] : 0);
+        }
+        if (k > 0 && k < max - 1) {
+            out[k++] = '\n';
+            out[k] = 0;
+        }
+        return k;
     }
     int k = snprintf(out, (size_t)max, "TWR,%u,%u,%lu,%u,%lu,%u,%lu,%lu,%d,%d,%u,%d,%u,%u,%u,%u,",
                      r->rx, r->tx, (unsigned long)r->txseq, r->hop, (unsigned long)r->recseq, r->boot,

@@ -97,6 +97,7 @@ class Splitter:
         self.extra = collections.Counter()             # link -> records measured from second frames (test)
         self.boards = {}
         self.fw = {}                                   # board -> what it says it runs (TWV, 2.2+)
+        self.scores = []                               # (host s, net us, link, score): TWM, 2.2+
         self.dups = self.bad = 0
         self.hour_span = (0, 0, "")
         self.win = collections.defaultdict(lambda: collections.defaultdict(lambda: [0, 0]))  # 10 s -> rx -> [n, noise sum]
@@ -433,6 +434,15 @@ def main():
                     except ValueError:
                         pass
                     continue
+                if f[1] == "TWM" and len(f) >= 23:   # 2.2+: board,boot,number,uptime,net_us,16 scores
+                    try:
+                        if sp.delivered(int(f[0]), int(f[2]), int(f[3]), int(f[4])):
+                            for tx, v in enumerate(f[7:23], 1):
+                                if v != "0":
+                                    sp.scores.append((int(f[0]) / 1e9, int(f[6]), f"{tx}-{f[2]}", int(v) / 10))
+                    except ValueError:
+                        pass
+                    continue
                 if f[1] == "TWH" and len(f) >= 5:
                     psram = ""
                     if len(f) >= 8 and f[7].strip().isdigit():      # 2.2+: PSRAM found, bytes
@@ -468,6 +478,11 @@ def main():
                     continue
                 sp.add(host_ns, r)
         sp.finish()
+        if sp.scores:                   # 2.2+: the boards' own movement score, one row a second per link
+            with open(os.path.join(outdir, "board_score.csv"), "w") as fh:
+                fh.write("host_s,net_us,link,score\n")
+                for t, net, link, v in sorted(sp.scores):
+                    fh.write(f"{t:.3f},{net},{link},{v:g}\n")
         sp.save_losses()
         sp.save_channel()
         print(sp.report())

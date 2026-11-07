@@ -913,7 +913,13 @@ def run(scr, a):
                     continue
                 kind, t, f = p
                 try:
-                    if kind == "TWV":           # 2.2+: board,boot,record number,firmware,build
+                    if kind == "TWM":           # 2.2+: a board's movement scores: a record like any
+                        dk = (int(f[0]), int(f[1]), int(f[2]))
+                        if dk not in seen:
+                            seen.add(dk)
+                            deliv.add(*dk)
+                            seen_order.append(dk)
+                    elif kind == "TWV":         # 2.2+: board,boot,record number,firmware,build
                         dk = (int(f[0]), int(f[1]), int(f[2]))
                         if dk not in seen:      # a record like any: counts for its board's delivery
                             seen.add(dk)
