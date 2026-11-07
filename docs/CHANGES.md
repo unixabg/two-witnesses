@@ -5,6 +5,12 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **Computer side: a TWR line that is not a measurement is never taken for
+  one.** During an upgrade, a 2.1 board on the cable prints 2.2's firmware and
+  score records as ordinary TWR lines (kinds 2 and 3). `split_links.py` counts
+  them as delivered and nothing more; the dashboard and `second_check.py` skip
+  them.
+
 - **tw_node 2.2: version and image.** The six changes above (and the queue
   slot fix) in `tw_node-s3-ch11.bin`, built with ESP-IDF v5.5.6. Upgrade from
   2.0 or 2.1: the program part only (FLASH-README), numbers and settings kept.

@@ -147,8 +147,8 @@ def main():
                     fw.add(f[4])
                 elif kind == "TWR":
                     r = S.parse_twr(f[1:])
-                    if r is None:
-                        continue
+                    if r is None or (r["kind"] & 0x0F) > 1:
+                        continue                    # unreadable, or not a measurement
                     key = (r["rx"], r["boot"], r["tx"])
                     if r["kind"] & 0x20:
                         n_extra_rec += 1

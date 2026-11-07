@@ -131,6 +131,10 @@ class Splitter:
         # reports lost on the way
         if not self.delivered(host_ns, r["rx"], r["boot"], r["recseq"]):
             return
+        if (r["kind"] & 0x0F) > 1:
+            # not a measurement (2.2's firmware or score record, printed as TWR by an older
+            # cabled board): counted for delivery above, nothing more
+            return
         w10 = host_ns // 10**10 * 10
         link = f"{r['tx']}-{r['rx']}"
         if r["kind"] & 0x20:

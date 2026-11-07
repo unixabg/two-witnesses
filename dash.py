@@ -129,6 +129,8 @@ def parse_tw(dgram):
             n, step = int(f[16]), int(f[17])
             if len(f[18]) != 2 * n:
                 return None
+            if (int(f[15]) & 0x0F) > 1:
+                return None             # not a measurement (2.2's records, printed by an older board)
             amp = np.frombuffer(bytes.fromhex(f[18]), dtype=np.uint8).astype(float) * (step / 4)
             rx, tx = int(f[2]), int(f[3])
             return ("rec", t, f"{tx}{ARROW}{rx}", int(f[4]), int(f[10]), int(f[11]), amp,
