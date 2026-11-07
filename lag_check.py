@@ -25,7 +25,11 @@ So, per board k:
     lag (C) = half of (where k's frames really arrive - where k thinks the
               timekeeper arrives): needs no TWF, so it works on any run (k's
               delays like the timekeeper's, as in B)
-The simulator says about 850 us for all three (followers behind). Normal frames'
+Also, for the cabled board: how long after the radio's own receive time
+(the record's rx_us, the rx_ctrl timestamp) its CSI callback ran (the
+record's net_us, less the board's clock offset from TWS). That is the part
+of the lag on the receiving side, if the two clocks are the same one. The
+real boards gave 1.1-1.5 ms for all three (2026-11-07). Normal frames'
 measurements only. Writes RUN_FOLDER/lag_check.txt too.
 """
 import argparse
@@ -68,6 +72,8 @@ def main():
     cable = None
     arrive = collections.defaultdict(list)   # (rx, tx) -> positions of tx's frames in tx's slot, rx's clock
     sd = []                                  # cabled board: tx_at + tx_radio, per TWF (means)
+    offset = None                            # the cabled board's clock offset (TWS), latest
+    cbd = collections.defaultdict(list)      # sender -> cabled board's callback delay after rx_us
     for path in files:
         for line in A.read_lines(path):
             f = line.rstrip("\n").split(",")
@@ -79,6 +85,7 @@ def main():
                     cable = int(f[2])
                     leader[int(f[4])] += 1
                     period[int(f[7])] += 1
+                    offset = int(f[9])
                 elif k == "TWF":
                     d = dict(x.split("=", 1) for x in f[3:] if "=" in x)
                     if "tx_at" in d and "tx_radio" in d:
@@ -90,6 +97,9 @@ def main():
                     if r is None or (r["kind"] & 0x0F) > 1 or r["kind"] & 0x20:
                         continue
                     arrive[(r["rx"], r["tx"])].append(r["net_us"])
+                    if r["rx"] == cable and offset is not None:
+                        d = (r["net_us"] - offset - r["rx_us"]) % (1 << 32)
+                        cbd[r["tx"]].append(d - (1 << 32) if d >= (1 << 31) else d)
             except (ValueError, IndexError):
                 continue
     if not period or not leader:
@@ -125,7 +135,16 @@ def main():
         lb = f"{np.median(real) - t_sd:6.0f}" if (t_sd is not None and real) else "     -"
         lc = f"{(np.median(real) - np.median(think)) / 2:6.0f}" if (real and think) else "     -"
         L.append(f"  {b:>5}   {c1:>44s}   {c2:>44s}   {la}   {lb}   {lc}")
-    L += ["", "lag = how far the board's clock runs behind the timekeeper's, us (simulator: about 850).",
+    if cbd:
+        L += ["", f"  board {cable}'s CSI callback after the radio's receive time (rx_us), per sender:"]
+        for b in sorted(cbd):
+            v = np.asarray(cbd[b], dtype=float)
+            L.append(f"    from board {b}: median {np.median(v):6.0f} us, middle half {np.percentile(v, 25):6.0f} .. "
+                     f"{np.percentile(v, 75):6.0f}, 1% / 99% {np.percentile(v, 1):6.0f} / {np.percentile(v, 99):7.0f} "
+                     f"({len(v):,d} records)")
+        L.append("    (about the frame's air time plus a little: rx_us marks the frame's start, and the radio's")
+        L.append("    timestamp could take the callback's place in the clock. Wildly scattered: not the same clock.)")
+    L += ["", "lag = how far the board's clock runs behind the timekeeper's, us (2.2 boards: 1.1-1.5 ms).",
           "A, B and C should roughly agree; B and C also hold the difference in frame lengths. A board's slot",
           "target is 400 us: where its frames really arrive, less the air and radio time, says how",
           "late they go out."]

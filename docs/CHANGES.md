@@ -5,6 +5,12 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **Computer side: `lag_check.py` also says how late the cabled board's CSI
+  callback runs after the radio's own receive time** (each record's rx_us,
+  the rx_ctrl timestamp), per sender: whether that timestamp is on the
+  board's own clock and could time frames for the clock instead of a
+  callback (docs/TIMING-2.3.md, "hwrx").
+
 - **Computer side: `lag_check.py RUN`**, how far behind the timekeeper's
   clock the other boards run, from a run's own files (every record carries
   the measuring board's clock when it heard the frame). Three estimates per
