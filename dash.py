@@ -611,9 +611,10 @@ class Screen:
                     items.append(x)
                 elif x.startswith(("core0=", "core1=")):
                     items.append(x + "%")       # 2.2: how busy each core was over the last 10 s
-                elif x.startswith("heap_min="):
+                elif x.startswith(("heap_min=", "psram_free=")):
+                    k, _, v = x.partition("=")
                     try:
-                        items.append(f"heap_min={int(x[9:]) // 1024}k")
+                        items.append(f"{k}={int(v) // 1024}k")
                     except ValueError:
                         pass
                 elif x.startswith(("rx_err=", "extra_sent=")):

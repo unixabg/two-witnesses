@@ -5,6 +5,17 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **Firmware (tw_node 2.2): PSRAM on.** The boards (ESP32-S3-WROOM-1 N16R8)
+  have 8 MB of octal PSRAM; the firmware now starts it, and starts without it
+  on a module that has none (boards 4-6 may be another variant). It is used
+  only when asked for: everything else, Wi-Fi included, stays in internal
+  memory as before (with the default setting our 67 KB event queue would have
+  moved there). Nothing asks for it yet. The hello line (TWH) adds the PSRAM
+  found (bytes), shown by `tw_setid.py` and in `links/summary.txt` ("PSRAM 8
+  MB"); TWF adds `psram_free=`, shown on the dashboard. The bootloader and
+  partition table are unchanged (only build stamps differ): still a
+  program-only upgrade. Flash stays 4 MB.
+
 - **Firmware (tw_node 2.2): how busy each core is, and memory.** FreeRTOS now
   counts each core's idle time (run-time statistics on `esp_timer`: a timer
   read per task switch). The TWF line adds `core0=` and `core1=` (percent busy

@@ -261,7 +261,11 @@ def main():
         if line.startswith("TWH"):
             f = line.split(",")
             print(line)
-            print(f"board {f[1]}, factory address {f[2]}, firmware {f[3]}")
+            psram = ""
+            if len(f) >= 7 and f[6].strip().isdigit():          # 2.2+: PSRAM found, bytes
+                n = int(f[6])
+                psram = f", PSRAM {n / 2**20:g} MB" if n else ", no PSRAM"
+            print(f"board {f[1]}, factory address {f[2]}, firmware {f[3]}{psram}")
             print("every board:")
             show(status(p, 6))          # 6 s: every board says its firmware every 5 s (2.2+)
             return

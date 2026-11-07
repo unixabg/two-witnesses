@@ -434,7 +434,10 @@ def main():
                         pass
                     continue
                 if f[1] == "TWH" and len(f) >= 5:
-                    sp.boards[f[2]] = f"board {f[2]}: factory address {f[3]}, firmware {f[4]}"
+                    psram = ""
+                    if len(f) >= 8 and f[7].strip().isdigit():      # 2.2+: PSRAM found, bytes
+                        psram = f", PSRAM {int(f[7]) / 2**20:g} MB" if int(f[7]) else ", no PSRAM"
+                    sp.boards[f[2]] = f"board {f[2]}: factory address {f[3]}, firmware {f[4]}{psram}"
                     continue
                 if f[1] == "TWS":
                     try:

@@ -55,6 +55,7 @@
 #include "esp_system.h"
 #include "esp_rom_sys.h"
 #include "esp_heap_caps.h"
+#include "esp_psram.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "freertos/FreeRTOS.h"
@@ -570,10 +571,11 @@ static void hello(void)
 {
     uint8_t mac[6];
     esp_efuse_mac_get_default(mac);
-    char line[160];
-    int k = snprintf(line, sizeof(line), "TWH,%u,%02x:%02x:%02x:%02x:%02x:%02x,%s,%s %s,%d\n", s_id,
+    char line[180];
+    /* ...,max payload, 2.2: PSRAM found (bytes; 0 = none) */
+    int k = snprintf(line, sizeof(line), "TWH,%u,%02x:%02x:%02x:%02x:%02x:%02x,%s,%s %s,%d,%lu\n", s_id,
                      mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], FW_VERSION, __DATE__, __TIME__,
-                     s_max_payload);
+                     s_max_payload, (unsigned long)(esp_psram_is_initialized() ? esp_psram_get_size() : 0));
     out(line, k);
 }
 
@@ -666,12 +668,13 @@ static void work_task(void *arg)
                 k--;                    /* over the line end */
                 k += snprintf(line + k, sizeof(line) - (size_t)k,
                               ",tx_at=%s,tx_radio=%s,x_wake=%s,x_radio=%s,tx_len=%s,x_len=%s,"
-                              "core0=%u,core1=%u,heap_min=%lu\n",
+                              "core0=%u,core1=%u,heap_min=%lu,psram_free=%lu\n",
                               tstat_text(&s_t_at, b1, sizeof(b1)), tstat_text(&s_t_radio, b2, sizeof(b2)),
                               tstat_text(&s_t_wake, b3, sizeof(b3)), tstat_text(&s_t_xradio, b4, sizeof(b4)),
                               tstat_text(&s_t_len, b5, sizeof(b5)), tstat_text(&s_t_xlen, b6, sizeof(b6)),
                               busy[0], busy[1],
-                              (unsigned long)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
+                              (unsigned long)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+                              (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
             }
             out(line, k);
         }

@@ -15,3 +15,10 @@ CONFIG_LOG_DEFAULT_LEVEL_WARN=y
 CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 # 2.2: FreeRTOS counts each task's time (esp_timer, 1 MHz), for each core's load in TWF
 CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
+# 2.2: the 8 MB octal PSRAM of the ESP32-S3-WROOM-1 N16R8 on; start without it if absent
+# (another module variant). Used only when asked for (heap_caps_malloc): everything else,
+# Wi-Fi included, stays in internal memory as before
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_IGNORE_NOTFOUND=y
+CONFIG_SPIRAM_USE_CAPS_ALLOC=y
