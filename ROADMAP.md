@@ -20,15 +20,17 @@ so boards are reflashed as rarely as possible.
   Still to do: the desk test and the crowded-night test (`cap 2`) on real
   boards; then decide whether to keep it on by default.
 - **The followers' clock lag**: partly fixed in tw_node 2.2 (each frame's own
-  air time counts: up to 700 us). With the delays the boards measured, the
-  simulator still puts followers about 850 us behind: a frame is stamped when
-  built and reaches the air about 1 ms later.
-- **Frame timing (tw_node 2.3?)**: docs/TIMING-2.3.md. Simulator: the 2.2
-  delays cost nothing up to 6 boards; at 7-8 boards with many second frames,
-  thousands of waits and some collisions. A fix (build ahead, a clock
-  correction, the second frame sent from the send-done) is simulated, not
-  built. First two cheap measurements on the boards: where followers' frames
-  arrive in the timekeeper's clock, and how long the build takes.
+  air time counts: up to 700 us). On the real boards (`lag_check.py`) the
+  followers are still 1.1-1.5 ms behind: a frame is stamped when built, about
+  1 ms before the air, and the receive callback the clock uses comes about
+  0.5 ms after the air.
+- **Frame timing (tw_node 2.3)**: docs/TIMING-2.3.md. Simulator, fitted to
+  the boards: no cost up to 6 boards; above 6, even in normal running, the
+  last board's frames run into the timekeeper's slot (8 boards: 150
+  collisions in 120 s). The fix (build ahead, the clock from the radio's
+  receive time and the sender's delay, the second frame from the send-done)
+  is simulated: followers within 15 us, 0 collisions at 8 boards. Next: check
+  the receive timestamp's clock, then build.
 - Irregular send timing, so fast rhythms (motors, fans) show at their true
   rates instead of folded down; keep the phase as well as the strength.
 

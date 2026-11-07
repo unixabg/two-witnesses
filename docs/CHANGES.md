@@ -5,6 +5,16 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **Design update: frame timing (docs/TIMING-2.3.md).** The real boards'
+  lag is 1.1-1.5 ms, not the 850 us first simulated; most of the difference
+  is the ESP-NOW receive callback (the clock's time) coming about 400 us
+  after the CSI callback. With the simulator fitted to that: still no cost up
+  to 6 boards; above 6, a cost even in normal running (8 boards: worst board
+  94.8% home, 150 collisions in 120 s). The header correction alone leaves
+  about 390 us; timing frames by the radio's receive time as well ("hwrx")
+  brings followers within 15 us and 8 boards to 0 collisions. Plan: check
+  that timestamp's clock with `lag_check.py`, then build 2.3.
+
 - **Simulator: fitted to the real boards' lag.** A receiver's CSI callback
   (its records' time) and its ESP-NOW receive callback (its clock) are now
   apart: 50-150 us and 450-550 us after the air, which reproduces
