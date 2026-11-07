@@ -5,6 +5,17 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **Design: frame timing for tw_node 2.3 (docs/TIMING-2.3.md), no firmware.**
+  With the measured delays the simulator says: up to 6 boards (also with two
+  boards shadowed) reports home are within 0.3 points of an ideal radio,
+  because every follower is equally late; followers' clocks are still about
+  850 us behind the timekeeper's; at 7-8 boards with `second force`, 6,200-
+  7,400 waits for the channel, 31-75 collisions and 2,400-3,700 skipped second
+  frames in 120 s. Building ahead, a clock correction in the header and the
+  second frame sent from the send-done bring that to about 200 waits and 0-6
+  collisions. Not needed for boards 4-6; two measurements on the real boards
+  come first.
+
 - **Simulator: the delays the real boards measured.** `sim --late measured`
   gives each board the delays tw_node 2.2 reported (frame built and stamped at
   its slot time, handed to ESP-NOW about 340 us later, about 650 us more to its

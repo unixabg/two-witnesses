@@ -19,8 +19,16 @@ so boards are reflashed as rarely as possible.
   simulator, 6 boards 97.6% -> 99.9%, two stranded boards 83% / 53% -> 98.6%).
   Still to do: the desk test and the crowded-night test (`cap 2`) on real
   boards; then decide whether to keep it on by default.
-- **The followers' clock lag**: fixed in tw_node 2.2 (each frame's own air
-  time counts; simulator: 360-740 us behind -> within 6 us).
+- **The followers' clock lag**: partly fixed in tw_node 2.2 (each frame's own
+  air time counts: up to 700 us). With the delays the boards measured, the
+  simulator still puts followers about 850 us behind: a frame is stamped when
+  built and reaches the air about 1 ms later.
+- **Frame timing (tw_node 2.3?)**: docs/TIMING-2.3.md. Simulator: the 2.2
+  delays cost nothing up to 6 boards; at 7-8 boards with many second frames,
+  thousands of waits and some collisions. A fix (build ahead, a clock
+  correction, the second frame sent from the send-done) is simulated, not
+  built. First two cheap measurements on the boards: where followers' frames
+  arrive in the timekeeper's clock, and how long the build takes.
 - Irregular send timing, so fast rhythms (motors, fans) show at their true
   rates instead of folded down; keep the phase as well as the strength.
 
