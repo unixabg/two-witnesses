@@ -5,6 +5,15 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **Firmware (tw_node 2.2): a reused queue slot forgets that it held a
+  relayed record.** When a slot that had carried a relayed record was reused
+  for one of the board's own measurements, its "relayed" mark stayed: the
+  record was sent once only (no second copy) and counted as relayed. Only
+  boards that relay were affected. Simulator, 6 boards, two stranded at once:
+  with the second frame (the default) unchanged within 0.2 points; without it
+  the relays' room is shared differently (boards 2 / 3: 82.8% / 53.5% ->
+  71.0% / 64.5%), since the relays' own records keep their second copies.
+
 - **`dash.py` shows the second frame and the test settings.** A board's line
   says `2nd N/s` while it sends second frames (normally nothing: with 3
   boards they hardly ever go), and any 2.1 setting that is not the default,

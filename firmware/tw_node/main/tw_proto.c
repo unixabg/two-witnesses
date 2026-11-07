@@ -785,6 +785,7 @@ const tw_rec_t *tw_add_measurement(tw_node_t *n, uint32_t now, uint8_t tx, uint3
     }
     e->used = 1;
     e->sent = 0;
+    e->relay = 0;                       /* the slot may have held a relayed record before */
     e->made_us = now;
     n->n_meas++;
     tw_seen(n, n->id, n->boot, r->recseq);
