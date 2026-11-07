@@ -105,6 +105,11 @@ typedef struct {
         } f;
         struct {
             uint8_t  ok;                /* ESP-NOW's send status */
+            uint8_t  which;             /* 2.3: 1 our normal frame, 2 our extra frame (0: unknown) */
+            uint8_t  x;                 /* 2.3, after a normal frame: the extra frame built ahead was
+                                           1 sent from the callback, 2 refused there, 3 too late (0: not
+                                           taken by the callback) */
+            uint32_t x_hand;            /* when the callback handed it over */
         } s;
     };
 } ev_t;
@@ -118,6 +123,20 @@ static uint32_t s_usb_drops, s_q_full, s_send_err, s_csi_count, s_rx_err;
 /* the frames of our slot: 0 none going out, 1 the normal frame, 2 the extra frame (work task only) */
 static uint8_t s_tx_state;
 static uint8_t s_frame2[TW_MAX_PAYLOAD];
+static const uint8_t BCAST[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+/* 2.3: the extra frame is built while the normal one is on the air, and ESP-NOW's send-done
+   callback (Wi-Fi task, the other core) sends it if it still fits. The callback touches only
+   these: s_cb_state, which of our frames is out (set before each send: 1 normal, 2 extra);
+   s_x_ready, an extra frame built and waiting (whoever takes it, callback or work task, clears
+   it); s_x_len and s_x_latest (our clock: the latest it may go), written before s_x_ready. */
+static volatile uint8_t s_cb_state;
+static uint8_t s_x_ready;
+static int s_x_len;
+static uint32_t s_x_latest;
+/* hand-over to send-done, less the air, us: running mean and spread (2.2 boards: 650 us); the
+   extra frame is cut for a send-done at mean + 2 spreads */
+static int32_t s_ovh = 650, s_ovh_dev = 60;
+static uint32_t s_x_cb, s_x_task, s_x_refused;     /* extra frames sent from the callback; by the task */
 static uint32_t s_extra_err;
 static int32_t s_extra_end_max = INT32_MIN;     /* latest end of our extra frames since the last TWF */
 /* 2.2: where a frame's time goes (mean/max over each TWF's 10 s): where in our slot we handed the
@@ -129,6 +148,9 @@ static tstat_t s_t_at, s_t_radio, s_t_wake, s_t_xradio, s_t_len, s_t_xlen;
    comes after a frame's end, as the radio's own receive time says (rxcb) */
 static tstat_t s_t_build, s_t_rxcb;
 #define BUILD_AHEAD_US          800u        /* 2.3: build the normal frame this long before its slot time */
+#define X_ACCESS_US             310u        /* 2.3: allowed for an extra frame to get on the air (2.2: 150;
+                                               the boards measured 290 us from hand-over to send-done,
+                                               less the air) */
 
 /* 2.3: the radio stamps each received frame (rx_ctrl timestamp, us) on a clock that runs with ours
    but starts elsewhere (about 984 ms apart on the 2.2 boards; it marks the frame's start). The
@@ -173,6 +195,7 @@ static int32_t rxk_get(int *ok)
     return *ok ? k : 0;
 }
 static uint32_t s_hand1_us, s_cb1_us, s_hand2_us;
+static int s_len1;
 
 /* 2.2: how busy each core was since the last call, % (FreeRTOS counts each core's idle time on
    esp_timer, 1 MHz; 32 bits wrap after 71 min, so only differences over 10 s are used) */
@@ -345,9 +368,32 @@ static void espnow_send_cb(const esp_now_send_info_t *info, esp_now_send_status_
 {
     (void)info;
     static ev_t ev;                     /* the Wi-Fi task calls us one at a time */
+    uint32_t now = (uint32_t)esp_timer_get_time();
     ev.kind = EV_SENT;
-    ev.local_us = (uint32_t)esp_timer_get_time();
+    ev.local_us = now;
     ev.s.ok = status == ESP_NOW_SEND_SUCCESS;
+    ev.s.which = s_cb_state;
+    ev.s.x = 0;
+    if (s_cb_state == 1) {
+        s_cb_state = 0;
+        /* 2.3: our normal frame is out: the extra frame at once, if it is built and still fits */
+        if (__atomic_exchange_n(&s_x_ready, 0, __ATOMIC_ACQ_REL)) {
+            if ((int32_t)(now - s_x_latest) > 0) {
+                ev.s.x = 3;
+            } else {
+                s_cb_state = 2;
+                ev.s.x_hand = (uint32_t)esp_timer_get_time();
+                if (esp_now_send(BCAST, s_frame2, (size_t)s_x_len) == ESP_OK) {
+                    ev.s.x = 1;
+                } else {
+                    s_cb_state = 0;
+                    ev.s.x = 2;
+                }
+            }
+        }
+    } else if (s_cb_state == 2) {
+        s_cb_state = 0;
+    }
     if (xQueueSendToFront(s_q, &ev, 0) != pdTRUE) {
         s_q_full++;
     }
@@ -460,27 +506,54 @@ static void relay_cb(void *ctx, const tw_rec_t *r)
     out(line, tw_format_record(r, line, sizeof(line)));
 }
 
-static const uint8_t BCAST[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+/* hand the extra frame over from the work task (2.2's way: the fallback), or put it back */
+static void extra_from_task(uint32_t now)
+{
+    if ((int32_t)(now - s_x_latest) > 0) {
+        tw_unsend_extra(&s_node);
+        return;
+    }
+    s_hand2_us = now;
+    s_cb_state = 2;
+    if (esp_now_send(BCAST, s_frame2, (size_t)s_x_len) == ESP_OK) {
+        s_tx_state = 2;
+        s_x_task++;
+    } else {
+        s_cb_state = 0;
+        s_extra_err++;
+        tw_unsend_extra(&s_node);
+    }
+}
 
-/* ESP-NOW says a frame of ours has gone out: after the normal frame, the extra one if planned */
+/* ESP-NOW says a frame of ours has gone out. After the normal frame: the callback has sent the
+   extra frame, or left it to us (not ready yet when it came, or refused), or found it too late */
 static void sent(const ev_t *ev)
 {
-    if (s_tx_state == 1) {
+    if (ev->s.which == 1 && s_tx_state == 1) {
         s_tx_state = 0;
         s_cb1_us = ev->local_us;
-        tstat_add(&s_t_radio, (int32_t)(s_cb1_us - s_hand1_us));
-        int len = tw_build_extra(&s_node, (uint32_t)esp_timer_get_time(), s_frame2, s_max_payload);
-        if (len > 0) {
-            s_hand2_us = (uint32_t)esp_timer_get_time();
-            tstat_add(&s_t_wake, (int32_t)(s_hand2_us - s_cb1_us));
-            tstat_add(&s_t_xlen, len);
-            if (esp_now_send(BCAST, s_frame2, (size_t)len) == ESP_OK) {
-                s_tx_state = 2;
-            } else {
-                s_extra_err++;
-            }
+        int32_t radio = (int32_t)(s_cb1_us - s_hand1_us);
+        tstat_add(&s_t_radio, radio);
+        int32_t o = radio - (int32_t)tw_air_us(s_len1);
+        if (o > 0 && o < 3000) {        /* a running mean and spread, 1/16 each frame */
+            int32_t d = o - s_ovh;
+            s_ovh += d / 16;
+            s_ovh_dev += ((d < 0 ? -d : d) - s_ovh_dev) / 16;
         }
-    } else if (s_tx_state == 2) {
+        if (ev->s.x == 1) {
+            s_hand2_us = ev->s.x_hand;
+            s_tx_state = 2;
+            s_x_cb++;
+        } else if (ev->s.x == 3) {
+            tw_unsend_extra(&s_node);
+        } else if (ev->s.x == 2 || __atomic_exchange_n(&s_x_ready, 0, __ATOMIC_ACQ_REL)) {
+            s_x_refused += ev->s.x == 2;
+            extra_from_task((uint32_t)esp_timer_get_time());
+        }
+        if (s_tx_state == 2) {
+            tstat_add(&s_t_wake, (int32_t)(s_hand2_us - s_cb1_us));
+        }
+    } else if (ev->s.which == 2 && s_tx_state == 2) {
         s_tx_state = 0;
         tstat_add(&s_t_xradio, (int32_t)(ev->local_us - s_hand2_us));
         tw_note_sent(&s_node, ev->local_us, 1);
@@ -641,7 +714,7 @@ static void work_task(void *arg)
     (void)arg;
     static ev_t ev;
     static uint8_t frame[TW_MAX_PAYLOAD];
-    static char line[600];               /* the TWF line is near 400 bytes (2.2) */
+    static char line[800];               /* the TWF line is near 550 bytes (2.3) */
     uint32_t now = (uint32_t)esp_timer_get_time();
     uint32_t next_tx = now + 50000u + esp_random() % 50000u;
     uint32_t next_status = now + 1000000u;
@@ -667,11 +740,28 @@ static void work_task(void *arg)
                 tstat_add(&s_t_at, tw_slot_pos(&s_node, s_hand1_us, s_id));
             }
             tstat_add(&s_t_len, len);
+            s_len1 = len;
+            s_cb_state = 1;
             if (esp_now_send(BCAST, frame, (size_t)len) != ESP_OK) {
                 s_send_err++;
+                s_cb_state = 0;
                 s_tx_state = 0;
             } else {
-                s_tx_state = 1;         /* its send-done brings the extra frame, if one is planned */
+                s_tx_state = 1;
+                if (s_node.extra_planned) {
+                    /* 2.3: build the extra frame now, while this one is on the air, cut for a
+                       send-done late in the usual spread; its send-done callback sends it */
+                    uint32_t pred = s_hand1_us + tw_air_us(len) + (uint32_t)(s_ovh + 2 * s_ovh_dev);
+                    int xl = tw_build_extra(&s_node, pred, s_frame2, s_max_payload);
+                    if (xl > 0) {
+                        int32_t pos = tw_slot_pos(&s_node, pred, s_id);
+                        s_x_latest = pred + (uint32_t)((int32_t)(TW_SLOT_US + TW_SLOT_SLACK_US) -
+                                                       (int32_t)(s_node.access_us + tw_air_us(xl)) - pos);
+                        s_x_len = xl;
+                        tstat_add(&s_t_xlen, xl);
+                        __atomic_store_n(&s_x_ready, 1, __ATOMIC_RELEASE);
+                    }
+                }
             }
             next_tx = tw_next_tx_local(&s_node, (uint32_t)esp_timer_get_time());
             continue;
@@ -730,7 +820,10 @@ static void work_task(void *arg)
                was over these 10 s (%; Wi-Fi runs on core 0, our work task on core 1), and the
                lowest free internal memory since start (bytes). 2.3: the normal frame's build time;
                the receive callback after a frame's end (mean/max, us); the radio's receive-time
-               offset (us; 0 = not learned) */
+               offset (us; 0 = not learned); extra frames built ahead but dropped (too late), sent
+               from the send-done callback, sent by this task instead (the callback had not got
+               it, or ESP-NOW refused it there: x_refused), since start; the hand-over to
+               send-done less the air, running mean / spread (us), that extra frames are cut for */
             char b1[24], b2[24], b3[24], b4[24], b5[24], b6[24], b7[24], b8[24];
             int kok;
             int32_t rxk = rxk_get(&kok);
@@ -740,7 +833,8 @@ static void work_task(void *arg)
                 k--;                    /* over the line end */
                 k += snprintf(line + k, sizeof(line) - (size_t)k,
                               ",tx_at=%s,tx_radio=%s,x_wake=%s,x_radio=%s,tx_len=%s,x_len=%s,"
-                              "core0=%u,core1=%u,heap_min=%lu,psram_free=%lu,build=%s,rxcb=%s,rx_k=%ld\n",
+                              "core0=%u,core1=%u,heap_min=%lu,psram_free=%lu,build=%s,rxcb=%s,rx_k=%ld,"
+                              "extra_late=%lu,x_cb=%lu,x_task=%lu,x_refused=%lu,ovh=%ld/%ld\n",
                               tstat_text(&s_t_at, b1, sizeof(b1)), tstat_text(&s_t_radio, b2, sizeof(b2)),
                               tstat_text(&s_t_wake, b3, sizeof(b3)), tstat_text(&s_t_xradio, b4, sizeof(b4)),
                               tstat_text(&s_t_len, b5, sizeof(b5)), tstat_text(&s_t_xlen, b6, sizeof(b6)),
@@ -748,7 +842,8 @@ static void work_task(void *arg)
                               (unsigned long)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
                               (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
                               tstat_text(&s_t_build, b7, sizeof(b7)), tstat_text(&s_t_rxcb, b8, sizeof(b8)),
-                              (long)rxk);
+                              (long)rxk, (unsigned long)s_node.n_extra_late, (unsigned long)s_x_cb,
+                              (unsigned long)s_x_task, (unsigned long)s_x_refused, (long)s_ovh, (long)s_ovh_dev);
             }
             out(line, k);
         }
@@ -767,6 +862,7 @@ void app_main(void)
     ESP_ERROR_CHECK(usb_serial_jtag_driver_install(&usb_cfg));
     s_id = board_id();
     tw_init(&s_node, s_id, 0, esp_random());
+    s_node.access_us = X_ACCESS_US;
     tw_set_info(&s_node, FW_VERSION "|" __DATE__ " " __TIME__);     /* sent to the computer every 5 s */
     load_settings();
     s_q = xQueueCreate(48, sizeof(ev_t));

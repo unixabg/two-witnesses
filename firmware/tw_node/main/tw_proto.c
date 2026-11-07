@@ -53,6 +53,7 @@ void tw_init(tw_node_t *n, uint8_t id, uint8_t is_exit, uint32_t seed)
     n->synced = 1;              /* alone, a board is its own leader */
     n->rng = seed ? seed : 12345u + id;
     n->boot = (uint8_t)(tw_rand(n) & 0xff);
+    n->access_us = TW_ACCESS_US;
 }
 
 uint16_t tw_active(const tw_node_t *n, uint32_t now)
@@ -505,6 +506,12 @@ static int put_records(tw_node_t *n, uint8_t *buf, int pos, int max, int copies,
             n->q[pick].sent++;
             n->q[pick].slot = n->slot_no;
             in_frame[pick] = 1;
+            if (extra && n->x_npick < TW_MAX_RECS_X) {
+                n->x_pick[n->x_npick] = (uint8_t)pick;
+                n->x_pick_rx[n->x_npick] = n->q[pick].rec.rx;
+                n->x_pick_seq[n->x_npick] = n->q[pick].rec.recseq;
+                n->x_npick++;
+            }
             if (n->q[pick].relay) {
                 n->n_relayed_out++;
             }
@@ -602,7 +609,7 @@ int tw_build_extra(tw_node_t *n, uint32_t now, uint8_t *buf, int max)
     }
     /* it must end by our slot's end + TW_SLOT_SLACK_US (the next board's guard is 400 us) */
     int32_t at = tw_slot_pos(n, now, n->id);
-    int32_t left = (int32_t)(TW_SLOT_US + TW_SLOT_SLACK_US) - at - (int32_t)(TW_ACCESS_US + TW_PREAMBLE_US);
+    int32_t left = (int32_t)(TW_SLOT_US + TW_SLOT_SLACK_US) - at - (int32_t)(n->access_us + TW_PREAMBLE_US);
     int room = (at < 0 || at > (int32_t)TW_SLOT_US || left <= 0) ? 0 : (int)(left * 27 / 16) - TW_MAC_BYTES;
     if (room < max) {
         max = room;
@@ -614,6 +621,7 @@ int tw_build_extra(tw_node_t *n, uint32_t now, uint8_t *buf, int max)
     uint16_t act = tw_active(n, now);
     int copies = popcount16(act) <= TW_FULL_MAX_ACTIVE ? TW_COPIES : 1;
     int force = (n->set_flags & TW_SET_SECOND_FORCE) != 0, count = 0;
+    n->x_npick = 0;
     int pos = put_records(n, buf, TW_HDR_LEN, max, copies, 1, force, &count);
     if (count == 0 && !force) {
         n->n_extra_skipped++;                           /* nothing waiting fitted in the time left */
@@ -626,6 +634,25 @@ int tw_build_extra(tw_node_t *n, uint32_t now, uint8_t *buf, int max)
     put_header(n, now, buf, n->seq - 1, TW_F_EXTRA, count, act);   /* the same number as the frame before */
     n->n_extra_sent++;
     return pos;
+}
+
+void tw_unsend_extra(tw_node_t *n)
+{
+    for (int k = 0; k < n->x_npick; k++) {
+        tw_qent_t *e = &n->q[n->x_pick[k]];
+        /* only if the entry still holds that record (a relayed one may have taken its place) */
+        if (e->used && e->sent > 0 && e->rec.rx == n->x_pick_rx[k] && e->rec.recseq == n->x_pick_seq[k]) {
+            e->sent--;
+            if (e->relay && n->n_relayed_out) {
+                n->n_relayed_out--;
+            }
+        }
+    }
+    n->x_npick = 0;
+    if (n->n_extra_sent) {
+        n->n_extra_sent--;
+    }
+    n->n_extra_late++;
 }
 
 int tw_peek_header(const uint8_t *buf, int len, tw_hdr_t *h)

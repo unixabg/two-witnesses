@@ -5,6 +5,19 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **Firmware (tw_node 2.3): the second frame sent from the send-done.** The
+  work task builds it while the normal frame is on the air, cut for a
+  send-done late in the board's usual spread (running mean + 2 spreads) and
+  310 us to get on the air (2.2: 150; the boards measured 290). ESP-NOW's
+  send-done callback (the Wi-Fi task, other core) sends it at once if it
+  still fits, else it is dropped and its records go back in the queue as
+  they were (`tw_unsend_extra`). If the callback had not got it yet, or
+  ESP-NOW refuses a send there, the work task sends it as in 2.2. TWF:
+  `extra_late` (dropped), `x_cb` (from the callback), `x_task` (by the task),
+  `x_refused`, `ovh` (the mean / spread used). Simulator, `second force`, 6
+  boards: about 5% dropped, 0.9% of those sent end past 3200 us (2.2: 92%);
+  reports home unchanged.
+
 - **Firmware (tw_node 2.3): the normal frame built ahead.** A board builds its
   frame 800 us before its slot time, stamped for that time, and hands it to
   ESP-NOW at the time: in 2.2 the build took the first 300-400 us of the slot

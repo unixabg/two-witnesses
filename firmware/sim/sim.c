@@ -40,8 +40,10 @@
  * built ahead and handed over at its time (0-40 us late); clock: each frame says the least
  * stamp-to-send-done delay of its sender's last 16 (20 us steps) and receivers add it to the
  * clock; hwrx: as clock, and receivers take the radio's receive time (the frame's start) plus
- * the air instead of the callback's time, less 100 us for the sender's send-done delay; cb: the extra frame sent from the send-done itself, cut for xbudget=310 us of
- * access; queue: the extra frame built at once and handed over behind the normal one, cut for
+ * the air instead of the callback's time, less 100 us for the sender's send-done delay; cb: as
+ * tw_node 2.3's firmware, the extra frame built while the normal one is on the air, cut for a
+ * send-done at the running mean + 2 spreads of the board's own and xbudget=310 us of access,
+ * sent from the send-done if it still fits there, else dropped and its records put back; queue: the extra frame built at once and handed over behind the normal one, cut for
  * the normal frame's worst start. timing_cases.py runs the cases.
  *
  * --setpower T@DBM[@BOARD]: at T seconds, the computer sets the network's transmit
@@ -96,6 +98,8 @@ typedef struct {
     int m_n, m_pos;
     lstat_t s_start, s_xend, s_defer, f_at, f_radio, f_wake, f_xradio, f_xend, f_len, f_xlen;
     long x_over, x_into;
+    double ovh, ovh_dev;        /* --fix cb: hand-over to send-done less the air, running mean / spread */
+    uint32_t x_latest;          /* --fix cb: the extra frame built ahead may start by then (own clock) */
 } simnode_t;
 
 static simnode_t N_[MAXN + 1];
@@ -336,6 +340,8 @@ int main(int argc, char **argv)
         s->next_tx = urand() * 20000;
         s->extra_at = -1;
         s->air_t = -1;
+        s->ovh = 650;
+        s->ovh_dev = 60;
         s->last_status = -1e9;
         tw_init(&s->st, (uint8_t)id, (uint8_t)s->exit, seed * 31u + (unsigned)id);
         tw_set_info(&s->st, "sim|board");
@@ -508,9 +514,7 @@ int main(int argc, char **argv)
         } else if (is_extra) {
             s->extra_at = -1;
             if (!dead) {
-                uint32_t bl = local_us(s, when);
-                if (fix_x == 1) bl += (uint32_t)(xbudget - TW_ACCESS_US);   /* 2.3: its own budget */
-                len = tw_build_extra(&s->st, bl, frame, TW_MAX_PAYLOAD);
+                len = tw_build_extra(&s->st, local_us(s, when), frame, TW_MAX_PAYLOAD);
             }
             if (late) {
                 if (len > 0) {
@@ -556,6 +560,18 @@ int main(int argc, char **argv)
                     uint32_t bl = local_us(s, s->hand_t + pre_max + tw_air_us(len)) + (219 - TW_ACCESS_US);
                     s->q_len = tw_build_extra(&s->st, bl, s->qbuf, TW_MAX_PAYLOAD);
                     s->hand2_t = s->hand_t + 20;
+                }
+                if (fix_x == 1 && s->st.extra_planned) {
+                    /* 2.3 "cb" (the firmware's way): built now, cut for a send-done late in the
+                       board's usual spread and its own access budget */
+                    s->st.access_us = (uint16_t)xbudget;
+                    double pred = s->hand_t + tw_air_us(len) + s->ovh + 2 * s->ovh_dev;
+                    uint32_t pl = local_us(s, pred);
+                    s->q_len = tw_build_extra(&s->st, pl, s->qbuf, TW_MAX_PAYLOAD);
+                    if (s->q_len > 0)
+                        s->x_latest = pl + (uint32_t)((int32_t)(TW_SLOT_US + TW_SLOT_SLACK_US) -
+                                                      (int32_t)(s->st.access_us + tw_air_us(s->q_len)) -
+                                                      tw_slot_pos(&s->st, pl, (uint8_t)who));
                 }
                 len = 0;                                     /* nothing on the air yet */
             }
@@ -623,11 +639,29 @@ int main(int argc, char **argv)
                         s->air_t = tx_t + air + 50 + csma() + (urand() < stall_p ? ur(stall_lo, stall_hi) : 0);
                         s->q_len = 0;
                     }
+                } else if (fix_x == 1) {
+                    double o = sd - s->hand_t - air;
+                    if (o > 0 && o < 3000) {
+                        double d = o - s->ovh;
+                        s->ovh += d / 16;
+                        s->ovh_dev += (fabs(d) - s->ovh_dev) / 16;
+                    }
+                    if (s->q_len > 0) {
+                        if ((int32_t)(local_us(s, sd) - s->x_latest) <= 0) {   /* the callback sends it */
+                            memcpy(s->pend, s->qbuf, (size_t)s->q_len);
+                            s->pend_len = s->q_len;
+                            s->pend_extra = 1;
+                            s->pend_corr = 0;
+                            s->hand2_t = sd + ur(0, 20);
+                            s->air_t = s->hand2_t + pre_draw(over2);
+                            if (tx_t > 10e6 && s->st.synced) lst(&s->f_wake, s->hand2_t - sd);
+                        } else {
+                            tw_unsend_extra(&s->st);         /* too late: its records go back */
+                        }
+                        s->q_len = 0;
+                    }
                 } else if (s->st.extra_planned) {
-                    if (fix_x == 1) {                        /* 2.3 "cb": sent from the send-done itself */
-                        s->extra_at = sd + ur(0, 20);
-                        s->hand2_t = s->extra_at;
-                    } else {                                 /* 2.2: our task wakes, builds, hands over */
+                    {                                        /* 2.2: our task wakes, builds, hands over */
                         /* the length is decided as the build starts, right after the send-done
                            (the real boards' second frames are as long as that gives): most of
                            the wake is the build */
@@ -721,11 +755,11 @@ int main(int argc, char **argv)
             fprintf(stderr, "%s\"%d\": {\"start\": [%.0f, %.0f], \"xend\": [%.0f, %.0f], \"x_over\": %ld, \"x_into\": %ld, "
                             "\"n_x\": %ld, \"n\": %ld, \"defer\": [%ld, %.0f, %.0f], \"tx_at\": [%.0f, %.0f], "
                             "\"tx_radio\": [%.0f, %.0f], \"x_wake\": [%.0f, %.0f], \"x_radio\": [%.0f, %.0f], "
-                            "\"x_end_own\": [%.0f, %.0f], \"tx_len\": %.0f, \"x_len\": %.0f}",
+                            "\"x_end_own\": [%.0f, %.0f], \"tx_len\": %.0f, \"x_len\": %.0f, \"x_dropped\": %lu}",
                     id > 1 ? ", " : "", id, LS(q->s_start), LS(q->s_xend), q->x_over, q->x_into, q->s_xend.n,
                     q->s_start.n, q->s_defer.n, LS(q->s_defer), LS(q->f_at), LS(q->f_radio), LS(q->f_wake),
                     LS(q->f_xradio), LS(q->f_xend), q->f_len.n ? q->f_len.sum / q->f_len.n : 0.0,
-                    q->f_xlen.n ? q->f_xlen.sum / q->f_xlen.n : 0.0);
+                    q->f_xlen.n ? q->f_xlen.sum / q->f_xlen.n : 0.0, (unsigned long)q->st.n_extra_late);
 #undef LS
         }
     }

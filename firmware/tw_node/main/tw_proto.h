@@ -83,6 +83,7 @@
 #define TW_SET_CAP_SHIFT    4           /* test: bits 4-7 = at most this many records per frame (0: no cap) */
 #define TW_SLOT_SLACK_US    200u        /* an extra frame may run this far into the next slot's guard */
 #define TW_ACCESS_US        150u        /* allowed for getting on the air (channel access, driver) */
+#define TW_MAX_RECS_X       16          /* records an extra frame can carry (compact ones are small) */
 #define TW_PREAMBLE_US      40u         /* HT preamble and PHY header */
 #define TW_MAC_BYTES        30          /* ESP-NOW's MAC header, vendor header and FCS around our payload */
 #define TW_POWER_MIN_Q      8           /* transmit power, in quarter dBm: 2 dBm .. */
@@ -216,6 +217,14 @@ typedef struct {
     uint32_t slot_no;                       /* one number per normal frame this board built */
     uint8_t  extra_planned;                 /* the frame just built announced an extra frame */
     uint32_t n_extra_sent, n_extra_skipped; /* extra frames built; announced but nothing fitted in time */
+    /* 2.3: an extra frame may be built ahead (while the normal one is on the air) and dropped if it
+       would end too late: the queue entries it took, to put them back (tw_unsend_extra) */
+    uint16_t access_us;                     /* allowed for an extra frame to get on the air (TW_ACCESS_US) */
+    uint8_t  x_npick;
+    uint8_t  x_pick[TW_MAX_RECS_X];
+    uint8_t  x_pick_rx[TW_MAX_RECS_X];
+    uint32_t x_pick_seq[TW_MAX_RECS_X];
+    uint32_t n_extra_late;                  /* extra frames built ahead, then dropped: too late */
     /* 2.2: what this board says about itself (tw_set_info), and when it last did */
     char     info[TW_INFO_MAX + 1];
     uint32_t info_us;
@@ -250,6 +259,9 @@ int      tw_build_frame(tw_node_t *n, uint32_t now_local_us, uint8_t *buf, int m
 /* the extra frame, built when the normal one has gone out: its length, cut to what still fits
    in the slot, or 0 if none is to be sent */
 int      tw_build_extra(tw_node_t *n, uint32_t now_local_us, uint8_t *buf, int max);
+/* 2.3: the extra frame last built did not go out (built ahead, then too late): its records go back
+   in the queue as they were, and it counts as late, not sent */
+void     tw_unsend_extra(tw_node_t *n);
 /* the firmware's word that a frame this board sent has gone out (ESP-NOW's send-done): for an
    extra frame, notes when it ended, by our clock (carried in our next headers) */
 void     tw_note_sent(tw_node_t *n, uint32_t now_local_us, int extra);

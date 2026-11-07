@@ -14,7 +14,8 @@ followers' clocks against the timekeeper's (mean, us; negative = behind),
 where followers' normal frames were on the air in their slots (mean / max,
 us after the slot start by the timekeeper's clock; the target is 400), where
 second frames ended (the limit is 3200; the next board's frame is due from
-3400), and second frames sent / skipped for lack of time. 120 s, 3% random
+3400), and second frames sent / skipped for lack of time / dropped (built
+ahead, then too late: 2.3's "cb"). 120 s, 3% random
 loss, seed 7.
 """
 import collections
@@ -64,14 +65,15 @@ def run(sim, case, model):
                 f"{sum(v['x_over'] for v in lt.values()):6d}", f"{sum(v['x_into'] for v in lt.values()):6d}"]
     else:
         row += ["-", f"{tr['clock_err_us'][0]:5.0f}", "-", "-", "-", "-"]
-    return row + [f"{sent:6d} / {skip:4d}"]
+    drop = sum(v.get("x_dropped", 0) for v in tr.get("late", {}).values())
+    return row + [f"{sent:6d} / {skip:4d} / {drop:4d}"]
 
 
 def main():
     sim, only = sys.argv[1], sys.argv[2:]
     head = ["home worst/mean", "coll", "waits", "clock", "normal on air", "2nd frame ends", ">3200", ">3400",
-            "2nd sent/skip"]
-    w = [16, 4, 5, 5, 13, 13, 6, 6, 13]
+            "2nd sent/skip/drop"]
+    w = [16, 4, 5, 5, 13, 13, 6, 6, 20]
     for name, case in CASES:
         if only and not any(o in name for o in only):
             continue
