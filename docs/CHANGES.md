@@ -5,6 +5,11 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **Firmware (tw_node 2.3): after one refusal, the callback leaves second
+  frames to the work task.** If ESP-NOW refuses a send from its send-done
+  callback, the callback stops trying (until the board restarts) and the
+  work task sends them, as in 2.2; TWF `x_refused` says it happened.
+
 - **Computer side: `second_check.py` reads 2.3's timing**: the build time, the
   receive callback after a frame's end, what second frames are cut for, and
   second frames sent from the send-done, by the task, refused there, dropped

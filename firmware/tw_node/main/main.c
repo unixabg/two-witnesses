@@ -137,6 +137,8 @@ static uint32_t s_x_latest;
    extra frame is cut for a send-done at mean + 2 spreads */
 static int32_t s_ovh = 650, s_ovh_dev = 60;
 static uint32_t s_x_cb, s_x_task, s_x_refused;     /* extra frames sent from the callback; by the task */
+static volatile uint8_t s_cb_send = 1;          /* cleared when ESP-NOW refuses a send from the callback:
+                                                   from then on the work task sends them */
 static uint32_t s_extra_err;
 static int32_t s_extra_end_max = INT32_MIN;     /* latest end of our extra frames since the last TWF */
 /* 2.2: where a frame's time goes (mean/max over each TWF's 10 s): where in our slot we handed the
@@ -378,7 +380,7 @@ static void espnow_send_cb(const esp_now_send_info_t *info, esp_now_send_status_
     if (s_cb_state == 1) {
         s_cb_state = 0;
         /* 2.3: our normal frame is out: the extra frame at once, if it is built and still fits */
-        if (__atomic_exchange_n(&s_x_ready, 0, __ATOMIC_ACQ_REL)) {
+        if (s_cb_send && __atomic_exchange_n(&s_x_ready, 0, __ATOMIC_ACQ_REL)) {
             if ((int32_t)(now - s_x_latest) > 0) {
                 ev.s.x = 3;
             } else {
@@ -388,6 +390,7 @@ static void espnow_send_cb(const esp_now_send_info_t *info, esp_now_send_status_
                     ev.s.x = 1;
                 } else {
                     s_cb_state = 0;
+                    s_cb_send = 0;
                     ev.s.x = 2;
                 }
             }
