@@ -55,6 +55,23 @@ def main():
     if "clock_err_us" in truth:
         ce = truth["clock_err_us"]
         print(f"  followers' clocks against the timekeeper's: {ce[0]:+.0f} us on average, at worst {ce[1]:.0f} us off")
+    if "late" in truth:             # --late: the delays the real boards measured (tw_node 2.2)
+        print(f"  measured delays: {truth['deferrals']} times a radio waited for the channel; per board "
+              "(after the first 10 s; us in its slot by the timekeeper's clock, mean / max):")
+        print("    board  normal frame on air at   second frame ends     over 3200  over 3400   waited (n, mean / max)")
+        for b, v in sorted(truth["late"].items(), key=lambda kv: int(kv[0])):
+            xe = f"{v['xend'][0]:6.0f} / {v['xend'][1]:5.0f}" if v["n_x"] else "      -       "
+            print(f"    {b:>5}  {v['start'][0]:6.0f} / {v['start'][1]:5.0f}        {xe}     {v['x_over']:6d}     "
+                  f"{v['x_into']:6d}   {v['defer'][0]:6d}, {v['defer'][1]:4.0f} / {v['defer'][2]:5.0f}")
+        ex = truth.get("exit_board")
+        for b, v in sorted(truth["late"].items(), key=lambda kv: int(kv[0])):
+            if ex is not None and int(b) != ex:
+                continue
+            print(f"  board {b} as its TWF would say: tx_at {v['tx_at'][0]:.0f} / {v['tx_at'][1]:.0f}, "
+                  f"tx_radio {v['tx_radio'][0]:.0f} / {v['tx_radio'][1]:.0f} (air {(v['tx_len'] + 30) * 16 / 27 + 40:.0f}), "
+                  f"x_wake {v['x_wake'][0]:.0f} / {v['x_wake'][1]:.0f}, x_radio {v['x_radio'][0]:.0f} / "
+                  f"{v['x_radio'][1]:.0f} (air {(v['x_len'] + 30) * 16 / 27 + 40 if v['x_len'] else 0:.0f}), "
+                  f"own end {v['x_end_own'][0]:.0f} / {v['x_end_own'][1]:.0f}")
     made_by = collections.Counter()
     got_by = collections.Counter()
     for link, made in truth["made"].items():

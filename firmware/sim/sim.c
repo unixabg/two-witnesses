@@ -11,7 +11,7 @@
  *   sim --nodes 3 --seconds 60 [--loss 0.05] [--exit 1[,2]] [--kill 1@20-40]
  *       [--seed 7] [--realtime] [--out FILE] [--setpower 20@11[@1],40@20]
  *       [--block 2-1@10-50@0.75,...] [--setrelay 30@off,60@on] [--rxerr 0.01]
- *       [--set 0@cap=3,0@second=off,...]
+ *       [--set 0@cap=3,0@second=off,...] [--late measured] [--fix ahead,clock,cb]
  *
  * --block S-R@A-B@P: from A to B seconds, board R misses each of board S's frames with
  * probability P (on top of --loss): something in the way of that one direction.
@@ -22,6 +22,24 @@
  * Extra frames (a second frame in a board's slot, tw_node 2.1) go on the air 50 us after the
  * board's frame ends (ESP-NOW's send-done) plus up to TW_ACCESS_US of channel access, and
  * collide like any other frame; the summary counts them and their latest end in the slot.
+ *
+ * --late measured|KEY=VALUE,...: the delays the real boards measured (tw_node 2.2, TWF,
+ * 2026-11-07), instead of the ideal radio above. A board builds its frame (and
+ * stamps its time) at its slot time; hands it to ESP-NOW hand=340 us later; the radio puts it
+ * on the air later still and calls send-done post=100 us after the air (a receiver's receive
+ * callback comes as late); handed-over to send-done, less the air, is over1=650 us for a normal
+ * frame and over2=290 us for an extra one; from send-done to handing the extra frame over,
+ * wake=250 us (its length is decided at the send-done). Now and then (stall=0.002 of frames)
+ * the radio is 1-5 ms late (stallmax=5000). A radio that finds the channel busy waits for it
+ * (DIFS and a random backoff) instead of colliding; two frames starting within 9 us collide.
+ * The summary adds, per board, where its frames were on the air in its slot by the
+ * timekeeper's clock (the truth), and what its TWF would say.
+ * --fix ahead,clock,cb|queue: what tw_node 2.3 would change (implies --late). ahead: the frame
+ * built ahead and handed over at its time (0-40 us late); clock: each frame says the least
+ * stamp-to-send-done delay of its sender's last 16 (20 us steps) and receivers add it to the
+ * clock; cb: the extra frame sent from the send-done itself, cut for xbudget=310 us of
+ * access; queue: the extra frame built at once and handed over behind the normal one, cut for
+ * the normal frame's worst start. timing_cases.py runs the cases.
  *
  * --setpower T@DBM[@BOARD]: at T seconds, the computer sets the network's transmit
  * power at BOARD (default: the first exit). The JSON summary says how long every
@@ -46,6 +64,8 @@
 #define CSI_LEN 384
 
 #define MAXSET_F 16
+typedef struct { long n; double sum, max; } lstat_t;
+static void lst(lstat_t *a, double v) { a->n++; a->sum += v; if (a->n == 1 || v > a->max) a->max = v; }
 typedef struct {
     tw_node_t st;
     double extra_at;            /* true time its pending extra frame is built (< 0: none) */
@@ -61,6 +81,18 @@ typedef struct {
     int8_t node_rssi[MAXN + 1];
     tw_hdr_t node_hdr[MAXN + 1];
     long made[MAXN + 1];        /* ground truth: measurements made of each sender */
+    /* --late: a built frame waits for the air */
+    double air_t;               /* true time it asks for the air (< 0: none) */
+    int pend_len, pend_extra;
+    uint32_t pend_corr;         /* --fix clock: the delay it says it had, us */
+    uint8_t pend[TW_MAX_PAYLOAD];
+    int q_len;                  /* --fix queue: the extra frame, built at once, behind the normal one */
+    uint8_t qbuf[TW_MAX_PAYLOAD];
+    double stamp_t, hand_t, hand2_t;
+    uint32_t m_ring[16];        /* --fix clock: its own stamp to send-done, less the air, us */
+    int m_n, m_pos;
+    lstat_t s_start, s_xend, s_defer, f_at, f_radio, f_wake, f_xradio, f_xend, f_len, f_xlen;
+    long x_over, x_into;
 } simnode_t;
 
 static simnode_t N_[MAXN + 1];
@@ -70,6 +102,26 @@ static double walk_a = 30e6, walk_b = 40e6;    /* planted walk across the 1-2 li
 static long collisions = 0, frames = 0, lost_random = 0, lost_blocked = 0, rx_err_made = 0;
 static double air_used_us = 0;
 static long extra_frames = 0, collisions_extra = 0, extra_measured = 0;
+/* --late: the delays the boards measured (tw_node 2.2, TWF), us; --fix: what 2.3 would change */
+static int late = 0, fix_ahead = 0, fix_clock = 0, fix_x = 0;     /* fix_x: 1 cb, 2 queue */
+static double hand_lo = 270, hand_hi = 430;     /* slot time -> handed to ESP-NOW (the build and more) */
+static double post_lo = 50, post_hi = 150;      /* end of the air -> send-done / receive callback */
+static double over1 = 650, over2 = 290;         /* handed -> send-done, less the air: normal / extra frame */
+static double wake_lo = 170, wake_hi = 330;     /* send-done -> extra frame handed over (our task) */
+static double stall_p = 0.002, stall_lo = 1000, stall_hi = 5000;   /* now and then the radio is late */
+static double xbudget = 310;                    /* --fix: allowed for an extra frame's access */
+static long deferrals = 0;
+static double urand(void);
+static double ur(double lo, double hi);
+static double csma(void);
+static double pre_draw(double over)
+{
+    /* the part of the overhead before the air: overhead less the send-done delay and the mean
+       channel access (drawn on its own), +-100 us */
+    double fixed = over - (post_lo + post_hi) / 2 - (34 + 7.5 * 9);
+    return (fixed < 0 ? 0 : ur(fixed - 100 < 0 ? 0 : fixed - 100, fixed + 100)) + csma() +
+           (urand() < stall_p ? ur(stall_lo, stall_hi) : 0);
+}
 static double clk_sum = 0, clk_max = 0, clk_last = 0;   /* followers' clock against the timekeeper's */
 static long clk_n = 0;
 static struct { double t; uint8_t mask, value; int fired; } fsets[MAXSET_F];
@@ -89,6 +141,10 @@ static double urand(void)
     rng_state = rng_state * 1103515245u + 12345u;
     return ((rng_state >> 8) & 0xffffff) / (double)0x1000000;
 }
+
+static double ur(double lo, double hi) { return lo + urand() * (hi - lo); }
+static double csma(void) { return 34 + (int)(urand() * 16) * 9; }   /* DIFS + backoff, 9 us slots */
+static int first_exit(void) { for (int id = 1; id <= n_nodes; id++) if (exits[id]) return id; return 1; }
 
 static uint32_t local_us(simnode_t *s, double t) { return (uint32_t)(int64_t)llround(t * (1.0 + s->drift) + s->off0); }
 
@@ -159,6 +215,37 @@ static int parse_args(int argc, char **argv, char *kill_spec, char *exit_spec, u
         else if (!strcmp(argv[i], "--kill") && i + 1 < argc) strncpy(kill_spec, argv[++i], 255);
         else if (!strcmp(argv[i], "--seed") && i + 1 < argc) *seed = (unsigned)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--realtime")) realtime = 1;
+        else if (!strcmp(argv[i], "--late") && i + 1 < argc) {
+            late = 1;                   /* "measured", or KEY=VALUE,... over the measured values */
+            for (char *p = argv[++i]; *p;) {
+                double v = 0;
+                char *eq = strchr(p, '=');
+                if (eq) v = strtod(eq + 1, NULL);
+                if (!strncmp(p, "hand=", 5)) { hand_lo = v - 80; hand_hi = v + 80; }
+                else if (!strncmp(p, "post=", 5)) { post_lo = v * 0.5; post_hi = v * 1.5; }
+                else if (!strncmp(p, "over1=", 6)) over1 = v;
+                else if (!strncmp(p, "over2=", 6)) over2 = v;
+                else if (!strncmp(p, "wake=", 5)) { wake_lo = v * 0.7; wake_hi = v * 1.3; }
+                else if (!strncmp(p, "stall=", 6)) stall_p = v;
+                else if (!strncmp(p, "stallmax=", 9)) stall_hi = v;
+                else if (!strncmp(p, "xbudget=", 8)) xbudget = v;
+                else if (strncmp(p, "measured", 8)) { fprintf(stderr, "--late: unknown %s\n", p); return -1; }
+                while (*p && *p != ',') p++;
+                if (*p == ',') p++;
+            }
+        }
+        else if (!strcmp(argv[i], "--fix") && i + 1 < argc) {
+            late = 1;
+            for (char *p = argv[++i]; *p;) {
+                if (!strncmp(p, "ahead", 5)) fix_ahead = 1;
+                else if (!strncmp(p, "clock", 5)) fix_clock = 1;
+                else if (!strncmp(p, "cb", 2)) fix_x = 1;
+                else if (!strncmp(p, "queue", 5)) fix_x = 2;
+                else { fprintf(stderr, "--fix: unknown %s\n", p); return -1; }
+                while (*p && *p != ',') p++;
+                if (*p == ',') p++;
+            }
+        }
         else if (!strcmp(argv[i], "--walk") && i + 1 < argc) {
             char *e; walk_a = strtod(argv[++i], &e) * 1e6; walk_b = (*e == '-' ? strtod(e + 1, NULL) : walk_a / 1e6 + 10) * 1e6;
         }
@@ -239,6 +326,7 @@ int main(int argc, char **argv)
         s->dead_from = s->dead_to = -1;
         s->next_tx = urand() * 20000;
         s->extra_at = -1;
+        s->air_t = -1;
         s->last_status = -1e9;
         tw_init(&s->st, (uint8_t)id, (uint8_t)s->exit, seed * 31u + (unsigned)id);
         tw_set_info(&s->st, "sim|board");
@@ -261,6 +349,7 @@ int main(int argc, char **argv)
     int busy_src = 0;
     uint8_t frame[TW_MAX_PAYLOAD], last_frame[TW_MAX_PAYLOAD];
     int last_len = 0, last_collided = 0, last_extra = 0;
+    uint32_t last_corr = 0;
     double last_start = 0;
     long leader_changes_total = 0;
     struct timespec wall0;
@@ -268,16 +357,20 @@ int main(int argc, char **argv)
 
     while (t < end) {
         /* next sender: a board's slot, or the extra frame it has pending */
-        int who = 0, is_extra = 0;
+        /* ev: 0 build the normal frame, 1 build the extra one, 2 (--late) a built frame asks for the air */
+        int who = 0, is_extra = 0, ev = 0;
         double when = 0;
         for (int id = 1; id <= n_nodes; id++) {
             double tt = N_[id].next_tx;
-            int ex = 0;
-            if (N_[id].extra_at >= 0 && N_[id].extra_at <= tt) { tt = N_[id].extra_at; ex = 1; }
-            if (!who || tt < when) { who = id; when = tt; is_extra = ex; }
+            int e = 0;
+            if (N_[id].extra_at >= 0 && N_[id].extra_at <= tt) { tt = N_[id].extra_at; e = 1; }
+            if (N_[id].air_t >= 0 && N_[id].air_t <= tt) { tt = N_[id].air_t; e = 2; }
+            if (!who || tt < when) { who = id; when = tt; ev = e; }
         }
         simnode_t *s = &N_[who];
-        double tx_t = is_extra ? when + urand() * TW_ACCESS_US      /* channel access after send-done */
+        is_extra = ev == 1;
+        double tx_t = late ? when
+                    : is_extra ? when + urand() * TW_ACCESS_US      /* channel access after send-done */
                                : s->next_tx + urand() * 300;        /* queueing delay before the air */
         /* deliver the previous frame if it ended before this one starts */
         if (last_len && busy_until <= tx_t) {
@@ -292,10 +385,13 @@ int main(int argc, char **argv)
                     if (blks[k].s == busy_src && blks[k].r == id && busy_until >= blks[k].a && busy_until < blks[k].b &&
                         urand() < blks[k].p) blocked = 1;
                 if (blocked) { lost_blocked++; continue; }
-                uint32_t now_l = local_us(r, busy_until);
+                double rx_t = late ? busy_until + ur(post_lo, post_hi) : busy_until;   /* its receive callback */
+                uint32_t now_l = local_us(r, rx_t);
                 tw_hdr_t h;
                 if (tw_peek_header(last_frame, last_len, &h) < 0) { r->st.n_bad_frames++; continue; }
-                tw_note_frame(&r->st, &h, now_l);
+                tw_hdr_t hc = h;
+                hc.net_us += last_corr;                      /* --fix clock: the delay it says it had */
+                tw_note_frame(&r->st, &hc, now_l);
                 int8_t csi[CSI_LEN];
                 make_csi(id, h.src, busy_until, csi);
                 int compact = __builtin_popcount(tw_active(&r->st, now_l)) > TW_FULL_MAX_ACTIVE;
@@ -310,11 +406,11 @@ int main(int argc, char **argv)
                     extra_measured += (kflags & TW_KIND_EXTRA) != 0;
                     r->made[h.src]++;
                 }
-                rctx_t c = { r, busy_until };
+                rctx_t c = { r, rx_t };
                 cur_src = h.src;
                 if (r->exit) {
                     char line[600];
-                    if (rec && tw_format_record(rec, line, sizeof(line)) > 0) emit(busy_until, line);
+                    if (rec && tw_format_record(rec, line, sizeof(line)) > 0) emit(rx_t, line);
                     if (!(h.flags & TW_F_EXTRA)) {
                         r->node_hdr[h.src] = h;
                         r->node_rssi[h.src] = rssi;
@@ -375,26 +471,108 @@ int main(int argc, char **argv)
             if (all) sets[k].done_t = tx_t;
         }
         int len = 0;
-        if (is_extra) {
+        uint32_t corr = 0;
+        if (ev == 2) {                                       /* --late: a built frame asks for the air */
+            if (dead) { s->air_t = -1; s->q_len = 0; t = tx_t; continue; }
+            if (last_len && tx_t < busy_until && tx_t - last_start >= 9) {
+                double na = busy_until + csma();             /* the radio hears the channel busy: waits */
+                if (tx_t > 10e6) lst(&s->s_defer, na - tx_t);
+                deferrals++;
+                s->air_t = na;
+                t = tx_t;
+                continue;
+            }
+            s->air_t = -1;
+            len = s->pend_len;
+            is_extra = s->pend_extra;
+            corr = s->pend_corr;
+            memcpy(frame, s->pend, (size_t)len);
+        } else if (is_extra) {
             s->extra_at = -1;
-            if (!dead) len = tw_build_extra(&s->st, local_us(s, when), frame, TW_MAX_PAYLOAD);
+            if (!dead) {
+                uint32_t bl = local_us(s, when);
+                if (fix_x == 1) bl += (uint32_t)(xbudget - TW_ACCESS_US);   /* 2.3: its own budget */
+                len = tw_build_extra(&s->st, bl, frame, TW_MAX_PAYLOAD);
+            }
+            if (late) {
+                if (len > 0) {
+                    memcpy(s->pend, frame, (size_t)len);
+                    s->pend_len = len;
+                    s->pend_extra = 1;
+                    s->pend_corr = 0;
+                    s->air_t = s->hand2_t + pre_draw(over2);
+                }
+                t = tx_t;
+                continue;
+            }
         } else if (!dead) {
             for (const tw_rec_t *a; (a = tw_aux_record(&s->st, lnow)) != NULL;) {    /* firmware: once a second */
                 char line[600];
                 if (s->exit && tw_format_record(a, line, sizeof(line)) > 0) emit(tx_t, line);
             }
             len = tw_build_frame(&s->st, lnow, frame, TW_MAX_PAYLOAD);
+            if (late && len > 0) {
+                /* built now (its time stamped now), handed to ESP-NOW later, on the air later still */
+                s->stamp_t = tx_t;
+                s->hand_t = tx_t + (fix_ahead ? ur(0, 40) : ur(hand_lo, hand_hi));
+                memcpy(s->pend, frame, (size_t)len);
+                s->pend_len = len;
+                s->pend_extra = 0;
+                s->pend_corr = 0;
+                if (fix_clock && s->m_n) {                   /* the least of its last 16, 20 us steps */
+                    uint32_t m = s->m_ring[0];
+                    for (int k = 1; k < s->m_n; k++) if (s->m_ring[k] < m) m = s->m_ring[k];
+                    s->pend_corr = m > 5100 ? 5100 : m / 20 * 20;
+                }
+                s->air_t = s->hand_t + pre_draw(over1);
+                if (s->st.synced && tx_t > 10e6) {
+                    lst(&s->f_at, tw_slot_pos(&s->st, local_us(s, s->hand_t), (uint8_t)who));
+                    lst(&s->f_len, len);
+                }
+                s->q_len = 0;
+                if (fix_x == 2 && s->st.extra_planned) {
+                    /* 2.3 "queue": the extra frame built at once and handed over behind the normal
+                       one; cut for the normal frame's worst start and a 219 us gap after it */
+                    double fixed = over1 - (post_lo + post_hi) / 2 - (34 + 7.5 * 9);
+                    double pre_max = (fixed < 0 ? 0 : fixed) + 100 + 34 + 135;
+                    uint32_t bl = local_us(s, s->hand_t + pre_max + tw_air_us(len)) + (219 - TW_ACCESS_US);
+                    s->q_len = tw_build_extra(&s->st, bl, s->qbuf, TW_MAX_PAYLOAD);
+                    s->hand2_t = s->hand_t + 20;
+                }
+                len = 0;                                     /* nothing on the air yet */
+            }
         }
         if (len > 0) {
             double air = tw_air_us(len);
+            double sd = tx_t + air + (late ? ur(post_lo, post_hi) : 0);   /* its send-done */
             air_used_us += air;
             frames++;
             if (is_extra) {
                 extra_frames++;
-                tw_note_sent(&s->st, local_us(s, tx_t + air), 1);        /* its send-done */
-                int32_t end_pos = tw_slot_pos(&s->st, local_us(s, tx_t + air), (uint8_t)who);
+                tw_note_sent(&s->st, local_us(s, sd), 1);
+                int32_t end_pos = tw_slot_pos(&s->st, local_us(s, sd), (uint8_t)who);
                 if (end_pos > s->extra_end_max) s->extra_end_max = end_pos;
                 if (end_pos > (int32_t)(TW_SLOT_US + TW_SLOT_SLACK_US)) s->extra_late++;
+            }
+            if (late && tx_t > 10e6 && s->st.synced) {
+                /* the truth: where in its slot it was on the air, by the timekeeper's clock; and
+                   what the board itself would report (TWF) */
+                int tk = N_[first_exit()].st.leader;
+                if (tk >= 1 && tk <= n_nodes) {
+                    simnode_t *L = &N_[tk];
+                    if (is_extra) {
+                        double e = tw_slot_pos(&L->st, local_us(L, tx_t + air), (uint8_t)who);
+                        lst(&s->s_xend, e);
+                        s->x_over += e > TW_SLOT_US + TW_SLOT_SLACK_US;
+                        s->x_into += e > TW_SLOT_US + TW_GUARD_US;
+                        lst(&s->f_xradio, sd - s->hand2_t);
+                        lst(&s->f_xend, tw_slot_pos(&s->st, local_us(s, sd), (uint8_t)who));
+                        lst(&s->f_xlen, len);
+                    } else {
+                        lst(&s->s_start, tw_slot_pos(&L->st, local_us(L, tx_t), (uint8_t)who));
+                        lst(&s->f_radio, sd - s->hand_t);
+                    }
+                }
             }
             if (last_len && tx_t < busy_until) {             /* overlaps the frame still on the air */
                 collisions++;
@@ -405,15 +583,44 @@ int main(int argc, char **argv)
                 last_len = len;
                 last_collided = 0;
                 last_extra = is_extra;
+                last_corr = corr;
                 last_start = tx_t;
                 busy_until = tx_t + air;
                 busy_src = who;
             }
-            if (!is_extra && s->st.extra_planned) {
+            if (!late && !is_extra && s->st.extra_planned) {
                 s->extra_at = tx_t + air + 50;               /* ESP-NOW's send-done, then the build */
             }
+            if (late && !is_extra) {
+                uint32_t m = (uint32_t)(local_us(s, sd) - local_us(s, s->stamp_t)) - (uint32_t)air;
+                s->m_ring[s->m_pos] = m;
+                s->m_pos = (s->m_pos + 1) % 16;
+                if (s->m_n < 16) s->m_n++;
+                if (fix_x == 2) {
+                    if (s->q_len > 0) {                      /* queued behind it: goes right after */
+                        memcpy(s->pend, s->qbuf, (size_t)s->q_len);
+                        s->pend_len = s->q_len;
+                        s->pend_extra = 1;
+                        s->pend_corr = 0;
+                        s->air_t = tx_t + air + 50 + csma() + (urand() < stall_p ? ur(stall_lo, stall_hi) : 0);
+                        s->q_len = 0;
+                    }
+                } else if (s->st.extra_planned) {
+                    if (fix_x == 1) {                        /* 2.3 "cb": sent from the send-done itself */
+                        s->extra_at = sd + ur(0, 20);
+                        s->hand2_t = s->extra_at;
+                    } else {                                 /* 2.2: our task wakes, builds, hands over */
+                        /* the length is decided as the build starts, right after the send-done
+                           (the real boards' second frames are as long as that gives): most of
+                           the wake is the build */
+                        s->extra_at = sd + ur(0, 20);
+                        s->hand2_t = sd + ur(wake_lo, wake_hi);
+                    }
+                    if (tx_t > 10e6 && s->st.synced) lst(&s->f_wake, s->hand2_t - sd);
+                }
+            }
         }
-        if (is_extra) {
+        if (is_extra || ev == 2) {
             t = tx_t;
             continue;
         }
@@ -488,6 +695,22 @@ int main(int argc, char **argv)
     for (int id = 1; id <= n_nodes; id++)
         fprintf(stderr, "%s\"%d\": [%lu, %lu]", id > 1 ? ", " : "", id, (unsigned long)N_[id].st.n_relayed_out,
                 (unsigned long)N_[id].st.n_relay_full);
+    if (late) {
+        fprintf(stderr, "}, \"deferrals\": %ld, \"exit_board\": %d, \"late\": {", deferrals, first_exit());
+        for (int id = 1; id <= n_nodes; id++) {
+            simnode_t *q = &N_[id];
+#define LS(a) (a).n ? (a).sum / (a).n : 0.0, (a).max
+            fprintf(stderr, "%s\"%d\": {\"start\": [%.0f, %.0f], \"xend\": [%.0f, %.0f], \"x_over\": %ld, \"x_into\": %ld, "
+                            "\"n_x\": %ld, \"n\": %ld, \"defer\": [%ld, %.0f, %.0f], \"tx_at\": [%.0f, %.0f], "
+                            "\"tx_radio\": [%.0f, %.0f], \"x_wake\": [%.0f, %.0f], \"x_radio\": [%.0f, %.0f], "
+                            "\"x_end_own\": [%.0f, %.0f], \"tx_len\": %.0f, \"x_len\": %.0f}",
+                    id > 1 ? ", " : "", id, LS(q->s_start), LS(q->s_xend), q->x_over, q->x_into, q->s_xend.n,
+                    q->s_start.n, q->s_defer.n, LS(q->s_defer), LS(q->f_at), LS(q->f_radio), LS(q->f_wake),
+                    LS(q->f_xradio), LS(q->f_xend), q->f_len.n ? q->f_len.sum / q->f_len.n : 0.0,
+                    q->f_xlen.n ? q->f_xlen.sum / q->f_xlen.n : 0.0);
+#undef LS
+        }
+    }
     fprintf(stderr, "}, \"extra\": {");
     for (int id = 1; id <= n_nodes; id++)
         fprintf(stderr, "%s\"%d\": [%lu, %lu, %d, %ld]", id > 1 ? ", " : "", id, (unsigned long)N_[id].st.n_extra_sent,

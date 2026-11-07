@@ -5,6 +5,17 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **Simulator: the delays the real boards measured.** `sim --late measured`
+  gives each board the delays tw_node 2.2 reported (frame built and stamped at
+  its slot time, handed to ESP-NOW about 340 us later, about 650 us more to its
+  send-done, 250 us from there to the second frame, now and then 1-5 ms
+  late), and radios that wait for a busy channel instead of colliding. It
+  reproduces the cabled board's TWF figures within about 50 us. `--fix
+  ahead,clock,cb|queue` simulates the parts of a timing fix;
+  `firmware/sim/timing_cases.py` runs the cases; `check_sim.py` prints where
+  each board's frames were on the air in its slot. Without these options the
+  simulator gives exactly what it gave before.
+
 - **Computer side: a TWR line that is not a measurement is never taken for
   one.** During an upgrade, a 2.1 board on the cable prints 2.2's firmware and
   score records as ordinary TWR lines (kinds 2 and 3). `split_links.py` counts
