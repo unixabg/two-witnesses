@@ -94,12 +94,13 @@ typedef struct {
             uint8_t  src, kflags, agc, phy;     /* kflags: TW_KIND_FWI, TW_KIND_RXERR */
             int8_t   rssi, noise, fft;
             uint32_t seq, rx_us;
-            uint16_t len;
+            uint16_t len, flen;                 /* CSI bytes; 2.3: the frame's length (our payload) */
             float    gain;
             int8_t   csi[CSI_MAX];
         } c;
         struct {
             uint16_t len;
+            uint32_t rx_ts;                     /* 2.3: the radio's receive time (rx_ctrl), 0: none */
             uint8_t  data[TW_MAX_PAYLOAD];
         } f;
         struct {
@@ -124,6 +125,52 @@ static int32_t s_extra_end_max = INT32_MIN;     /* latest end of our extra frame
    frame over (x_wake: our task), from then to its send-done (x_radio); and their lengths */
 typedef struct { uint32_t n; uint64_t sum; int32_t max; } tstat_t;
 static tstat_t s_t_at, s_t_radio, s_t_wake, s_t_xradio, s_t_len, s_t_xlen;
+/* 2.3: how long building the normal frame takes (build), and how late the ESP-NOW receive callback
+   comes after a frame's end, as the radio's own receive time says (rxcb) */
+static tstat_t s_t_build, s_t_rxcb;
+
+/* 2.3: the radio stamps each received frame (rx_ctrl timestamp, us) on a clock that runs with ours
+   but starts elsewhere (about 984 ms apart on the 2.2 boards; it marks the frame's start). The
+   CSI callback comes soon after a frame's end: the smallest (callback - stamp - air) over the last
+   8 seconds is that offset, plus the callback's least delay. Work task only. */
+#define RXK_WIN 8
+static int32_t s_rxk_win[RXK_WIN];
+static uint8_t s_rxk_n, s_rxk_pos;
+static int32_t s_rxk_cur = INT32_MAX;
+
+static void rxk_note(uint32_t cb_local, uint32_t rx_ts, int frame_len)
+{
+    int32_t d = (int32_t)(cb_local - rx_ts - tw_air_us(frame_len));
+    if (d < s_rxk_cur) {
+        s_rxk_cur = d;
+    }
+}
+
+static void rxk_roll(void)                  /* once a second */
+{
+    if (s_rxk_cur == INT32_MAX) {
+        return;
+    }
+    s_rxk_win[s_rxk_pos] = s_rxk_cur;
+    s_rxk_pos = (uint8_t)((s_rxk_pos + 1) % RXK_WIN);
+    if (s_rxk_n < RXK_WIN) {
+        s_rxk_n++;
+    }
+    s_rxk_cur = INT32_MAX;
+}
+
+/* the offset (radio's receive time -> our clock), or 0 with *ok = 0 when not learned yet */
+static int32_t rxk_get(int *ok)
+{
+    int32_t k = s_rxk_cur;
+    for (int i = 0; i < s_rxk_n; i++) {
+        if (s_rxk_win[i] < k) {
+            k = s_rxk_win[i];
+        }
+    }
+    *ok = k != INT32_MAX;
+    return *ok ? k : 0;
+}
 static uint32_t s_hand1_us, s_cb1_us, s_hand2_us;
 
 /* 2.2: how busy each core was since the last call, % (FreeRTOS counts each core's idle time on
@@ -284,6 +331,7 @@ static void espnow_recv_cb(const esp_now_recv_info_t *info, const uint8_t *data,
     ev.kind = EV_FRAME;
     ev.local_us = (uint32_t)esp_timer_get_time();
     ev.f.len = (uint16_t)len;
+    ev.f.rx_ts = (info && info->rx_ctrl) ? info->rx_ctrl->timestamp : 0;
     memcpy(ev.f.data, data, (size_t)len);
     if (xQueueSend(s_q, &ev, 0) != pdTRUE) {
         s_q_full++;
@@ -367,6 +415,7 @@ static void csi_cb(void *ctx, wifi_csi_info_t *info)
     ev.c.fft = fft;
     ev.c.gain = gain;
     ev.c.len = info->len > CSI_MAX ? CSI_MAX : info->len;
+    ev.c.flen = (uint16_t)(info->payload_len - ESPNOW_HDR_SKIP);
     memcpy(ev.c.csi, info->buf, ev.c.len);
     if (xQueueSend(s_q, &ev, 0) != pdTRUE) {
         s_q_full++;
@@ -457,6 +506,12 @@ static void handle(ev_t *ev)
             s_node.n_bad_frames++;
             return;
         }
+        int kok;
+        int32_t k = rxk_get(&kok);
+        if (kok && ev->f.rx_ts && !(h.flags & TW_F_EXTRA)) {
+            /* how late this callback is after the frame's end (by the radio's stamp) */
+            tstat_add(&s_t_rxcb, (int32_t)(ev->local_us - (ev->f.rx_ts + (uint32_t)k + tw_air_us(ev->f.len))));
+        }
         tw_note_frame(&s_node, &h, ev->local_us);
         if (h.src >= 1 && h.src <= TW_MAX_NODES && !(h.flags & TW_F_EXTRA)) {
             s_last_hdr[h.src] = h;
@@ -467,6 +522,7 @@ static void handle(ev_t *ev)
         }
         return;
     }
+    rxk_note(ev->local_us, ev->c.rx_us, ev->c.flen);
     int compact = __builtin_popcount(tw_active(&s_node, ev->local_us)) > TW_FULL_MAX_ACTIVE;
     const tw_rec_t *r = tw_add_measurement(&s_node, ev->local_us, ev->c.src, ev->c.seq, ev->c.rx_us,
                                            ev->c.rssi, ev->c.noise, ev->c.agc, ev->c.fft, ev->c.phy,
@@ -596,6 +652,7 @@ static void work_task(void *arg)
             s_node.is_exit = (uint8_t)usb_up();
             int len = tw_build_frame(&s_node, now, frame, s_max_payload);
             s_hand1_us = (uint32_t)esp_timer_get_time();
+            tstat_add(&s_t_build, (int32_t)(s_hand1_us - now));
             if (s_node.synced) {
                 tstat_add(&s_t_at, tw_slot_pos(&s_node, s_hand1_us, s_id));
             }
@@ -620,6 +677,7 @@ static void work_task(void *arg)
         now = (uint32_t)esp_timer_get_time();
         if ((int32_t)(now - next_status) >= 0) {
             next_status += 1000000u;
+            rxk_roll();
             s_node.is_exit = (uint8_t)usb_up();
             tw_update_roles(&s_node, now);
             apply_settings();
@@ -660,21 +718,27 @@ static void work_task(void *arg)
             s_extra_end_max = INT32_MIN;
             /* 2.2: where the frames' time goes (mean/max, us; lengths in bytes); how busy each core
                was over these 10 s (%; Wi-Fi runs on core 0, our work task on core 1), and the
-               lowest free internal memory since start (bytes) */
-            char b1[24], b2[24], b3[24], b4[24], b5[24], b6[24];
+               lowest free internal memory since start (bytes). 2.3: the normal frame's build time;
+               the receive callback after a frame's end (mean/max, us); the radio's receive-time
+               offset (us; 0 = not learned) */
+            char b1[24], b2[24], b3[24], b4[24], b5[24], b6[24], b7[24], b8[24];
+            int kok;
+            int32_t rxk = rxk_get(&kok);
             unsigned busy[2];
             core_load(busy);
             if (k > 0 && k < (int)sizeof(line)) {
                 k--;                    /* over the line end */
                 k += snprintf(line + k, sizeof(line) - (size_t)k,
                               ",tx_at=%s,tx_radio=%s,x_wake=%s,x_radio=%s,tx_len=%s,x_len=%s,"
-                              "core0=%u,core1=%u,heap_min=%lu,psram_free=%lu\n",
+                              "core0=%u,core1=%u,heap_min=%lu,psram_free=%lu,build=%s,rxcb=%s,rx_k=%ld\n",
                               tstat_text(&s_t_at, b1, sizeof(b1)), tstat_text(&s_t_radio, b2, sizeof(b2)),
                               tstat_text(&s_t_wake, b3, sizeof(b3)), tstat_text(&s_t_xradio, b4, sizeof(b4)),
                               tstat_text(&s_t_len, b5, sizeof(b5)), tstat_text(&s_t_xlen, b6, sizeof(b6)),
                               busy[0], busy[1],
                               (unsigned long)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
-                              (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+                              (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+                              tstat_text(&s_t_build, b7, sizeof(b7)), tstat_text(&s_t_rxcb, b8, sizeof(b8)),
+                              (long)rxk);
             }
             out(line, k);
         }

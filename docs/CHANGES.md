@@ -5,6 +5,14 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **Firmware (tw_node 2.3): two more timing figures in TWF.** `build=` how long
+  building the normal frame takes (mean/max, us: is the 340 us before a frame
+  goes out the build?); `rxcb=` how late the ESP-NOW receive callback comes
+  after a frame's end, by the radio's own receive time; `rx_k=` the offset
+  from the radio's receive time to the board's clock, learned from the CSI
+  callbacks (the smallest callback - stamp - air over 8 s; 0 = not learned).
+  Measurements only: nothing behaves differently.
+
 - **Design update: frame timing (docs/TIMING-2.3.md).** The real boards'
   lag is 1.1-1.5 ms, not the 850 us first simulated; most of the difference
   is the ESP-NOW receive callback (the clock's time) coming about 400 us
