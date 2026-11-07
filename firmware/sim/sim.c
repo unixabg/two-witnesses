@@ -239,6 +239,7 @@ int main(int argc, char **argv)
         s->extra_at = -1;
         s->last_status = -1e9;
         tw_init(&s->st, (uint8_t)id, (uint8_t)s->exit, seed * 31u + (unsigned)id);
+        tw_set_info(&s->st, "sim|board");
     }
     /* kills: "id@from-to,id@from-to" in seconds */
     for (char *p = kill_spec; *p;) {
@@ -376,6 +377,10 @@ int main(int argc, char **argv)
             s->extra_at = -1;
             if (!dead) len = tw_build_extra(&s->st, local_us(s, when), frame, TW_MAX_PAYLOAD);
         } else if (!dead) {
+            for (const tw_rec_t *a; (a = tw_aux_record(&s->st, lnow)) != NULL;) {    /* firmware: once a second */
+                char line[600];
+                if (s->exit && tw_format_record(a, line, sizeof(line)) > 0) emit(tx_t, line);
+            }
             len = tw_build_frame(&s->st, lnow, frame, TW_MAX_PAYLOAD);
         }
         if (len > 0) {
@@ -414,6 +419,7 @@ int main(int argc, char **argv)
             /* a dead board forgets everything: it reboots when it comes back */
             int was_exit = s->exit;
             tw_init(&s->st, (uint8_t)who, (uint8_t)was_exit, (unsigned)(t + who));
+            tw_set_info(&s->st, "sim|board");
         }
         (void)last_start;
         if (dead) s->extra_at = -1;

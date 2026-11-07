@@ -579,6 +579,13 @@ static void work_task(void *arg)
                 }
             }
             tw_clear_counts(&s_node);
+            /* records that are not measurements (2.2: what firmware this board runs): queued like
+               any record; an exit prints its own here, the others' come in their frames */
+            for (const tw_rec_t *a; (a = tw_aux_record(&s_node, now)) != NULL;) {
+                if (s_node.is_exit) {
+                    out(line, tw_format_record(a, line, sizeof(line)));
+                }
+            }
             poll_commands();
         }
         if ((int32_t)(now - next_hello) >= 0) {
@@ -616,6 +623,7 @@ void app_main(void)
     ESP_ERROR_CHECK(usb_serial_jtag_driver_install(&usb_cfg));
     s_id = board_id();
     tw_init(&s_node, s_id, 0, esp_random());
+    tw_set_info(&s_node, FW_VERSION "|" __DATE__ " " __TIME__);     /* sent to the computer every 5 s */
     load_settings();
     s_q = xQueueCreate(48, sizeof(ev_t));
     wifi_init();

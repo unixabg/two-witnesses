@@ -512,6 +512,8 @@ class Screen:
                    + (f", tx {b['power_q'] / 4:g} dBm" if b.get("power_q") else "")
                    + (", relay OFF" if b.get("relay") == 0 else "")
                    + (f", 2nd {b['x_s']:.0f}/s" if b.get("x_s") else "")
+                   + (f", FIRMWARE {b['fw']}" if b.get("fw") and st and b["fw"] != boards.get(st["id"], {}).get("fw")
+                      else "")
                    + flags_words(b.get("flags")))
             if x + len(txt) > w - 2:
                 y += 1
@@ -903,7 +905,14 @@ def run(scr, a):
                     continue
                 kind, t, f = p
                 try:
-                    if kind == "TWN":           # src,seq,leader,flags,active,period,uptime,rssi
+                    if kind == "TWV":           # 2.2+: board,boot,record number,firmware,build
+                        dk = (int(f[0]), int(f[1]), int(f[2]))
+                        if dk not in seen:      # a record like any: counts for its board's delivery
+                            seen.add(dk)
+                            deliv.add(*dk)
+                            seen_order.append(dk)
+                        boards.setdefault(int(f[0]), {})["fw"] = f[3]
+                    elif kind == "TWN":           # src,seq,leader,flags,active,period,uptime,rssi
                         b = boards.setdefault(int(f[0]), {})
                         b.update(t=time.time(), rssi=int(f[7]), exit=bool(int(f[3]) & 2),
                                  leader=int(f[2]) == int(f[0]))

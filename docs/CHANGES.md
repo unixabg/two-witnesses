@@ -5,6 +5,20 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **Firmware (tw_node 2.2): every board says which firmware it runs.** Until
+  now only the cabled board's hello (TWH) said, over its USB. Every 5 s each
+  board queues a record of a new kind (`TW_KIND_INFO`, 2) with its firmware and
+  build (no factory address), carried home like any record; the cabled board
+  prints it as `TWV,board,boot,record number,firmware,build`. It takes the
+  board's ordinary record numbers, so delivery counts stay right (a separate
+  numbering would have upset the de-duplication window). `tw_setid.py PORT`
+  shows each board's firmware ("not reported (2.1 or older)" for a board that
+  does not say); `links/summary.txt` and the replay's "About this recording"
+  list it per board; the dashboard says `FIRMWARE ...` on a board that runs
+  something other than the cabled one. `listen.py` keeps TWV lines (it keeps
+  only the line kinds it knows). Simulator: 12 a board in 60 s, delivery
+  unchanged (0.0-0.1%).
+
 - **Firmware (tw_node 2.2): a reused queue slot forgets that it held a
   relayed record.** When a slot that had carried a relayed record was reused
   for one of the board's own measurements, its "relayed" mark stayed: the

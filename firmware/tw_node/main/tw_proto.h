@@ -92,6 +92,11 @@
 #define TW_KIND_FULL        0           /* amplitude of every bin of the CSI buffer */
 #define TW_KIND_LLTF        1           /* amplitude of the 52 L-LTF subcarriers */
 #define TW_KIND_FWI         0x80        /* flag: first_word_invalid (first 4 bytes bad) */
+#define TW_KIND_MASK        0x0F        /* the kind itself (FULL, LLTF, INFO); the bits above are flags */
+#define TW_KIND_INFO        2           /* 2.2+: not a measurement: the board's firmware and build, as
+                                           text in q[] (n bytes); printed as TWV, never as TWR */
+#define TW_INFO_MAX         64
+#define TW_INFO_EVERY_US    5000000u    /* how often each board sends it */
 #define TW_KIND_EXTRA       0x20        /* flag: measured from an extra frame (TW_SET_MEASURE_EXTRA only) */
 #define TW_KIND_RXERR       0x40        /* flag: the radio reported this frame received with an error
                                            (rx_state != 0; the numbers are not documented). Kept, only
@@ -188,6 +193,10 @@ typedef struct {
     uint32_t slot_no;                       /* one number per normal frame this board built */
     uint8_t  extra_planned;                 /* the frame just built announced an extra frame */
     uint32_t n_extra_sent, n_extra_skipped; /* extra frames built; announced but nothing fitted in time */
+    /* 2.2: what this board says about itself (tw_set_info), and when it last did */
+    char     info[TW_INFO_MAX + 1];
+    uint32_t info_us;
+    uint8_t  info_sent;
     uint8_t  xend_q;                        /* when our last extra frame ended (tw_note_sent), 20 us steps */
     /* about each board heard, since tw_clear_counts (the firmware: once a second, after TWN) */
     uint16_t c_frames[TW_MAX_NODES + 1];    /* its normal frames heard */
@@ -228,6 +237,14 @@ typedef void (*tw_rec_cb)(void *ctx, const tw_rec_t *r);
 int      tw_parse_frame(const uint8_t *buf, int len, tw_hdr_t *h, tw_rec_cb cb, void *ctx);
 /* peek at the header only (for the CSI callback: who sent it, which frame) */
 int      tw_peek_header(const uint8_t *buf, int len, tw_hdr_t *h);
+/* what this board says about itself in its TW_KIND_INFO records: "firmware|build" (commas and
+   line ends become spaces; at most TW_INFO_MAX bytes) */
+void     tw_set_info(tw_node_t *n, const char *text);
+/* records that are not measurements, queued when due (2.2: the info record, every
+   TW_INFO_EVERY_US): call about once a second; returns one record queued now (for an exit to
+   print), or NULL. Call again until NULL. They take the board's ordinary record numbers, so the
+   computer counts them for delivery like any record */
+const tw_rec_t *tw_aux_record(tw_node_t *n, uint32_t now_local_us);
 /* make a record from one CSI measurement and queue it (returns it, for printing). kflags: the
    record flags the radio gave (TW_KIND_FWI, TW_KIND_RXERR), and TW_KIND_EXTRA if the frame was an
    extra frame: then it is only counted, and NULL returned, unless TW_SET_MEASURE_EXTRA is set */

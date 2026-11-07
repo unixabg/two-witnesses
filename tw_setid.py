@@ -94,11 +94,15 @@ def dbm(q):
 
 def status(p, seconds):
     """what every board reports: TWS for the board on the cable, TWN for each board it hears.
-    -> {board: dict(set_seq, power_q, relay, heard, cable)}"""
-    seen = {}
+    -> {board: dict(set_seq, power_q, relay, heard, cable, fw)}. fw: what the board says it runs
+    (tw_node 2.2+: TWV, every 5 s; None if it did not say in time)"""
+    seen, fw = {}, {}
     for line in p.lines(seconds):
         f = line.split(",")
         try:
+            if f[0] == "TWV" and len(f) >= 6:
+                fw[int(f[1])] = f"{f[4]} (built {f[5]})"
+                continue
             if f[0] == "TWS" and len(f) >= 20:
                 seen[int(f[1])] = dict(cable=True, set_seq=int(f[17]), power_q=int(f[18]), radio_q=int(f[19]),
                                        relay=int(f[20]) if len(f) >= 21 else None, heard=None,
@@ -111,6 +115,9 @@ def status(p, seconds):
                                        flags=int(f[13]) if len(f) >= 14 else None)     # 2.1+
         except (ValueError, IndexError):
             pass
+    for k, b in seen.items():
+        b["fw"] = fw.get(k)
+        b["fw_known"] = bool(fw)        # someone said: a board that did not is older (or missed)
     return seen
 
 
@@ -132,6 +139,10 @@ def show(seen):
         b = seen[k]
         relay = "" if b["relay"] is None else f", relaying {'on' if b['relay'] else 'OFF'}"
         relay += flags_text(b.get("flags"))
+        if b.get("fw"):
+            relay = f", firmware {b['fw']}" + relay
+        elif b.get("fw_known"):
+            relay = ", firmware not reported (2.1 or older)" + relay
         if b["cable"]:
             print(f"  board {k} (on the cable): setting {b['set_seq']}, {dbm(b['power_q'])}{relay}; "
                   f"radio reports {dbm(b['radio_q'])}")
@@ -252,7 +263,7 @@ def main():
             print(line)
             print(f"board {f[1]}, factory address {f[2]}, firmware {f[3]}")
             print("every board:")
-            show(status(p, 3))
+            show(status(p, 6))          # 6 s: every board says its firmware every 5 s (2.2+)
             return
     sys.exit("no answer: is it running tw_node, and is this its native USB port? (it says hello every 10 s)")
 

@@ -96,6 +96,7 @@ class Splitter:
         self.rx_err = collections.Counter()            # link -> records the radio flagged (rx_state != 0)
         self.extra = collections.Counter()             # link -> records measured from second frames (test)
         self.boards = {}
+        self.fw = {}                                   # board -> what it says it runs (TWV, 2.2+)
         self.dups = self.bad = 0
         self.hour_span = (0, 0, "")
         self.win = collections.defaultdict(lambda: collections.defaultdict(lambda: [0, 0]))  # 10 s -> rx -> [n, noise sum]
@@ -107,22 +108,30 @@ class Splitter:
         self.stats = collections.defaultdict(lambda: dict(n=0, first=None, last=None, lost=0, last_seq=None,
                                                           last_boot=None, rssi=[], boots=set()))
 
-    def add(self, host_ns, r):
-        key = (r["rx"], r["boot"], r["recseq"])
+    def delivered(self, host_ns, rx, boot, recseq):
+        """count one record of board rx for its delivery (record numbers); False if a duplicate"""
+        key = (rx, boot, recseq)
         if key in self.seen:
             self.dups += 1
-            return
+            return False
         self.seen.add(key)
         w10 = host_ns // 10**10 * 10
-        link = f"{r['tx']}-{r['rx']}"
-        # every record the measuring board made counts for its delivery (record numbers), the
-        # second-frame ones too: leaving them out would look like reports lost on the way
-        q = self.rxw.get((w10, r["rx"], r["boot"]))
+        q = self.rxw.get((w10, rx, boot))
         if q is None:
-            self.rxw[(w10, r["rx"], r["boot"])] = [1, r["recseq"], r["recseq"]]
+            self.rxw[(w10, rx, boot)] = [1, recseq, recseq]
         else:
             q[0] += 1
-            q[1], q[2] = min(q[1], r["recseq"]), max(q[2], r["recseq"])
+            q[1], q[2] = min(q[1], recseq), max(q[2], recseq)
+        return True
+
+    def add(self, host_ns, r):
+        # every record the measuring board made counts for its delivery (record numbers), the
+        # second-frame ones and its other records (TWV) too: leaving them out would look like
+        # reports lost on the way
+        if not self.delivered(host_ns, r["rx"], r["boot"], r["recseq"]):
+            return
+        w10 = host_ns // 10**10 * 10
+        link = f"{r['tx']}-{r['rx']}"
         if r["kind"] & 0x20:
             # measured from a second frame (tw_node 2.1, test setting measure-second): kept out of
             # the link files, so each link stays one measurement per period (second_check.py
@@ -311,7 +320,10 @@ class Splitter:
     def report(self):
         L = [f"run       {os.path.abspath(self.folder)}",
              f"records   {len(self.seen):,} (duplicates skipped {self.dups:,}, unreadable lines {self.bad})", ""]
-        L += sorted(self.boards.values()) + ([""] if self.boards else [])
+        L += sorted(self.boards.values())
+        if self.fw:
+            L += [f"board {b}: firmware {v}" for b, v in sorted(self.fw.items())]
+        L += [""] if self.boards or self.fw else []
         L += self.power_lines()
         L.append("link   (from-to)   records    span h   rate/s   missing    path  delivery   median RSSI   boots")
         scene = os.path.join(self.folder, "scene.txt")
@@ -413,6 +425,13 @@ def main():
             for line in A.read_lines(path):
                 f = line.rstrip("\n").split(",")
                 if len(f) < 2:
+                    continue
+                if f[1] == "TWV" and len(f) >= 7:    # 2.2+: board,boot,record number,firmware,build
+                    try:
+                        sp.delivered(int(f[0]), int(f[2]), int(f[3]), int(f[4]))
+                        sp.fw[int(f[2])] = f"{f[5]} (built {f[6]})"
+                    except ValueError:
+                        pass
                     continue
                 if f[1] == "TWH" and len(f) >= 5:
                     sp.boards[f[2]] = f"board {f[2]}: factory address {f[3]}, firmware {f[4]}"

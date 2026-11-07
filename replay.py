@@ -204,8 +204,21 @@ def instrument(inst, p, t_from, t_to):
                 inst["relay"].append((sec, int(f[0]), int(f[19])))
         elif p[1] == "TWH" and len(f) >= 4:
             inst["fw"].add(f"{f[2]} (built {f[3]})")
+        elif p[1] == "TWV" and len(f) >= 5:        # 2.2+: each board's own (board,boot,number,fw,build)
+            inst["fwb"][int(f[0])] = f"{f[3]} (built {f[4]})"
     except ValueError:
         pass
+
+
+def fw_text(inst):
+    """the firmware: every board's own word (2.2+), else the cabled board's hello"""
+    fwb = inst.get("fwb") or {}
+    if fwb:
+        same = set(fwb.values())
+        if len(same) == 1:
+            return f"{same.pop()} on boards {', '.join(str(b) for b in sorted(fwb))}"
+        return "; ".join(f"board {b} {v}" for b, v in sorted(fwb.items()))
+    return ", ".join(sorted(inst["fw"])) or "not reported in this part"
 
 
 def describe(inst, epoch, settle, thr, names, layout, own, relearned=()):
@@ -243,7 +256,7 @@ def describe(inst, epoch, settle, thr, names, layout, own, relearned=()):
     except OSError:
         pass
     rows = [
-        ("firmware", ", ".join(sorted(inst["fw"])) or "not reported in this part"),
+        ("firmware", fw_text(inst)),
         ("transmit power", ", ".join(f"board {b} {v:g} dBm" for b, v in common.items()) or "not reported"),
         ("power changes", "; ".join(f"{dt.datetime.fromtimestamp(s):%H:%M:%S} board {b} {a:g} -> {c:g} dBm"
                                     for s, b, a, c in changes) or "none"),
@@ -265,7 +278,7 @@ def read_run(folder, t_from, t_to):
     if not files:
         sys.exit(f"no recording (csi-*.csv.gz) in {folder}")
     acc = Acc()
-    acc.inst = dict(power=[], relay=[], fw=set(), phy={})   # the instrument, as the boards report it
+    acc.inst = dict(power=[], relay=[], fw=set(), fwb={}, phy={})   # the instrument, as the boards report it
     recent = {}                 # (rx, boot) -> set of record numbers seen lately (records come twice)
     total = dup = 0
     t_first = None
@@ -283,7 +296,7 @@ def read_run(folder, t_from, t_to):
             if line.startswith("#"):
                 continue
             p = line.rstrip("\n").split(",")
-            if len(p) > 3 and p[1] in ("TWN", "TWS", "TWH"):
+            if len(p) > 3 and p[1] in ("TWN", "TWS", "TWH", "TWV"):
                 instrument(acc.inst, p, t_from, t_to)
                 continue
             if len(p) != 19 or p[1] != "TWR":

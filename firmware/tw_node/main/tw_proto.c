@@ -693,6 +693,72 @@ int tw_lltf_ranges(uint8_t secondary, uint8_t sig_mode, uint8_t cwb, uint8_t stb
     return 1;
 }
 
+/* a queue slot for a new own record: a free one, else the oldest (counted as dropped if never sent) */
+static tw_qent_t *new_entry(tw_node_t *n)
+{
+    tw_qent_t *e = NULL, *oldest = NULL;
+    for (int i = 0; i < TW_QUEUE_LEN; i++) {
+        tw_qent_t *c = &n->q[(n->q_next + i) % TW_QUEUE_LEN];
+        if (!c->used) {
+            e = c;
+            break;
+        }
+        if (!oldest || (int32_t)(c->made_us - oldest->made_us) < 0) {
+            oldest = c;
+        }
+    }
+    if (!e) {
+        e = oldest;
+        if (e->sent == 0) {
+            n->n_dropped++;
+        }
+    }
+    n->q_next = (uint16_t)(((e - n->q) + 1) % TW_QUEUE_LEN);
+    return e;
+}
+
+void tw_set_info(tw_node_t *n, const char *text)
+{
+    int k = 0;
+    for (; text[k] && k < TW_INFO_MAX; k++) {
+        char c = text[k];
+        n->info[k] = (c == ',' || c < 32 || c > 126) ? ' ' : c;
+    }
+    n->info[k] = 0;
+    n->info_sent = 0;
+}
+
+/* queue a record that is not a measurement: its kind, and len bytes of content */
+static const tw_rec_t *queue_aux(tw_node_t *n, uint32_t now, uint8_t kind, const uint8_t *data, int len)
+{
+    tw_qent_t *e = new_entry(n);
+    tw_rec_t *r = &e->rec;
+    memset(r, 0, sizeof(*r));
+    r->rx = n->id; r->tx = n->id; r->hop = 0; r->boot = n->boot;
+    r->kind = kind;
+    r->recseq = ++n->recseq;
+    r->rx_us = now;
+    r->net_us = now + n->offset;
+    r->n = (uint8_t)len;
+    memcpy(r->q, data, (size_t)len);
+    e->used = 1;
+    e->sent = 0;
+    e->relay = 0;
+    e->made_us = now;
+    tw_seen(n, n->id, n->boot, r->recseq);
+    return r;
+}
+
+const tw_rec_t *tw_aux_record(tw_node_t *n, uint32_t now)
+{
+    if (n->info[0] && (!n->info_sent || (uint32_t)(now - n->info_us) >= TW_INFO_EVERY_US)) {
+        n->info_sent = 1;
+        n->info_us = now;
+        return queue_aux(n, now, TW_KIND_INFO, (const uint8_t *)n->info, (int)strlen(n->info));
+    }
+    return NULL;
+}
+
 const tw_rec_t *tw_add_measurement(tw_node_t *n, uint32_t now, uint8_t tx, uint32_t txseq,
                                    uint32_t rx_us, int8_t rssi, int8_t noise, uint8_t agc, int8_t fft,
                                    uint8_t phy, uint8_t kflags, const int8_t *csi, int csi_len, float gain,
@@ -736,25 +802,7 @@ const tw_rec_t *tw_add_measurement(tw_node_t *n, uint32_t now, uint8_t tx, uint3
             amp[0] = amp[1] = 0;            /* first 4 bytes invalid */
         }
     }
-    /* pick the slot: a free one, else the oldest (counted as dropped if never sent) */
-    tw_qent_t *e = NULL, *oldest = NULL;
-    for (int i = 0; i < TW_QUEUE_LEN; i++) {
-        tw_qent_t *c = &n->q[(n->q_next + i) % TW_QUEUE_LEN];
-        if (!c->used) {
-            e = c;
-            break;
-        }
-        if (!oldest || (int32_t)(c->made_us - oldest->made_us) < 0) {
-            oldest = c;
-        }
-    }
-    if (!e) {
-        e = oldest;
-        if (e->sent == 0) {
-            n->n_dropped++;
-        }
-    }
-    n->q_next = (uint16_t)(((e - n->q) + 1) % TW_QUEUE_LEN);
+    tw_qent_t *e = new_entry(n);
     tw_rec_t *r = &e->rec;
     float mx = 0;
     for (int i = 0; i < cnt; i++) {
@@ -848,6 +896,17 @@ static const char HEX[] = "0123456789abcdef";
 
 int tw_format_record(const tw_rec_t *r, char *out, int max)
 {
+    if ((r->kind & TW_KIND_MASK) == TW_KIND_INFO) {
+        /* TWV,board,boot,record number,firmware,build ("firmware|build" in the record) */
+        char text[TW_INFO_MAX + 1];
+        int n = r->n > TW_INFO_MAX ? TW_INFO_MAX : r->n;
+        for (int i = 0; i < n; i++) {
+            char c = (char)r->q[i];
+            text[i] = c == '|' ? ',' : (c == ',' || c < 32 || c > 126) ? ' ' : c;
+        }
+        text[n] = 0;
+        return snprintf(out, (size_t)max, "TWV,%u,%u,%lu,%s\n", r->rx, r->boot, (unsigned long)r->recseq, text);
+    }
     int k = snprintf(out, (size_t)max, "TWR,%u,%u,%lu,%u,%lu,%u,%lu,%lu,%d,%d,%u,%d,%u,%u,%u,%u,",
                      r->rx, r->tx, (unsigned long)r->txseq, r->hop, (unsigned long)r->recseq, r->boot,
                      (unsigned long)r->rx_us, (unsigned long)r->net_us, r->rssi, r->noise, r->agc, r->fft,
