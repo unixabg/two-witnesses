@@ -5,6 +5,18 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **Firmware (tw_node 2.3): the clock from the radio's own receive time.**
+  Each frame says its sender's delay: the least, over its last 16 frames, of
+  time stamp to send-done less the air (20 us steps), in the sender's own
+  place in the hearing list (always 100%, never read; flag `TW_F_DELAY`,
+  0x20; 2.2 boards ignore it). A receiver times the timekeeper's frame by the
+  radio's receive time (the frame's start, on its clock through the offset
+  learned from the CSI callbacks) instead of the ESP-NOW callback, which
+  comes about 0.4 ms after; the sender's delay less 100 us (`TW_POST_EST_US`,
+  its send-done after the air) is how long after its stamp it started. The
+  protocol version stays 2. Simulator: followers 50-60 us behind the
+  timekeeper (2.2: about 1240 us), the same with a 150 us slower callback.
+
 - **Firmware (tw_node 2.3): the second frame sent from the send-done.** The
   work task builds it while the normal frame is on the air, cut for a
   send-done late in the board's usual spread (running mean + 2 spreads) and

@@ -172,7 +172,7 @@ void tw_note_settings(tw_node_t *n, const tw_hdr_t *h)
     }
 }
 
-void tw_note_frame(tw_node_t *n, const tw_hdr_t *h, uint32_t rx_local)
+void tw_note_frame(tw_node_t *n, const tw_hdr_t *h, uint32_t rx_local, uint32_t start_local)
 {
     if (!valid_id(h->src) || h->src == n->id) {
         return;
@@ -232,6 +232,13 @@ void tw_note_frame(tw_node_t *n, const tw_hdr_t *h, uint32_t rx_local)
        little later than it was built (queueing, channel access), so each candidate is still an
        underestimate: keep the max */
     uint32_t cand = h->net_us - rx_local + tw_air_us(h->len);
+    if (start_local && (h->flags & TW_F_DELAY)) {
+        /* 2.3: the frame started on the air (the radio's own receive time) its sender's delay
+           after its stamp: the delay it says, to its send-done less the air, less the send-done's
+           own lateness. Its least delay, so still an underestimate: keeping the max still works */
+        uint32_t pre = h->delay_us > TW_POST_EST_US ? h->delay_us - TW_POST_EST_US : 0u;
+        cand = h->net_us + pre - start_local;
+    }
     n->cand[n->cand_pos] = cand;
     n->cand_pos = (uint8_t)((n->cand_pos + 1) % 16);
     if (n->n_cand < 16) {
@@ -288,6 +295,19 @@ int32_t tw_slot_pos(const tw_node_t *n, uint32_t now, uint8_t id)
     uint32_t raw = ((uint32_t)(id - 1) * TW_SLOT_US) % p;
     uint32_t d = ((now + n->offset) % p + p - raw) % p;
     return d >= p / 2 ? (int32_t)d - (int32_t)p : (int32_t)d;
+}
+
+void tw_note_sent_normal(tw_node_t *n, uint32_t stamp, uint32_t done, int len)
+{
+    int32_t d = (int32_t)(done - stamp) - (int32_t)tw_air_us(len);
+    if (d < 0 || d > 5100) {
+        return;                         /* nonsense, or a stall: keep the last ones */
+    }
+    n->own_delay[n->delay_pos] = (uint16_t)d;
+    n->delay_pos = (uint8_t)((n->delay_pos + 1) % 16);
+    if (n->n_delay < 16) {
+        n->n_delay++;
+    }
 }
 
 void tw_note_sent(tw_node_t *n, uint32_t now, int extra)
@@ -553,6 +573,16 @@ static void put_header(tw_node_t *n, uint32_t now, uint8_t *buf, uint32_t seq, u
     for (int i = 1; i <= TW_MAX_NODES; i++) {
         buf[23 + i] = tw_hear_pct(n, now, (uint8_t)i);
     }
+    if (n->n_delay) {                   /* 2.3: our own place says our delay instead (TW_F_DELAY) */
+        uint16_t d = n->own_delay[0];
+        for (int i = 1; i < n->n_delay; i++) {
+            if (n->own_delay[i] < d) {
+                d = n->own_delay[i];
+            }
+        }
+        buf[23 + n->id] = (uint8_t)(d / 20u > 255u ? 255u : d / 20u);
+        buf[13] |= TW_F_DELAY;
+    }
 }
 
 int tw_build_frame(tw_node_t *n, uint32_t now, uint8_t *buf, int max)
@@ -676,6 +706,11 @@ int tw_peek_header(const uint8_t *buf, int len, tw_hdr_t *h)
     h->xend_q = buf[23];
     memcpy(h->hear, buf + 24, TW_MAX_NODES);
     h->len = (uint16_t)len;
+    h->delay_us = 0;
+    if ((h->flags & TW_F_DELAY) && valid_id(h->src)) {
+        h->delay_us = (uint16_t)(h->hear[h->src - 1] * 20u);
+        h->hear[h->src - 1] = 100;      /* what the place says otherwise */
+    }
     return valid_id(h->src) ? 0 : -1;
 }
 

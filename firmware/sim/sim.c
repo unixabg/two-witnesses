@@ -36,11 +36,10 @@
  * (DIFS and a random backoff) instead of colliding; two frames starting within 9 us collide.
  * The summary adds, per board, where its frames were on the air in its slot by the
  * timekeeper's clock (the truth), and what its TWF would say.
- * --fix ahead,clock|hwrx,cb|queue: what tw_node 2.3 would change (implies --late). ahead: the frame
- * built ahead and handed over at its time (0-40 us late); clock: each frame says the least
- * stamp-to-send-done delay of its sender's last 16 (20 us steps) and receivers add it to the
- * clock; hwrx: as clock, and receivers take the radio's receive time (the frame's start) plus
- * the air instead of the callback's time, less 100 us for the sender's send-done delay; cb: as
+ * --fix ahead,hwrx,cb|queue: what tw_node 2.3 changes (implies --late). ahead: the frame built
+ * ahead and handed over at its time (0-40 us late); hwrx: tw_proto.c's 2.3 clock (each frame
+ * says its sender's least stamp-to-send-done delay, TW_F_DELAY, and receivers time it by the
+ * radio's own receive time, its start, as the board learns it from the CSI callbacks); cb: as
  * tw_node 2.3's firmware, the extra frame built while the normal one is on the air, cut for a
  * send-done at the running mean + 2 spreads of the board's own and xbudget=310 us of access,
  * sent from the send-done if it still fits there, else dropped and its records put back; queue: the extra frame built at once and handed over behind the normal one, cut for
@@ -89,13 +88,10 @@ typedef struct {
     /* --late: a built frame waits for the air */
     double air_t;               /* true time it asks for the air (< 0: none) */
     int pend_len, pend_extra;
-    uint32_t pend_corr;         /* --fix clock: the delay it says it had, us */
     uint8_t pend[TW_MAX_PAYLOAD];
     int q_len;                  /* --fix queue: the extra frame, built at once, behind the normal one */
     uint8_t qbuf[TW_MAX_PAYLOAD];
     double stamp_t, hand_t, hand2_t;
-    uint32_t m_ring[16];        /* --fix clock: its own stamp to send-done, less the air, us */
-    int m_n, m_pos;
     lstat_t s_start, s_xend, s_defer, f_at, f_radio, f_wake, f_xradio, f_xend, f_len, f_xlen;
     long x_over, x_into;
     double ovh, ovh_dev;        /* --fix cb: hand-over to send-done less the air, running mean / spread */
@@ -110,7 +106,7 @@ static long collisions = 0, frames = 0, lost_random = 0, lost_blocked = 0, rx_er
 static double air_used_us = 0;
 static long extra_frames = 0, collisions_extra = 0, extra_measured = 0;
 /* --late: the delays the boards measured (tw_node 2.2, TWF), us; --fix: what 2.3 would change */
-static int late = 0, fix_ahead = 0, fix_clock = 0, fix_x = 0, fix_hwrx = 0;     /* fix_x: 1 cb, 2 queue */
+static int late = 0, fix_ahead = 0, fix_x = 0, fix_hwrx = 0;     /* fix_x: 1 cb, 2 queue */
 static double hand_lo = 270, hand_hi = 430;     /* slot time -> handed to ESP-NOW (the build and more) */
 static double post_lo = 50, post_hi = 150;      /* end of the air -> send-done */
 static double csi_lo = 50, csi_hi = 150;        /* end of the air -> a receiver's CSI callback (its records) */
@@ -250,8 +246,7 @@ static int parse_args(int argc, char **argv, char *kill_spec, char *exit_spec, u
             late = 1;
             for (char *p = argv[++i]; *p;) {
                 if (!strncmp(p, "ahead", 5)) fix_ahead = 1;
-                else if (!strncmp(p, "clock", 5)) fix_clock = 1;
-                else if (!strncmp(p, "hwrx", 4)) fix_hwrx = fix_clock = 1;
+                else if (!strncmp(p, "hwrx", 4)) fix_hwrx = 1;
                 else if (!strncmp(p, "cb", 2)) fix_x = 1;
                 else if (!strncmp(p, "queue", 5)) fix_x = 2;
                 else { fprintf(stderr, "--fix: unknown %s\n", p); return -1; }
@@ -364,7 +359,6 @@ int main(int argc, char **argv)
     int busy_src = 0;
     uint8_t frame[TW_MAX_PAYLOAD], last_frame[TW_MAX_PAYLOAD];
     int last_len = 0, last_collided = 0, last_extra = 0;
-    uint32_t last_corr = 0;
     double last_start = 0;
     long leader_changes_total = 0;
     struct timespec wall0;
@@ -410,12 +404,10 @@ int main(int argc, char **argv)
                 uint32_t hw_l = late ? local_us(r, last_start) : now_l;
                 tw_hdr_t h;
                 if (tw_peek_header(last_frame, last_len, &h) < 0) { r->st.n_bad_frames++; continue; }
-                tw_hdr_t hc = h;
-                hc.net_us += last_corr;                      /* --fix clock: the delay it says it had */
-                if (fix_hwrx)   /* the clock from the radio's receive time (the frame's start) + the air,
-                                   not the callback; the sender's delay to its send-done, less 100 us */
-                    hc.net_us += (uint32_t)(cb_l - hw_l) - tw_air_us(last_len) - 100u;
-                tw_note_frame(&r->st, &hc, cb_l);
+                /* --fix hwrx (tw_node 2.3): the clock from the frame's start by the radio's own receive
+                   time, as the board knows it: the offset to its clock is learned from the CSI
+                   callbacks, so it comes out late by their least delay */
+                tw_note_frame(&r->st, &h, cb_l, fix_hwrx ? hw_l + (uint32_t)csi_lo : 0u);
                 int8_t csi[CSI_LEN];
                 make_csi(id, h.src, busy_until, csi);
                 int compact = __builtin_popcount(tw_active(&r->st, cb_l)) > TW_FULL_MAX_ACTIVE;
@@ -495,7 +487,6 @@ int main(int argc, char **argv)
             if (all) sets[k].done_t = tx_t;
         }
         int len = 0;
-        uint32_t corr = 0;
         if (ev == 2) {                                       /* --late: a built frame asks for the air */
             if (dead) { s->air_t = -1; s->q_len = 0; t = tx_t; continue; }
             if (last_len && tx_t < busy_until && tx_t - last_start >= 9) {
@@ -509,7 +500,6 @@ int main(int argc, char **argv)
             s->air_t = -1;
             len = s->pend_len;
             is_extra = s->pend_extra;
-            corr = s->pend_corr;
             memcpy(frame, s->pend, (size_t)len);
         } else if (is_extra) {
             s->extra_at = -1;
@@ -521,7 +511,6 @@ int main(int argc, char **argv)
                     memcpy(s->pend, frame, (size_t)len);
                     s->pend_len = len;
                     s->pend_extra = 1;
-                    s->pend_corr = 0;
                     s->air_t = s->hand2_t + pre_draw(over2);
                 }
                 t = tx_t;
@@ -540,12 +529,6 @@ int main(int argc, char **argv)
                 memcpy(s->pend, frame, (size_t)len);
                 s->pend_len = len;
                 s->pend_extra = 0;
-                s->pend_corr = 0;
-                if (fix_clock && s->m_n) {                   /* the least of its last 16, 20 us steps */
-                    uint32_t m = s->m_ring[0];
-                    for (int k = 1; k < s->m_n; k++) if (s->m_ring[k] < m) m = s->m_ring[k];
-                    s->pend_corr = m > 5100 ? 5100 : m / 20 * 20;
-                }
                 s->air_t = s->hand_t + pre_draw(over1);
                 if (s->st.synced && tx_t > 10e6) {
                     lst(&s->f_at, tw_slot_pos(&s->st, local_us(s, s->hand_t), (uint8_t)who));
@@ -617,7 +600,6 @@ int main(int argc, char **argv)
                 last_len = len;
                 last_collided = 0;
                 last_extra = is_extra;
-                last_corr = corr;
                 last_start = tx_t;
                 busy_until = tx_t + air;
                 busy_src = who;
@@ -626,16 +608,13 @@ int main(int argc, char **argv)
                 s->extra_at = tx_t + air + 50;               /* ESP-NOW's send-done, then the build */
             }
             if (late && !is_extra) {
-                uint32_t m = (uint32_t)(local_us(s, sd) - local_us(s, s->stamp_t)) - (uint32_t)air;
-                s->m_ring[s->m_pos] = m;
-                s->m_pos = (s->m_pos + 1) % 16;
-                if (s->m_n < 16) s->m_n++;
+                if (fix_hwrx)                                /* tw_node 2.3: its delay, for its headers */
+                    tw_note_sent_normal(&s->st, local_us(s, s->stamp_t), local_us(s, sd), len);
                 if (fix_x == 2) {
                     if (s->q_len > 0) {                      /* queued behind it: goes right after */
                         memcpy(s->pend, s->qbuf, (size_t)s->q_len);
                         s->pend_len = s->q_len;
                         s->pend_extra = 1;
-                        s->pend_corr = 0;
                         s->air_t = tx_t + air + 50 + csma() + (urand() < stall_p ? ur(stall_lo, stall_hi) : 0);
                         s->q_len = 0;
                     }
@@ -651,7 +630,6 @@ int main(int argc, char **argv)
                             memcpy(s->pend, s->qbuf, (size_t)s->q_len);
                             s->pend_len = s->q_len;
                             s->pend_extra = 1;
-                            s->pend_corr = 0;
                             s->hand2_t = sd + ur(0, 20);
                             s->air_t = s->hand2_t + pre_draw(over2);
                             if (tx_t > 10e6 && s->st.synced) lst(&s->f_wake, s->hand2_t - sd);

@@ -196,6 +196,7 @@ static int32_t rxk_get(int *ok)
 }
 static uint32_t s_hand1_us, s_cb1_us, s_hand2_us;
 static int s_len1;
+static uint32_t s_stamp1;                       /* 2.3: the time our normal frame is stamped with */
 
 /* 2.2: how busy each core was since the last call, % (FreeRTOS counts each core's idle time on
    esp_timer, 1 MHz; 32 bits wrap after 71 min, so only differences over 10 s are used) */
@@ -534,6 +535,7 @@ static void sent(const ev_t *ev)
         s_cb1_us = ev->local_us;
         int32_t radio = (int32_t)(s_cb1_us - s_hand1_us);
         tstat_add(&s_t_radio, radio);
+        tw_note_sent_normal(&s_node, s_stamp1, s_cb1_us, s_len1);     /* 2.3: our delay, for our headers */
         int32_t o = radio - (int32_t)tw_air_us(s_len1);
         if (o > 0 && o < 3000) {        /* a running mean and spread, 1/16 each frame */
             int32_t d = o - s_ovh;
@@ -586,7 +588,9 @@ static void handle(ev_t *ev)
             /* how late this callback is after the frame's end (by the radio's stamp) */
             tstat_add(&s_t_rxcb, (int32_t)(ev->local_us - (ev->f.rx_ts + (uint32_t)k + tw_air_us(ev->f.len))));
         }
-        tw_note_frame(&s_node, &h, ev->local_us);
+        /* 2.3: the clock from when the frame started on the air (the radio's own receive time),
+           not from this callback, which comes about 0.4 ms after the CSI callback */
+        tw_note_frame(&s_node, &h, ev->local_us, (kok && ev->f.rx_ts) ? ev->f.rx_ts + (uint32_t)k : 0u);
         if (h.src >= 1 && h.src <= TW_MAX_NODES && !(h.flags & TW_F_EXTRA)) {
             s_last_hdr[h.src] = h;
         }
@@ -728,7 +732,8 @@ static void work_task(void *arg)
                slot are the slot time's), then hand it over at that time: building took the
                first 300-400 us of the slot in 2.2 */
             s_node.is_exit = (uint8_t)usb_up();
-            len = tw_build_frame(&s_node, wait > 0 ? next_tx : now, frame, s_max_payload);
+            s_stamp1 = wait > 0 ? next_tx : now;
+            len = tw_build_frame(&s_node, s_stamp1, frame, s_max_payload);
             tstat_add(&s_t_build, (int32_t)((uint32_t)esp_timer_get_time() - now));
             built = 1;
             continue;

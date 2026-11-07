@@ -116,6 +116,10 @@
 #define TW_F_LEADER         0x04        /* sender thinks it is the leader */
 #define TW_F_EXTRA          0x08        /* an extra frame: the second in the sender's slot, same number */
 #define TW_F_EXTRA_NEXT     0x10        /* an extra frame should follow this one */
+#define TW_F_DELAY          0x20        /* 2.3: the sender's own place in the hearing list (always 100%,
+                                           never read) says its delay instead: the least, over its last
+                                           16 frames, of time stamp to send-done less the air, 20 us steps */
+#define TW_POST_EST_US      100u        /* 2.3: a send-done comes about this long after the frame's end */
 
 typedef struct {
     uint8_t  version, src, leader, flags, period_ms, n_records;
@@ -130,6 +134,7 @@ typedef struct {
                                20 us steps after its slot start (0: none yet; byte 23, zero before) */
     uint8_t  hear[TW_MAX_NODES];   /* how well the sender hears board i+1, % (0 = not heard) */
     uint16_t len;           /* the whole frame's length, bytes (from the receiver, not on the air) */
+    uint16_t delay_us;      /* 2.3: the sender's delay (TW_F_DELAY), us; 0 if it does not say */
 } tw_hdr_t;
 
 typedef struct {
@@ -186,6 +191,8 @@ typedef struct {
     uint8_t  synced;
     uint32_t offset;                        /* net = local + offset (mod 2^32) */
     uint32_t cand[16];                      /* recent offset candidates from the leader's frames */
+    uint16_t own_delay[16];                 /* 2.3: our last frames' stamp to send-done less the air, us */
+    uint8_t  n_delay, delay_pos;
     uint8_t  n_cand, cand_pos;
     uint16_t lead_active;                   /* the leader's active list (sets the slots) */
     uint8_t  lead_period_ms;
@@ -246,7 +253,12 @@ typedef struct {
 
 void     tw_init(tw_node_t *n, uint8_t id, uint8_t is_exit, uint32_t seed);
 /* call when a valid frame arrives (rx_local_us: our local clock at reception) */
-void     tw_note_frame(tw_node_t *n, const tw_hdr_t *h, uint32_t rx_local_us);
+/* start_local_us (2.3): when the frame started on the air by our clock, from the radio's own
+   receive time; 0 = not known (then the receive callback's time and the frame's length are used) */
+void     tw_note_frame(tw_node_t *n, const tw_hdr_t *h, uint32_t rx_local_us, uint32_t start_local_us);
+/* 2.3: our normal frame, stamped for stamp_local_us and len bytes long, had its send-done at
+   done_local_us: its delay goes into our next headers (TW_F_DELAY) */
+void     tw_note_sent_normal(tw_node_t *n, uint32_t stamp_local_us, uint32_t done_local_us, int len);
 /* refresh the active list, leader and period; call before building or scheduling */
 void     tw_update_roles(tw_node_t *n, uint32_t now_local_us);
 uint16_t tw_active(const tw_node_t *n, uint32_t now_local_us);

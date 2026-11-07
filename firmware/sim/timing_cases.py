@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """timing_cases.py - the simulator with the delays the real boards measured
 (tw_node 2.2), against each part of the timing fix proposed for 2.3
-(docs/TIMING-2.3.md). A few minutes.
+(docs/TIMING-2.3.md) and the 2.3 firmware. A few minutes.
 
     cc -O2 -o sim sim.c ../tw_node/main/tw_proto.c -lm
     python3 timing_cases.py ./sim [CASE ...]     (CASE: part of a case name, e.g. "8 forced")
@@ -29,9 +29,10 @@ CASES = [("3 healthy", "--nodes 3"), ("6 healthy", "--nodes 6"), ("6 forced", "-
          ("8 healthy", "--nodes 8"), ("8 forced", "--nodes 8 --set 0@second=force")]
 MODELS = [("ideal radio (sim before)", []), ("2.2 as measured", ["--late", "measured"]),
           ("2.2, receive callback +150", ["--late", "rxcb=650"]), ("2.2, radio late 5x as often", ["--late", "stall=0.01"]),
-          ("2.3 ahead", ["--fix", "ahead"]), ("2.3 ahead+clock", ["--fix", "ahead,clock"]),
-          ("2.3 ahead+clock+cb", ["--fix", "ahead,clock,cb"]), ("2.3 ahead+clock+queue", ["--fix", "ahead,clock,queue"]),
-          ("2.3 ahead+hwrx", ["--fix", "ahead,hwrx"]), ("2.3 ahead+hwrx+cb", ["--fix", "ahead,hwrx,cb"]),
+          ("2.3 ahead", ["--fix", "ahead"]), ("2.3 ahead+hwrx", ["--fix", "ahead,hwrx"]),
+          ("2.3 firmware (ahead+hwrx+cb)", ["--fix", "ahead,hwrx,cb"]),
+          ("2.3, receive callback +150", ["--fix", "ahead,hwrx,cb", "--late", "rxcb=650"]),
+          ("2.3, radio late 5x as often", ["--fix", "ahead,hwrx,cb", "--late", "stall=0.01"]),
           ("2.3 ahead+hwrx+queue", ["--fix", "ahead,hwrx,queue"])]
 
 
@@ -78,9 +79,9 @@ def main():
         if only and not any(o in name for o in only):
             continue
         print(f"== {name} ({case})")
-        print("   " + f"{'':28s}" + "  ".join(f"{h:>{k}s}" for h, k in zip(head, w)))
+        print("   " + f"{'':30s}" + "  ".join(f"{h:>{k}s}" for h, k in zip(head, w)))
         for label, model in MODELS:
-            print("   " + f"{label:28s}" + "  ".join(f"{c:>{k}s}" for c, k in zip(run(sim, case, model), w)))
+            print("   " + f"{label:30s}" + "  ".join(f"{c:>{k}s}" for c, k in zip(run(sim, case, model), w)))
 
 
 if __name__ == "__main__":
