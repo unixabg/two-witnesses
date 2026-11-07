@@ -5,6 +5,12 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **Computer side: `lag_check.py RUN`**, how far behind the timekeeper's
+  clock the other boards run, from a run's own files (every record carries
+  the measuring board's clock when it heard the frame). Three estimates per
+  board; one needs nothing newer than 2.0. Simulator check: 849-851 us found
+  where the truth was 847, and 0 +- 5 with the timing fix.
+
 - **Design: frame timing for tw_node 2.3 (docs/TIMING-2.3.md), no firmware.**
   With the measured delays the simulator says: up to 6 boards (also with two
   boards shadowed) reports home are within 0.3 points of an ideal radio,
