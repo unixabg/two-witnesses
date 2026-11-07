@@ -5,6 +5,18 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **`dash.py` shows the second frame and the test settings.** A board's line
+  says `2nd N/s` while it sends second frames (normally nothing: with 3
+  boards they hardly ever go), and any 2.1 setting that is not the default,
+  loudly: `2nd FORCED`, `2nd OFF`, `MEASURING 2nd`, `CAP N`, so a test left on
+  shows before a run. The health line adds `2nd sent +N` and `rx_err +N`
+  (measurements the radio flagged) since the dashboard opened, as
+  `usb_drops`. Records measured from second frames (`measure-second on`) count
+  as delivered but no longer go into the link rows, as in the link files: a
+  link's packets/s, motion and CSI view stay one measurement per period.
+  Desk test: the dashboard fed live from the simulator, forced / normal /
+  forced and measured.
+
 - **`second_check.py`: a board's reported end only counts while its second
   frames are heard.** Each board keeps saying where its last second frame
   ended, also after it has stopped sending them, so a normal run straight

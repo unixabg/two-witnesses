@@ -69,7 +69,11 @@ without sudo). Then flash the boards: [FLASH-README.md](FLASH-README.md).
   noise, and motion (x its usual); each board's "reports home" percentage;
   the map (`g`) draws each line by how much it stirs right now; `c` shows the
   chosen link's CSI itself, one row a second: its shape across the channel
-  (press again: what changed in the last minute).
+  (press again: what changed in the last minute). With tw_node 2.1 a board's
+  line also says `2nd N/s` while it sends second frames, and any test setting
+  left on, loudly (`2nd FORCED`, `2nd OFF`, `MEASURING 2nd`, `CAP N`); the
+  health line counts `2nd sent` and `rx_err` (measurements the radio flagged)
+  since the dashboard opened.
 
 ## Boards and relaying
 

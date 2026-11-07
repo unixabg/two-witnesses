@@ -61,6 +61,25 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import tw_map  # noqa: E402
 
+SECOND_OFF, SECOND_FORCE, MEASURE, CAP_SHIFT = 0x02, 0x04, 0x08, 4     # setting flags (tw_proto.h)
+
+
+def flags_words(f):
+    """the 2.1 setting flags that differ from the defaults, loudly (a test left on shows)"""
+    if not f:
+        return ""
+    w = []
+    if f & SECOND_FORCE:
+        w.append("2nd FORCED")
+    elif f & SECOND_OFF:
+        w.append("2nd OFF")
+    if f & MEASURE:
+        w.append("MEASURING 2nd")
+    if f >> CAP_SHIFT:
+        w.append(f"CAP {f >> CAP_SHIFT}")
+    return ", " + ", ".join(w) if w else ""
+
+
 SPANS = [60, 300, 1800]
 HIST_S = 3600
 QUIET_S = 600
@@ -94,7 +113,8 @@ ARROW = "\u2192"
 
 
 def parse_tw(dgram):
-    """tw_node lines (host_ns,TWx,...): ("rec", t, link, seq, rssi, noise, amp, key) for a record,
+    """tw_node lines (host_ns,TWx,...): ("rec", t, link, seq, rssi, noise, amp, key, second) for a
+    record (second: measured from a second frame, tw_node 2.1 test setting measure-second),
     (kind, t, fields) for the others, None if unreadable."""
     try:
         line = dgram.decode("ascii", errors="replace").strip()
@@ -112,7 +132,7 @@ def parse_tw(dgram):
             amp = np.frombuffer(bytes.fromhex(f[18]), dtype=np.uint8).astype(float) * (step / 4)
             rx, tx = int(f[2]), int(f[3])
             return ("rec", t, f"{tx}{ARROW}{rx}", int(f[4]), int(f[10]), int(f[11]), amp,
-                    (rx, int(f[7]), int(f[6])))
+                    (rx, int(f[7]), int(f[6])), bool(int(f[15]) & 0x20))
         return (kind, t, f[2:])
     except (ValueError, IndexError):
         return None
@@ -490,7 +510,9 @@ class Screen:
                    + (f", reports home {home:.0f}%" if home is not None else "")
                    + (f", heard {b['heard']}%" if b.get("heard") is not None and b["heard"] < 90 else "")
                    + (f", tx {b['power_q'] / 4:g} dBm" if b.get("power_q") else "")
-                   + (", relay OFF" if b.get("relay") == 0 else ""))
+                   + (", relay OFF" if b.get("relay") == 0 else "")
+                   + (f", 2nd {b['x_s']:.0f}/s" if b.get("x_s") else "")
+                   + flags_words(b.get("flags")))
             if x + len(txt) > w - 2:
                 y += 1
                 x = 1
@@ -585,6 +607,15 @@ class Screen:
                         items.append(x)
                 elif x.startswith(("queue_full", "frames")):
                     items.append(x)
+                elif x.startswith(("rx_err=", "extra_sent=")):
+                    # tw_node 2.1: since the dashboard started, as usb_drops
+                    k, _, v = x.partition("=")
+                    try:
+                        n = int(v)
+                        name = "rx_err" if k == "rx_err" else "2nd sent"
+                        items.append(f"{name} +{n - boards.get(k + '0', n)}")
+                    except ValueError:
+                        pass
             line += "   board " + " ".join(items)
         self.put(h - 3, 1, line)
         if self.msg and time.time() - self.msg_t < 8:
@@ -856,7 +887,7 @@ def run(scr, a):
                 if p is None:
                     continue
                 if p[0] == "rec":
-                    _k, t, key, seq, rssi, noise, amp, dk = p
+                    _k, t, key, seq, rssi, noise, amp, dk, second = p
                     if dk in seen:
                         continue            # the second copy of a record already counted
                     seen.add(dk)
@@ -864,6 +895,9 @@ def run(scr, a):
                     seen_order.append(dk)
                     if len(seen_order) > 200000:
                         seen.discard(seen_order.popleft())
+                    if second:
+                        continue            # measured from a second frame: delivered, not a link row
+                                            # (each link stays one measurement per period)
                     link = links.get(key) or links.setdefault(key, Link(key))
                     link.add(t, seq, rssi, noise, amp)
                     continue
@@ -877,6 +911,8 @@ def run(scr, a):
                             b["power_q"] = int(f[9])
                         if len(f) >= 12:            # tw_node 2.0+: ,relay on/off,% the exit hears it
                             b["relay"], b["heard"] = int(f[10]), int(f[11])
+                        if len(f) >= 20:            # tw_node 2.1+: ,flags,frames,announced,2nd heard,...
+                            b["flags"], b["x_s"] = int(f[12]), int(f[15])
                     elif kind == "TWS":         # id,ver,leader,flags,active,period,slot,offset,...
                         boards["status"] = dict(id=int(f[0]), leader=int(f[2]), period=int(f[5]),
                                                 leader_changes=int(f[14]))
@@ -886,12 +922,18 @@ def run(scr, a):
                             b["power_q"] = int(f[18]) or int(f[17])
                         if len(f) >= 20:            # tw_node 2.0+: ...,relay on/off,relayed,no room
                             b["relay"] = int(f[19])
+                        if len(f) >= 25:            # tw_node 2.1+: ...,flags,2nd frames sent,skipped
+                            b["flags"] = int(f[22])
+                            sent, tnow = int(f[23]), time.time()
+                            if "x_sent" in b and tnow > b["x_t"] and sent >= b["x_sent"]:
+                                b["x_s"] = (sent - b["x_sent"]) / (tnow - b["x_t"])
+                            b["x_sent"], b["x_t"] = sent, tnow
                     elif kind == "TWF":
                         boards["health"] = f[1:]
-                        if "usb_drops0" not in boards:  # the count when we started reading
-                            for x in f[1:]:
-                                if x.startswith("usb_drops="):
-                                    boards["usb_drops0"] = int(x[10:])
+                        for x in f[1:]:             # the counts when we started reading
+                            k, _, v = x.partition("=")
+                            if k in ("usb_drops", "rx_err", "extra_sent") and k + "0" not in boards:
+                                boards[k + "0"] = int(v)
                 except (ValueError, IndexError):
                     pass
                 continue
