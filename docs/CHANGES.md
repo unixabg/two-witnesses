@@ -5,6 +5,14 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **Simulator: fitted to the real boards' lag.** A receiver's CSI callback
+  (its records' time) and its ESP-NOW receive callback (its clock) are now
+  apart: 50-150 us and 450-550 us after the air, which reproduces
+  `lag_check.py` on the boards (lag about 1.24 ms; A, B and C agree). New
+  `--fix hwrx`: the clock from the radio's receive time and the sender's
+  delay; `--late rxcb=`/`csicb=` set the callbacks. `timing_cases.py` runs the
+  hwrx variants. Without `--late` the output is unchanged.
+
 - **Computer side: `lag_check.py` also says how late the cabled board's CSI
   callback runs after the radio's own receive time** (each record's rx_us,
   the rx_ctrl timestamp), per sender: whether that timestamp is on the

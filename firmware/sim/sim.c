@@ -11,7 +11,7 @@
  *   sim --nodes 3 --seconds 60 [--loss 0.05] [--exit 1[,2]] [--kill 1@20-40]
  *       [--seed 7] [--realtime] [--out FILE] [--setpower 20@11[@1],40@20]
  *       [--block 2-1@10-50@0.75,...] [--setrelay 30@off,60@on] [--rxerr 0.01]
- *       [--set 0@cap=3,0@second=off,...] [--late measured] [--fix ahead,clock,cb]
+ *       [--set 0@cap=3,0@second=off,...] [--late measured] [--fix ahead,hwrx,cb]
  *
  * --block S-R@A-B@P: from A to B seconds, board R misses each of board S's frames with
  * probability P (on top of --loss): something in the way of that one direction.
@@ -26,18 +26,21 @@
  * --late measured|KEY=VALUE,...: the delays the real boards measured (tw_node 2.2, TWF,
  * 2026-11-07), instead of the ideal radio above. A board builds its frame (and
  * stamps its time) at its slot time; hands it to ESP-NOW hand=340 us later; the radio puts it
- * on the air later still and calls send-done post=100 us after the air (a receiver's receive
- * callback comes as late); handed-over to send-done, less the air, is over1=650 us for a normal
+ * on the air later still and calls send-done post=100 us after the air; a receiver's CSI
+ * callback (its record's time) comes csicb=100 us after the air and its ESP-NOW receive
+ * callback (its clock) rxcb=500 us after (fitted to lag_check.py on the real boards; a
+ * record's rx_us: the frame's start); handed-over to send-done, less the air, is over1=650 us for a normal
  * frame and over2=290 us for an extra one; from send-done to handing the extra frame over,
  * wake=250 us (its length is decided at the send-done). Now and then (stall=0.002 of frames)
  * the radio is 1-5 ms late (stallmax=5000). A radio that finds the channel busy waits for it
  * (DIFS and a random backoff) instead of colliding; two frames starting within 9 us collide.
  * The summary adds, per board, where its frames were on the air in its slot by the
  * timekeeper's clock (the truth), and what its TWF would say.
- * --fix ahead,clock,cb|queue: what tw_node 2.3 would change (implies --late). ahead: the frame
+ * --fix ahead,clock|hwrx,cb|queue: what tw_node 2.3 would change (implies --late). ahead: the frame
  * built ahead and handed over at its time (0-40 us late); clock: each frame says the least
  * stamp-to-send-done delay of its sender's last 16 (20 us steps) and receivers add it to the
- * clock; cb: the extra frame sent from the send-done itself, cut for xbudget=310 us of
+ * clock; hwrx: as clock, and receivers take the radio's receive time (the frame's start) plus
+ * the air instead of the callback's time, less 100 us for the sender's send-done delay; cb: the extra frame sent from the send-done itself, cut for xbudget=310 us of
  * access; queue: the extra frame built at once and handed over behind the normal one, cut for
  * the normal frame's worst start. timing_cases.py runs the cases.
  *
@@ -103,9 +106,12 @@ static long collisions = 0, frames = 0, lost_random = 0, lost_blocked = 0, rx_er
 static double air_used_us = 0;
 static long extra_frames = 0, collisions_extra = 0, extra_measured = 0;
 /* --late: the delays the boards measured (tw_node 2.2, TWF), us; --fix: what 2.3 would change */
-static int late = 0, fix_ahead = 0, fix_clock = 0, fix_x = 0;     /* fix_x: 1 cb, 2 queue */
+static int late = 0, fix_ahead = 0, fix_clock = 0, fix_x = 0, fix_hwrx = 0;     /* fix_x: 1 cb, 2 queue */
 static double hand_lo = 270, hand_hi = 430;     /* slot time -> handed to ESP-NOW (the build and more) */
-static double post_lo = 50, post_hi = 150;      /* end of the air -> send-done / receive callback */
+static double post_lo = 50, post_hi = 150;      /* end of the air -> send-done */
+static double csi_lo = 50, csi_hi = 150;        /* end of the air -> a receiver's CSI callback (its records) */
+static double rxcb_lo = 450, rxcb_hi = 550;     /* end of the air -> its ESP-NOW receive callback (the clock): fitted
+                                                   to lag_check.py on the boards, 1.1-1.4 ms lag */
 static double over1 = 650, over2 = 290;         /* handed -> send-done, less the air: normal / extra frame */
 static double wake_lo = 170, wake_hi = 330;     /* send-done -> extra frame handed over (our task) */
 static double stall_p = 0.002, stall_lo = 1000, stall_hi = 5000;   /* now and then the radio is late */
@@ -223,6 +229,8 @@ static int parse_args(int argc, char **argv, char *kill_spec, char *exit_spec, u
                 if (eq) v = strtod(eq + 1, NULL);
                 if (!strncmp(p, "hand=", 5)) { hand_lo = v - 80; hand_hi = v + 80; }
                 else if (!strncmp(p, "post=", 5)) { post_lo = v * 0.5; post_hi = v * 1.5; }
+                else if (!strncmp(p, "rxcb=", 5)) { rxcb_lo = v < 50 ? 0 : v - 50; rxcb_hi = v + 50; }
+                else if (!strncmp(p, "csicb=", 6)) { csi_lo = v < 50 ? 0 : v - 50; csi_hi = v + 50; }
                 else if (!strncmp(p, "over1=", 6)) over1 = v;
                 else if (!strncmp(p, "over2=", 6)) over2 = v;
                 else if (!strncmp(p, "wake=", 5)) { wake_lo = v * 0.7; wake_hi = v * 1.3; }
@@ -239,6 +247,7 @@ static int parse_args(int argc, char **argv, char *kill_spec, char *exit_spec, u
             for (char *p = argv[++i]; *p;) {
                 if (!strncmp(p, "ahead", 5)) fix_ahead = 1;
                 else if (!strncmp(p, "clock", 5)) fix_clock = 1;
+                else if (!strncmp(p, "hwrx", 4)) fix_hwrx = fix_clock = 1;
                 else if (!strncmp(p, "cb", 2)) fix_x = 1;
                 else if (!strncmp(p, "queue", 5)) fix_x = 2;
                 else { fprintf(stderr, "--fix: unknown %s\n", p); return -1; }
@@ -385,28 +394,37 @@ int main(int argc, char **argv)
                     if (blks[k].s == busy_src && blks[k].r == id && busy_until >= blks[k].a && busy_until < blks[k].b &&
                         urand() < blks[k].p) blocked = 1;
                 if (blocked) { lost_blocked++; continue; }
-                double rx_t = late ? busy_until + ur(post_lo, post_hi) : busy_until;   /* its receive callback */
-                uint32_t now_l = local_us(r, rx_t);
+                /* --late: its CSI callback (the record's time) and, later, its ESP-NOW receive callback
+                   (the clock, hearing, relaying) */
+                double rx_t = late ? busy_until + ur(csi_lo, csi_hi) : busy_until;
+                double cb_t = late ? rx_t + ur(rxcb_lo, rxcb_hi) - (csi_lo + csi_hi) / 2 : busy_until;
+                if (cb_t < rx_t) cb_t = rx_t;
+                uint32_t now_l = local_us(r, rx_t), cb_l = local_us(r, cb_t);
+                /* --late: the radio's own receive time (rx_ctrl timestamp) taken as the frame's start */
+                uint32_t hw_l = late ? local_us(r, last_start) : now_l;
                 tw_hdr_t h;
                 if (tw_peek_header(last_frame, last_len, &h) < 0) { r->st.n_bad_frames++; continue; }
                 tw_hdr_t hc = h;
                 hc.net_us += last_corr;                      /* --fix clock: the delay it says it had */
-                tw_note_frame(&r->st, &hc, now_l);
+                if (fix_hwrx)   /* the clock from the radio's receive time (the frame's start) + the air,
+                                   not the callback; the sender's delay to its send-done, less 100 us */
+                    hc.net_us += (uint32_t)(cb_l - hw_l) - tw_air_us(last_len) - 100u;
+                tw_note_frame(&r->st, &hc, cb_l);
                 int8_t csi[CSI_LEN];
                 make_csi(id, h.src, busy_until, csi);
-                int compact = __builtin_popcount(tw_active(&r->st, now_l)) > TW_FULL_MAX_ACTIVE;
+                int compact = __builtin_popcount(tw_active(&r->st, cb_l)) > TW_FULL_MAX_ACTIVE;
                 uint8_t phy = (uint8_t)(1 | (1 << 3) | (2 << 5));   /* HT40, HT, secondary below */
                 int8_t rssi = (int8_t)(-50 - 3 * abs(id - h.src));
                 uint8_t kflags = (p_rxerr > 0 && urand() < p_rxerr) ? TW_KIND_RXERR : 0;
                 if (h.flags & TW_F_EXTRA) kflags |= TW_KIND_EXTRA;
-                const tw_rec_t *rec = tw_add_measurement(&r->st, now_l, h.src, h.seq, now_l, rssi, -92, 30, 0,
+                const tw_rec_t *rec = tw_add_measurement(&r->st, now_l, h.src, h.seq, hw_l, rssi, -92, 30, 0,
                                                          phy, kflags, csi, CSI_LEN, 1.0f, compact);
                 if (rec) {
                     rx_err_made += (kflags & TW_KIND_RXERR) != 0;
                     extra_measured += (kflags & TW_KIND_EXTRA) != 0;
                     r->made[h.src]++;
                 }
-                rctx_t c = { r, rx_t };
+                rctx_t c = { r, cb_t };
                 cur_src = h.src;
                 if (r->exit) {
                     char line[600];

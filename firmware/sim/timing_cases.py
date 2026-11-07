@@ -27,9 +27,11 @@ CASES = [("3 healthy", "--nodes 3"), ("6 healthy", "--nodes 6"), ("6 forced", "-
          ("7 forced", "--nodes 7 --set 0@second=force"),
          ("8 healthy", "--nodes 8"), ("8 forced", "--nodes 8 --set 0@second=force")]
 MODELS = [("ideal radio (sim before)", []), ("2.2 as measured", ["--late", "measured"]),
-          ("2.2, send-done +300 us", ["--late", "post=300"]), ("2.2, radio late 5x as often", ["--late", "stall=0.01"]),
+          ("2.2, receive callback +150", ["--late", "rxcb=650"]), ("2.2, radio late 5x as often", ["--late", "stall=0.01"]),
           ("2.3 ahead", ["--fix", "ahead"]), ("2.3 ahead+clock", ["--fix", "ahead,clock"]),
-          ("2.3 ahead+clock+cb", ["--fix", "ahead,clock,cb"]), ("2.3 ahead+clock+queue", ["--fix", "ahead,clock,queue"])]
+          ("2.3 ahead+clock+cb", ["--fix", "ahead,clock,cb"]), ("2.3 ahead+clock+queue", ["--fix", "ahead,clock,queue"]),
+          ("2.3 ahead+hwrx", ["--fix", "ahead,hwrx"]), ("2.3 ahead+hwrx+cb", ["--fix", "ahead,hwrx,cb"]),
+          ("2.3 ahead+hwrx+queue", ["--fix", "ahead,hwrx,queue"])]
 
 
 def run(sim, case, model):
