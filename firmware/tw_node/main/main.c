@@ -117,6 +117,29 @@ static uint8_t s_tx_state;
 static uint8_t s_frame2[TW_MAX_PAYLOAD];
 static uint32_t s_extra_err;
 static int32_t s_extra_end_max = INT32_MIN;     /* latest end of our extra frames since the last TWF */
+/* 2.2: where a frame's time goes (mean/max over each TWF's 10 s): where in our slot we handed the
+   normal frame over (tx_at), from then to its send-done (tx_radio), from that to handing the extra
+   frame over (x_wake: our task), from then to its send-done (x_radio); and their lengths */
+typedef struct { uint32_t n; uint64_t sum; int32_t max; } tstat_t;
+static tstat_t s_t_at, s_t_radio, s_t_wake, s_t_xradio, s_t_len, s_t_xlen;
+static uint32_t s_hand1_us, s_cb1_us, s_hand2_us;
+
+static void tstat_add(tstat_t *t, int32_t v)
+{
+    if (t->n == 0 || v > t->max) {
+        t->max = v;
+    }
+    t->n++;
+    t->sum += (uint64_t)(v < 0 ? 0 : v);
+}
+
+/* "mean/max" for the TWF line (0/0 if none), then cleared */
+static const char *tstat_text(tstat_t *t, char *buf, size_t len)
+{
+    snprintf(buf, len, "%lu/%ld", (unsigned long)(t->n ? t->sum / t->n : 0), (long)(t->n ? t->max : 0));
+    memset(t, 0, sizeof(*t));
+    return buf;
+}
 static tw_hdr_t s_last_hdr[TW_MAX_NODES + 1];
 static int8_t s_last_rssi[TW_MAX_NODES + 1];
 
@@ -377,8 +400,13 @@ static void sent(const ev_t *ev)
 {
     if (s_tx_state == 1) {
         s_tx_state = 0;
+        s_cb1_us = ev->local_us;
+        tstat_add(&s_t_radio, (int32_t)(s_cb1_us - s_hand1_us));
         int len = tw_build_extra(&s_node, (uint32_t)esp_timer_get_time(), s_frame2, s_max_payload);
         if (len > 0) {
+            s_hand2_us = (uint32_t)esp_timer_get_time();
+            tstat_add(&s_t_wake, (int32_t)(s_hand2_us - s_cb1_us));
+            tstat_add(&s_t_xlen, len);
             if (esp_now_send(BCAST, s_frame2, (size_t)len) == ESP_OK) {
                 s_tx_state = 2;
             } else {
@@ -387,6 +415,7 @@ static void sent(const ev_t *ev)
         }
     } else if (s_tx_state == 2) {
         s_tx_state = 0;
+        tstat_add(&s_t_xradio, (int32_t)(ev->local_us - s_hand2_us));
         tw_note_sent(&s_node, ev->local_us, 1);
         int32_t pos = tw_slot_pos(&s_node, ev->local_us, s_id);
         if (pos > s_extra_end_max) {
@@ -537,7 +566,7 @@ static void work_task(void *arg)
     (void)arg;
     static ev_t ev;
     static uint8_t frame[TW_MAX_PAYLOAD];
-    static char line[300];
+    static char line[600];               /* the TWF line is near 400 bytes (2.2) */
     uint32_t now = (uint32_t)esp_timer_get_time();
     uint32_t next_tx = now + 50000u + esp_random() % 50000u;
     uint32_t next_status = now + 1000000u;
@@ -548,6 +577,11 @@ static void work_task(void *arg)
         if (wait <= 0) {
             s_node.is_exit = (uint8_t)usb_up();
             int len = tw_build_frame(&s_node, now, frame, s_max_payload);
+            s_hand1_us = (uint32_t)esp_timer_get_time();
+            if (s_node.synced) {
+                tstat_add(&s_t_at, tw_slot_pos(&s_node, s_hand1_us, s_id));
+            }
+            tstat_add(&s_t_len, len);
             if (esp_now_send(BCAST, frame, (size_t)len) != ESP_OK) {
                 s_send_err++;
                 s_tx_state = 0;
@@ -606,6 +640,16 @@ static void work_task(void *arg)
                              (unsigned long)s_extra_err,
                              (long)(s_extra_end_max == INT32_MIN ? 0 : s_extra_end_max));
             s_extra_end_max = INT32_MIN;
+            /* 2.2: where the frames' time goes (mean/max, us; lengths in bytes) */
+            char b1[24], b2[24], b3[24], b4[24], b5[24], b6[24];
+            if (k > 0 && k < (int)sizeof(line)) {
+                k--;                    /* over the line end */
+                k += snprintf(line + k, sizeof(line) - (size_t)k,
+                              ",tx_at=%s,tx_radio=%s,x_wake=%s,x_radio=%s,tx_len=%s,x_len=%s\n",
+                              tstat_text(&s_t_at, b1, sizeof(b1)), tstat_text(&s_t_radio, b2, sizeof(b2)),
+                              tstat_text(&s_t_wake, b3, sizeof(b3)), tstat_text(&s_t_xradio, b4, sizeof(b4)),
+                              tstat_text(&s_t_len, b5, sizeof(b5)), tstat_text(&s_t_xlen, b6, sizeof(b6)));
+            }
             out(line, k);
         }
     }

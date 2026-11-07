@@ -199,6 +199,7 @@ typedef struct {
     uint32_t info_us;
     uint8_t  info_sent;
     uint8_t  xend_q;                        /* when our last extra frame ended (tw_note_sent), 20 us steps */
+    uint32_t xend_us;                       /* ... and when that was (2.2: said only for 1 s after) */
     /* about each board heard, since tw_clear_counts (the firmware: once a second, after TWN) */
     uint16_t c_frames[TW_MAX_NODES + 1];    /* its normal frames heard */
     uint16_t c_xnext[TW_MAX_NODES + 1];     /* ... of them announcing an extra frame */

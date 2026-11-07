@@ -40,6 +40,12 @@ import analyze_csi as A  # noqa: E402  (read_lines: reads gzip cut short by a po
 import split_links as S  # noqa: E402  (parse_twr)
 
 LIMIT_US = 3200             # TW_SLOT_US + TW_SLOT_SLACK_US
+TIMING_KEYS = ("tx_at", "tx_radio", "x_wake", "x_radio", "tx_len", "x_len")
+
+
+def air_us(length):
+    """a frame's time on the air (tw_air_us: HT40 MCS0, 13.5 Mbit/s)"""
+    return 40 + (length + 30) * 16 / 27
 SECOND_OFF, SECOND_FORCE, MEASURE, CAP_SHIFT = 0x02, 0x04, 0x08, 4
 
 
@@ -87,6 +93,7 @@ def main():
     flags_seen = collections.OrderedDict()                   # flags -> first time seen
     cable, fw = None, set()
     twf = []                                                 # the cabled board's TWF dicts
+    timing = []                                              # 2.2+: its frames' timing, per 10 s
     t0 = t1 = None
     # measure-second: pairs (second frame vs the normal frame 1 ms before), and the baseline
     # (two normal frames one period apart)
@@ -132,7 +139,10 @@ def main():
                 elif kind == "TWF":
                     d = dict(x.split("=", 1) for x in f[3:] if "=" in x)
                     if "extra_sent" in d:
-                        twf.append((t, {k: int(v) for k, v in d.items()}))
+                        twf.append((t, {k: int(v) for k, v in d.items() if "/" not in v}))
+                    if "tx_radio" in d:         # 2.2+: where the cabled board's frames' time goes
+                        timing.append({k: tuple(int(x) for x in v.split("/")) for k, v in d.items()
+                                       if k in TIMING_KEYS})
                 elif kind == "TWH" and len(f) >= 5:
                     fw.add(f[4])
                 elif kind == "TWR":
@@ -203,6 +213,34 @@ def main():
                   f"{last['extra_skipped'] - first['extra_skipped']:,}, failed {last['extra_err'] - first['extra_err']:,}"
                   + (f", latest end {endmax} us into its slot (limit {LIMIT_US})" if endmax else "")
                   + f"; rx_state-flagged measurements {last.get('rx_err', 0) - first.get('rx_err', 0):,}"]
+    tim = [w for w in timing if w.get("tx_radio", (0, 0))[0] or w.get("x_radio", (0, 0))[0]]
+    if tim:
+        def mm(key):
+            v = [w[key] for w in tim if key in w and (w[key][0] or w[key][1])]
+            if not v:
+                return None
+            return sum(x[0] for x in v) / len(v), max(x[1] for x in v)
+        at, rad, wake, xrad, ln, xln = (mm(k) for k in TIMING_KEYS)
+        L += ["", "where the cabled board's own frames' time goes (mean of 10-s means / worst; 2.2+):"]
+        if at:
+            L.append(f"  {'normal frame handed to ESP-NOW':36s}{at[0]:6.0f} / {at[1]:5.0f} us into its slot "
+                     "(the target is 400)")
+        if rad and ln:
+            L.append(f"  {'... until its send-done':36s}{rad[0]:6.0f} / {rad[1]:5.0f} us   (its air time "
+                     f"{air_us(ln[0]):.0f} us at {ln[0]:.0f} bytes: the rest, {rad[0] - air_us(ln[0]):.0f} us, "
+                     "is channel access and driver)")
+        if wake:
+            L.append(f"  {'send-done to second frame handed':36s}{wake[0]:6.0f} / {wake[1]:5.0f} us   (our task: the "
+                     "callback, the queue, building it)")
+        if xrad and xln:
+            L.append(f"  {"... until the second's send-done":36s}{xrad[0]:6.0f} / {xrad[1]:5.0f} us   (its air time "
+                     f"{air_us(xln[0]):.0f} us at {xln[0]:.0f} bytes: the rest, {xrad[0] - air_us(xln[0]):.0f} us, "
+                     "is channel access and driver)")
+        if at and rad and wake and xrad:
+            L.append(f"  so a second frame ends about {at[0] + rad[0] + wake[0] + xrad[0]:.0f} us into the slot "
+                     f"(limit {LIMIT_US}); the firmware allows 50 us for the send-done and 150 us of channel access")
+        elif not wake:
+            L.append("  (no second frames from the cabled board: it sends them only in \"second force\")")
     if pair:
         L += ["", f"measured second frames ({n_extra_rec:,} records): second frame vs the normal frame 1 ms "
                   "before, against two normal frames one period apart",

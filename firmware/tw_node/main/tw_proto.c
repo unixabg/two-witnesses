@@ -297,6 +297,7 @@ void tw_note_sent(tw_node_t *n, uint32_t now, int extra)
     int32_t pos = tw_slot_pos(n, now, n->id);
     int q = (pos + 10) / 20;
     n->xend_q = (uint8_t)(q < 1 ? 1 : q > 255 ? 255 : q);
+    n->xend_us = now;
 }
 
 uint32_t tw_air_us(int len)
@@ -569,6 +570,9 @@ int tw_build_frame(tw_node_t *n, uint32_t now, uint8_t *buf, int max)
     /* own never-sent records first (oldest first), then relayed ones (sent once), then own
        second copies; a record goes into a given frame at most once */
     n->slot_no++;
+    if (n->xend_q && (uint32_t)(now - n->xend_us) > 1000000u) {
+        n->xend_q = 0;                  /* no extra frame for a second: stop saying where the last ended */
+    }
     int force = (n->set_flags & TW_SET_SECOND_FORCE) != 0, count = 0;
     int pos = put_records(n, buf, TW_HDR_LEN, max, copies, 0, force, &count);
     /* an extra frame after this one? Only in step, in our own slot, and not from an exit (it

@@ -5,6 +5,20 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **Firmware (tw_node 2.2): where a second frame's time goes.** In the 2.1
+  tests second frames ended about 450 us past their limit, and the
+  timestamps (callbacks) could not tell real delay from late callbacks. The
+  cabled board now times each frame of its own, in four parts, mean/max over
+  10 s in its TWF line: `tx_at` (where in its slot it handed the normal frame
+  to ESP-NOW), `tx_radio` (from there to its send-done), `x_wake` (from that
+  send-done to handing the second frame over: our own task), `x_radio` (to the
+  second frame's send-done), and `tx_len`/`x_len`. `second_check.py` prints them
+  against the frames' air time: what is left is channel access and driver, or
+  our task. Run it with `second force` (an exit sends second frames only then).
+  Also: a board stops repeating where its last second frame ended a second
+  after its last one (header byte 23 back to 0). Simulator: forced for 60 s
+  then normal, ends reported only in the forced minute.
+
 - **Firmware (tw_node 2.2): the followers' clocks no longer lag the
   timekeeper's.** A follower set its clock from the timekeeper's frames adding
   a fixed 150 us for the air, but it notes a frame when it has been received,
