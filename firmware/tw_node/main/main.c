@@ -734,11 +734,44 @@ static void info_update(void)
 static void led_save(void);
 static void led_start(void);
 
-/* the board's LED keys changed (over its cable, or by record): take the settings, run the actions */
+/* 2.6: the network keys' generations, kept in flash (their values are the header's, kept as before) */
+static const char *NET_NVS[TW_K_NET_N] = {"ngp", "ngr", "ngs", "ngm", "ngc"};
+static uint32_t s_net_diff_s;                   /* seconds the transport and the header disagreed */
+static uint8_t s_net_diff_now;
+
+static void net_load(void)
+{
+    uint8_t g[TW_K_NET_N] = {0};
+    nvs_handle_t h;
+    if (nvs_open("tw", NVS_READONLY, &h) == ESP_OK) {
+        for (int i = 0; i < TW_K_NET_N; i++) {
+            nvs_get_u8(h, NET_NVS[i], &g[i]);
+        }
+        nvs_close(h);
+    }
+    tw_net_init(&s_node, g);
+}
+
+static void net_save(void)
+{
+    nvs_handle_t h;
+    if (nvs_open("tw", NVS_READWRITE, &h) == ESP_OK) {
+        for (int i = 0; i < TW_K_NET_N; i++) {
+            nvs_set_u8(h, NET_NVS[i], s_node.set_gen[TW_K_NET_FIRST + i]);
+        }
+        nvs_commit(h);
+        nvs_close(h);
+    }
+}
+
+/* the board's keys changed (over its cable, or by record): take the settings, run the actions */
 static void led_apply(void)
 {
     uint32_t ch = s_node.set_changed;
     s_node.set_changed = 0;
+    if (ch & (((1u << TW_K_NET_N) - 1) << TW_K_NET_FIRST)) {
+        net_save();                     /* 2.6: a network key's generation moved on */
+    }
     if ((ch & (1u << TW_K_LED_TEST)) && s_led_ch) {        /* 2.5.1: actions, once per generation */
         s_led_test = 7;
         s_led_try = 0;
@@ -1068,6 +1101,8 @@ static void work_task(void *arg)
                 }
             }
             led_apply();                        /* 2.5: settings that came by record */
+            s_net_diff_now = tw_net_diff(&s_node);  /* 2.6: do the two ways agree? */
+            s_net_diff_s += s_net_diff_now != 0;
             led_second();                       /* 2.4: the LED, from the scores just closed */
             poll_commands();
         }
@@ -1107,7 +1142,7 @@ static void work_task(void *arg)
                 k += snprintf(line + k, sizeof(line) - (size_t)k,
                               ",tx_at=%s,tx_radio=%s,x_wake=%s,x_radio=%s,tx_len=%s,x_len=%s,"
                               "core0=%u,core1=%u,heap_min=%lu,psram_free=%lu,build=%s,rxcb=%s,rx_k=%ld,"
-                              "extra_late=%lu,x_cb=%lu,x_task=%lu,x_refused=%lu,ovh=%ld/%ld\n",
+                              "extra_late=%lu,x_cb=%lu,x_task=%lu,x_refused=%lu,ovh=%ld/%ld,net_diff=%lu,net_diff_now=%u\n",
                               tstat_text(&s_t_at, b1, sizeof(b1)), tstat_text(&s_t_radio, b2, sizeof(b2)),
                               tstat_text(&s_t_wake, b3, sizeof(b3)), tstat_text(&s_t_xradio, b4, sizeof(b4)),
                               tstat_text(&s_t_len, b5, sizeof(b5)), tstat_text(&s_t_xlen, b6, sizeof(b6)),
@@ -1116,7 +1151,8 @@ static void work_task(void *arg)
                               (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
                               tstat_text(&s_t_build, b7, sizeof(b7)), tstat_text(&s_t_rxcb, b8, sizeof(b8)),
                               (long)rxk, (unsigned long)s_node.n_extra_late, (unsigned long)s_x_cb,
-                              (unsigned long)s_x_task, (unsigned long)s_x_refused, (long)s_ovh, (long)s_ovh_dev);
+                              (unsigned long)s_x_task, (unsigned long)s_x_refused, (long)s_ovh, (long)s_ovh_dev,
+                              (unsigned long)s_net_diff_s, s_net_diff_now);
             }
             out(line, k);
         }
@@ -1143,6 +1179,7 @@ void app_main(void)
     espnow_init();
     csi_init();
     apply_settings();                   /* the power kept from before a restart, if any */
+    net_load();                         /* 2.6: and the same settings on the transport */
     led_load();                         /* 2.4: the LED, if this board has one set */
     info_update();                      /* 2.5: and say so in the TWV report */
     led_start();

@@ -5,6 +5,19 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **Firmware (tw_node 2.6): network settings both ways (protocol 3, step 1).**
+  Power, relay, second frame, measure-second and cap are also network keys
+  (16-20) on the transport: `tw_set_power`/`tw_set_flags` give the same change
+  there, and every board says them every 5 s (standing; newest generation
+  wins; within a second after it takes a newer one). The header still spreads
+  and decides them; each board compares the two each second and TWF counts
+  the seconds they disagree (`net_diff`, `net_diff_now`). The keys'
+  generations are kept in flash. Simulator (`--no-hdr-set` turns the header's
+  spreading off): the transport alone reached 6 boards in 0.6 s, two boards
+  that cannot hear the giver in 0.6 s, and a board off for 290 s caught up
+  1.4-4.4 s after coming back; both ways together: 0 s of disagreement;
+  reports home as in 2.5.1.
+
 - **tw_node 2.5.1: version and image.** The transport (above) in
   `tw_node-s3-ch11.bin`. Program-only upgrade, numbers and settings kept.
   Flash every board: 2.5 boards pass the new records on but do not take them.

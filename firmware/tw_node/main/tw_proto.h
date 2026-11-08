@@ -119,6 +119,13 @@
 #define TW_K_LED_BRIGHT     2           /* board: its brightness, 1 byte (1..255) */
 #define TW_K_LED_TEST       3           /* action: the LED's test sequence, no value */
 #define TW_K_LED_TRY        4           /* action: show R, G, B (3 bytes) on the LED for 10 s */
+#define TW_K_POWER          16          /* network (2.6): transmit power, 1 byte, quarter dBm (0: never set) */
+#define TW_K_RELAY          17          /* network: relaying, 1 byte (1 on, 0 off) */
+#define TW_K_SECOND         18          /* network: the second frame, 1 byte (0 on, 1 off, 2 force) */
+#define TW_K_MEASURE        19          /* network: measure-second, 1 byte (0 off, 1 on) */
+#define TW_K_CAP            20          /* network: at most N records a frame, 1 byte (0: no cap) */
+#define TW_K_NET_FIRST      TW_K_POWER
+#define TW_K_NET_N          5
 #define TW_K_N              32          /* keys 1..31 */
 #define TW_KC_BOARD         1           /* key classes: a setting of one board, kept in its flash */
 #define TW_KC_NETWORK       2           /*   one value for every board, said by every board (2.6+) */
@@ -348,6 +355,14 @@ void     tw_setting_local(tw_node_t *n, uint8_t key, const uint8_t *val, int len
 uint16_t tw_setting_u16(const tw_node_t *n, uint8_t key);
 /* a TW_KIND_CMD (or 2.5's TW_KIND_SET) record heard: take what is for this board, pass the rest on */
 void     tw_setting_heard(tw_node_t *n, const tw_rec_t *r);
+/* 2.6: the network settings both ways (docs/PROTOCOL-3.md, step 1). The header still spreads and
+   decides them; they are also network keys on the transport, which every board says every 5 s
+   (standing: newest generation wins). tw_set_power, tw_set_flags and tw_set_relay give the same
+   change on the transport. Start (at boot, after the header settings are loaded) with the keys'
+   generations kept in flash: */
+void     tw_net_init(tw_node_t *n, const uint8_t gen[TW_K_NET_N]);
+/* which network keys the transport has differently from the header (bit 0 = TW_K_POWER, ...) */
+uint8_t  tw_net_diff(const tw_node_t *n);
 /* records that are not measurements, queued when due (2.2: the info record, every
    TW_INFO_EVERY_US): call about once a second; returns one record queued now (for an exit to
    print), or NULL. Call again until NULL. They take the board's ordinary record numbers, so the

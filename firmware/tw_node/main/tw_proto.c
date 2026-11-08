@@ -126,6 +126,57 @@ void tw_update_roles(tw_node_t *n, uint32_t now)
     }
 }
 
+/* 2.6: the header's network settings as the transport's keys */
+static void net_from_header(const tw_node_t *n, uint8_t v[TW_K_NET_N])
+{
+    uint8_t f = n->set_flags;
+    v[0] = n->set_power;
+    v[1] = (f & TW_SET_RELAY_OFF) ? 0 : 1;
+    v[2] = (f & TW_SET_SECOND_FORCE) ? 2 : (f & TW_SET_SECOND_OFF) ? 1 : 0;
+    v[3] = (f & TW_SET_MEASURE_EXTRA) ? 1 : 0;
+    v[4] = (uint8_t)(f >> TW_SET_CAP_SHIFT);
+}
+
+static void tw_setting_give_(tw_node_t *n, uint8_t target, uint8_t key, const uint8_t *val, int len, uint8_t gen);
+
+/* a setting given here by the header's way: the same on the transport, the next generation */
+static void net_give_changed(tw_node_t *n)
+{
+    uint8_t v[TW_K_NET_N];
+    net_from_header(n, v);
+    for (int i = 0; i < TW_K_NET_N; i++) {
+        uint8_t k = (uint8_t)(TW_K_NET_FIRST + i);
+        if (!n->set_len[k] || n->set_val[k][0] != v[i]) {
+            tw_setting_give_(n, TW_SET_ALL, k, &v[i], 1, (uint8_t)(n->set_gen[k] + 1));
+        }
+    }
+}
+
+void tw_net_init(tw_node_t *n, const uint8_t gen[TW_K_NET_N])
+{
+    uint8_t v[TW_K_NET_N];
+    net_from_header(n, v);
+    for (int i = 0; i < TW_K_NET_N; i++) {
+        tw_setting_init(n, (uint8_t)(TW_K_NET_FIRST + i), &v[i], 1, gen ? gen[i] : 0);
+    }
+}
+
+uint8_t tw_net_diff(const tw_node_t *n)
+{
+    uint8_t v[TW_K_NET_N], d = 0;
+    if (!n->set_power) {
+        return 0;                               /* the header has no settings yet */
+    }
+    net_from_header(n, v);
+    for (int i = 0; i < TW_K_NET_N; i++) {
+        uint8_t k = (uint8_t)(TW_K_NET_FIRST + i);
+        if (n->set_len[k] && n->set_val[k][0] != v[i]) {
+            d |= (uint8_t)(1u << i);
+        }
+    }
+    return d;
+}
+
 int tw_set_power(tw_node_t *n, uint8_t power_q)
 {
     if (power_q < TW_POWER_MIN_Q || power_q > TW_POWER_MAX_Q) {
@@ -135,6 +186,7 @@ int tw_set_power(tw_node_t *n, uint8_t power_q)
     n->set_power = power_q;
     n->set_pending = 1;
     n->set_changes++;
+    net_give_changed(n);                        /* 2.6: and on the transport */
     return 0;
 }
 
@@ -147,6 +199,7 @@ void tw_set_flags(tw_node_t *n, uint8_t mask, uint8_t value)
     n->set_flags = (uint8_t)((n->set_flags & ~mask) | (value & mask));
     n->set_pending = 1;
     n->set_changes++;
+    net_give_changed(n);                        /* 2.6: and on the transport */
 }
 
 void tw_set_relay(tw_node_t *n, int on)
@@ -828,6 +881,12 @@ int tw_key_class(uint8_t key)
     case TW_K_LED_TEST:
     case TW_K_LED_TRY:
         return TW_KC_ACTION;
+    case TW_K_POWER:
+    case TW_K_RELAY:
+    case TW_K_SECOND:
+    case TW_K_MEASURE:
+    case TW_K_CAP:
+        return TW_KC_NETWORK;
     default:
         return 0;
     }
@@ -907,6 +966,11 @@ void tw_setting_init(tw_node_t *n, uint8_t key, const uint8_t *val, int len, uin
 }
 
 void tw_setting_give(tw_node_t *n, uint8_t target, uint8_t key, const uint8_t *val, int len, uint8_t gen)
+{
+    tw_setting_give_(n, target, key, val, len, gen);
+}
+
+static void tw_setting_give_(tw_node_t *n, uint8_t target, uint8_t key, const uint8_t *val, int len, uint8_t gen)
 {
     if (!tw_key_class(key) || target > TW_MAX_NODES || len < 0 || len > TW_CMD_VAL) {
         return;
@@ -1003,6 +1067,10 @@ static tw_rec_t *setting_record(tw_node_t *n, uint32_t now)
                 len = put_entry(q, len, n->id, k, TW_CF_REPORT, n->set_gen[k], 0, n->set_val[k], n->set_len[k]);
             } else if (c == TW_KC_ACTION) {     /* an action: which generation it last ran */
                 len = put_entry(q, len, n->id, k, TW_CF_REPORT, n->set_gen[k], 0, NULL, 0);
+            } else if (c == TW_KC_NETWORK && n->set_len[k]) {
+                /* 2.6: standing: said to every board, newest generation wins (and, from the
+                   sender, its own value: the computer reads it as its report) */
+                len = put_entry(q, len, TW_SET_ALL, k, 0, n->set_gen[k], 1, n->set_val[k], n->set_len[k]);
             }
         }
     }
