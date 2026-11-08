@@ -5,6 +5,10 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **Firmware (tw_node 2.4.2): `TWSET led try R G B`** shows exactly that color
+  (0..255 each, not scaled by the brightness) for 10 seconds, then back to
+  what the LED shows: to choose colors by eye. Nothing is kept.
+
 - **Firmware (tw_node 2.4.2): the LED's orange, amber and blinking.** The
   replay's orange, made linear for the LED, kept a seventh of red as green and
   read as red, next to the boards' red power light. Now the LED's own amber

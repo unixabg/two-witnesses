@@ -38,7 +38,8 @@
  *
  * An RGB LED (2.4, off by default; per board, kept in its flash): shows the board's own
  * movement score in the replay's colors (tw_led.h). tw_setid.py PORT led on [GPIO] (48 if not
- * given), led off, led bright N (1..255, 32 by default), led test.
+ * given), led off, led bright N (1..255, 32 by default), led test, led try R G B (2.4.2: that
+ * color for 10 s, to choose colors by eye).
  *
  * Output on the native USB port (text lines; listen.py adds the computer's time):
  *   TWR,...  one measurement record   TWN,...  a board heard (once a second)
@@ -635,6 +636,7 @@ static rmt_channel_handle_t s_led_ch;
 static rmt_encoder_handle_t s_led_enc;
 static tw_led_state_t s_led_st;
 static uint8_t s_led_test;                      /* seconds of the test sequence left */
+static uint8_t s_led_try, s_led_try_rgb[3];     /* 2.4.2: seconds of a color to try left, and it */
 static uint8_t s_led_shown[3];
 
 static int led_pin_ok(int pin)
@@ -732,7 +734,10 @@ static void led_second(void)
         return;
     }
     uint8_t c[3];
-    if (s_led_test) {
+    if (s_led_try) {
+        s_led_try--;                    /* 2.4.2: exactly the numbers given, for 10 seconds */
+        memcpy(c, s_led_try_rgb, 3);
+    } else if (s_led_test) {
         /* red, green, blue, then the ramp (1.5, 3, 6 x quiet) and orange, then off */
         static const uint8_t prim[3][3] = {{255, 0, 0}, {0, 255, 0}, {0, 0, 255}};
         static const uint8_t ramp[3] = {15, 30, 60};
@@ -834,8 +839,8 @@ static void poll_commands(void)
                 out_wait(msg, k);
             } else if (n && !strncmp(cmd, "TWSET led ", 10)) {
                 /* 2.4: this board's LED only (kept in its flash; not spread to the others) */
-                char msg[96];
-                int k, pin, br;
+                char msg[128];
+                int k, pin, br, tr, tg, tb;
                 if (!strcmp(cmd, "TWSET led off")) {
                     s_led_pin = 0;
                     led_save();
@@ -853,13 +858,25 @@ static void poll_commands(void)
                     led_save();
                     s_led_shown[0] = s_led_shown[1] = s_led_shown[2] = 255;   /* redraw */
                     k = snprintf(msg, sizeof(msg), "TWOK led brightness %u\n", s_led_bright);
+                } else if (sscanf(cmd, "TWSET led try %d %d %d", &tr, &tg, &tb) == 3 &&
+                           tr >= 0 && tr <= 255 && tg >= 0 && tg <= 255 && tb >= 0 && tb <= 255) {
+                    /* 2.4.2: show a color as given (red, green, blue; not scaled by the brightness)
+                       for 10 seconds, then back to what the LED shows: to choose colors by eye */
+                    s_led_try_rgb[0] = (uint8_t)tr;
+                    s_led_try_rgb[1] = (uint8_t)tg;
+                    s_led_try_rgb[2] = (uint8_t)tb;
+                    s_led_try = 10;
+                    s_led_test = 0;
+                    k = snprintf(msg, sizeof(msg), s_led_ch ? "TWOK led try %d %d %d (10 s)\n" :
+                                 "TWERR led is off: led on first\n", tr, tg, tb);
                 } else if (!strcmp(cmd, "TWSET led test")) {
                     s_led_test = 8;
+                    s_led_try = 0;
                     k = snprintf(msg, sizeof(msg), s_led_ch ? "TWOK led test: red, green, blue, three blues, "
                                  "orange, off (8 s)\n" : "TWERR led is off: led on first\n");
                 } else {
-                    k = snprintf(msg, sizeof(msg), "TWERR led on [GPIO], led off, led bright 1..255, led test "
-                                 "(not GPIO 19, 20, 26-37)\n");
+                    k = snprintf(msg, sizeof(msg), "TWERR led on [GPIO], led off, led bright 1..255, led test, "
+                                 "led try R G B (0..255; not GPIO 19, 20, 26-37)\n");
                 }
                 out_wait(msg, k);
                 hello();
