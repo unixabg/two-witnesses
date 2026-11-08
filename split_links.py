@@ -438,6 +438,12 @@ def main():
                     except ValueError:
                         pass
                     continue
+                if f[1] == "TWX" and len(f) >= 5:    # 2.5+: settings passed on: a record like any
+                    try:
+                        sp.delivered(int(f[0]), int(f[2]), int(f[3]), int(f[4]))
+                    except ValueError:
+                        pass
+                    continue
                 if f[1] == "TWM" and len(f) >= 23:   # 2.2+: board,boot,number,uptime,net_us,16 scores
                     try:
                         if sp.delivered(int(f[0]), int(f[2]), int(f[3]), int(f[4])):

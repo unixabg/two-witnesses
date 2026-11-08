@@ -19,6 +19,8 @@
     ~/scratch-esp/bin/python tw_setid.py PORT led bright N    its brightness, 1-255 (32 by default)
     ~/scratch-esp/bin/python tw_setid.py PORT led test        red, green, blue, three blues, off (7 s)
     ~/scratch-esp/bin/python tw_setid.py PORT led try R G B   that color (0-255 each) for 10 s, to choose by eye (2.4.2)
+    ~/scratch-esp/bin/python tw_setid.py PORT led on|off|bright ... board N|all
+                                                          the same for board N, or every board, over the air (2.5)
     e.g. ~/scratch-esp/bin/python tw_setid.py /dev/ttyACM0 power 11
 
 Board number: the board stores it in its flash and restarts; erase-flash clears it.
@@ -35,8 +37,10 @@ The second frame and its test settings (tw_node 2.1, docs/SECOND-FRAME.md) are
 network settings too, kept in flash: after a test put them back
 (second on, measure-second off, cap off). This shows them for every board.
 
-The LED (tw_node 2.4) is not a network setting: it is set for the board on the
-cable only, and kept in its flash. It shows the board's own movement score in
+The LED (tw_node 2.4) is a setting of each board, kept in its flash: for the
+board on the cable, or (2.5) with "board N" or "board all" for others over the
+air (a settings record, passed on by every board for 60 s; this waits until the
+board reports it took it). It shows the board's own movement score in
 the replay's colors: off when quiet, faint pale blue to full deep blue as the
 movement grows. Boards without one keep it off. On boards like the ones in
 this setup the LED is on GPIO 48; on some, an "RGB" solder pad next to it must
@@ -108,12 +112,14 @@ def status(p, seconds):
     """what every board reports: TWS for the board on the cable, TWN for each board it hears.
     -> {board: dict(set_seq, power_q, relay, heard, cable, fw)}. fw: what the board says it runs
     (tw_node 2.2+: TWV, every 5 s; None if it did not say in time)"""
-    seen, fw = {}, {}
+    seen, fw, led = {}, {}, {}
     for line in p.lines(seconds):
         f = line.split(",")
         try:
             if f[0] == "TWV" and len(f) >= 6:
                 fw[int(f[1])] = f"{f[4]} (built {f[5]})"
+                if len(f) >= 10:                    # 2.5+: its LED pin, brightness, generations
+                    led[int(f[1])] = tuple(int(x) for x in f[6:10])
                 continue
             if f[0] == "TWS" and len(f) >= 20:
                 seen[int(f[1])] = dict(cable=True, set_seq=int(f[17]), power_q=int(f[18]), radio_q=int(f[19]),
@@ -128,6 +134,7 @@ def status(p, seconds):
         except (ValueError, IndexError):
             pass
     for k, b in seen.items():
+        b["led"] = led.get(k)
         b["fw"] = fw.get(k)
         b["fw_known"] = bool(fw)        # someone said: a board that did not is older (or missed)
     return seen
@@ -151,6 +158,9 @@ def show(seen):
         b = seen[k]
         relay = "" if b["relay"] is None else f", relaying {'on' if b['relay'] else 'OFF'}"
         relay += flags_text(b.get("flags"))
+        if b.get("led"):
+            pin, br = b["led"][:2]
+            relay += f", LED on GPIO {pin} (brightness {br})" if pin else ", LED off"
         if b.get("fw"):
             relay = f", firmware {b['fw']}" + relay
         elif b.get("fw_known"):
@@ -244,26 +254,75 @@ def main():
         return
 
     if len(a) >= 2 and a[1] == "led":
-        if len(a) == 3 and a[2] in ("off", "on", "test"):
-            cmd = f"TWSET led {a[2]}"
-        elif len(a) == 4 and a[2] == "on" and a[3].isdigit():
-            cmd = f"TWSET led on {int(a[3])}"
-        elif len(a) == 4 and a[2] == "bright" and a[3].isdigit() and 1 <= int(a[3]) <= 255:
-            cmd = f"TWSET led bright {int(a[3])}"
-        elif len(a) == 6 and a[2] == "try" and all(x.isdigit() and int(x) <= 255 for x in a[3:]):
-            cmd = "TWSET led try " + " ".join(str(int(x)) for x in a[3:])
+        rest, target = a[2:], None
+        if len(rest) >= 2 and rest[-2] == "board":          # 2.5: for board N, or all, over the air
+            t = rest[-1]
+            if t == "all":
+                target = 0
+            elif t.isdigit() and 1 <= int(t) <= 16:
+                target = int(t)
+            else:
+                sys.exit("board N (1-16) or board all")
+            rest = rest[:-2]
+        if len(rest) == 1 and rest[0] in ("off", "on", "test"):
+            cmd = f"TWSET led {rest[0]}"
+        elif len(rest) == 2 and rest[0] == "on" and rest[1].isdigit():
+            cmd = f"TWSET led on {int(rest[1])}"
+        elif len(rest) == 2 and rest[0] == "bright" and rest[1].isdigit() and 1 <= int(rest[1]) <= 255:
+            cmd = f"TWSET led bright {int(rest[1])}"
+        elif len(rest) == 4 and rest[0] == "try" and all(x.isdigit() and int(x) <= 255 for x in rest[1:]):
+            cmd = "TWSET led try " + " ".join(str(int(x)) for x in rest[1:])
         else:
-            sys.exit("led on [GPIO] | led off | led bright 1-255 | led test | led try R G B (0-255)")
+            sys.exit("led on [GPIO] | led off | led bright 1-255 | led test | led try R G B (0-255), "
+                     "then board N|all for others (not test or try)")
+        if target is None:
+            for attempt in range(1, TRIES + 1):
+                p.send(cmd)
+                for line in p.lines(4):
+                    if line.startswith(("TWOK led", "TWERR")):
+                        print(line)
+                        if line.startswith("TWERR"):
+                            sys.exit(1)
+                        return
+                print(f"  no answer yet (try {attempt} of {TRIES})")
+            sys.exit("no answer: is it running tw_node 2.4 or newer, and is this its native USB port?")
+        if rest[0] in ("test", "try"):
+            sys.exit("led test and led try work on the board on the cable only")
+        pin_key = rest[0] in ("on", "off")
+        print("listening for each board's LED setting (its report comes every 5 s) ...")
+        leds = {k: b["led"] for k, b in status(p, 7).items() if b.get("led")}
+        targets = sorted(leds) if target == 0 else [target]
+        if target and target not in leds:
+            print(f"  board {target} did not report its LED in 7 s (not on tw_node 2.5, or not heard now); "
+                  "sending anyway")
+        gens = [leds[b][2 if pin_key else 3] for b in targets if b in leds]
+        gen = (max(gens, default=0) + 1) % 256
+        what = "LED pin" if pin_key else "LED brightness"
+        done = set()
         for attempt in range(1, TRIES + 1):
-            p.send(cmd)
-            for line in p.lines(4):
+            p.send(f"{cmd} board {target} gen {gen}")
+            for line in p.lines(3):
                 if line.startswith(("TWOK led", "TWERR")):
                     print(line)
                     if line.startswith("TWERR"):
                         sys.exit(1)
-                    return
-            print(f"  no answer yet (try {attempt} of {TRIES})")
-        sys.exit("no answer: is it running tw_node 2.4 or newer, and is this its native USB port?")
+                    break
+            # the board(s) say they took it in their next reports (every 5 s)
+            for line in p.lines(15):
+                f = line.split(",")
+                if f[0] == "TWV" and len(f) >= 10 and f[1].isdigit() and int(f[1]) in targets:
+                    if int(f[8 if pin_key else 9]) == gen:
+                        done.add(int(f[1]))
+                if done >= set(targets):
+                    break
+            if done >= set(targets):
+                print(f"done: {what} taken by board{'s' if len(done) > 1 else ''} "
+                      f"{', '.join(str(b) for b in sorted(done))} (generation {gen})")
+                return
+            print(f"  taken so far by {sorted(done) or 'none'} (try {attempt} of {TRIES})")
+        missing = sorted(set(targets) - done)
+        sys.exit(f"not confirmed by board {', '.join(str(b) for b in missing)}: off, out of reach, or not on "
+                 "tw_node 2.5; it is passed on for 60 s, so try again when it is up")
 
     if len(a) == 2:
         try:

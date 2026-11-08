@@ -47,8 +47,8 @@ import zlib
 
 RAM_FS = {"tmpfs", "ramfs", "devtmpfs"}
 # lines from tw_node, the many-board firmware: records, boards heard, status, hello, health
-TW_KINDS = ("TWR,", "TWN,", "TWS,", "TWH,", "TWF,", "TWOK", "TWV,", "TWM,")   # 2.2+: TWV a board's
-                                                                            # firmware, TWM its movement score
+TW_KINDS = ("TWR,", "TWN,", "TWS,", "TWH,", "TWF,", "TWOK", "TWV,", "TWM,", "TWX,")   # 2.2+: TWV a
+                                                # board's firmware, TWM its movement score; 2.5+: TWX settings
 
 
 def mount_of(path):

@@ -915,7 +915,7 @@ def run(scr, a):
                     continue
                 kind, t, f = p
                 try:
-                    if kind == "TWM":           # 2.2+: a board's movement scores: a record like any
+                    if kind in ("TWM", "TWX"):  # 2.2+: movement scores, 2.5+ settings: records like any
                         dk = (int(f[0]), int(f[1]), int(f[2]))
                         if dk not in seen:
                             seen.add(dk)

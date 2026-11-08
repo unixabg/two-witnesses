@@ -5,6 +5,14 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **Computer side: `tw_setid.py PORT led on|off|bright ... board N|all`**
+  (tw_node 2.5): reads every board's LED setting and generation from their
+  reports, gives the next generation, and waits until the board(s) report it
+  (three tries); names any board that did not. `tw_setid.py PORT` shows every
+  board's LED. `listen.py` keeps the TWX lines; `split_links.py` and `dash.py`
+  count them as delivered records (like TWV and TWM), so they do not show as
+  losses.
+
 - **Firmware (tw_node 2.5): settings by record, for one board or all.** A new
   record kind (`TW_KIND_SET`, printed as TWX) carries entries "for board N (or
   all): key = value, generation G". The board on the computer gives them
