@@ -72,7 +72,7 @@
 
 #include "tw_proto.h"
 
-#define FW_VERSION              "tw_node 2.3"
+#define FW_VERSION              "tw_node 2.4"
 #define TW_CHANNEL              11
 #define TW_PHYMODE              WIFI_PHY_MODE_HT40
 #define TW_RATE                 WIFI_PHY_RATE_MCS0_LGI

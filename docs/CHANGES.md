@@ -5,6 +5,11 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **tw_node 2.4: version and image.** The LED (above) in
+  `tw_node-s3-ch11.bin`; otherwise as 2.3. Upgrade from 2.0-2.3: the program
+  part only (FLASH-README), numbers and settings kept; the LED stays off
+  until set. Not yet tested on a real board.
+
 - **Computer side: `tw_setid.py PORT led on [GPIO] | off | bright N | test`**
   for the board on the cable (tw_node 2.4), and `tw_setid.py PORT` shows its
   LED setting.
