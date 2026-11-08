@@ -100,7 +100,8 @@
 #define TW_INFO_EVERY_US    5000000u    /* how often each board sends it */
 #define TW_KIND_SCORE       3           /* 2.2+: not a measurement: once a second, this board's movement
                                            score for each board it heard (q[i]: board i+1, x10; 0 =
-                                           none); printed as TWM */
+                                           none); 2.7: q[16] where its last second frame ended (20 us
+                                           steps); txseq its uptime, s; printed as TWM */
 #define TW_KIND_SET         4           /* 2.5: settings for boards, 6-byte entries: target (0 = all),
                                            key, generation, seconds left, value (2 bytes). Read since
                                            2.5.1 (from 2.5 boards), not sent; gone in 3.0 */

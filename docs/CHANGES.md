@@ -5,6 +5,12 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **Firmware (tw_node 2.7): reports both ways (protocol 3, step 2).** Each
+  board's once-a-second record (TWM) adds where its last second frame ended
+  (a 17th value, us), as header byte 23 still says; its uptime has been in
+  TWM since 2.2. A board with no scores but a recent second frame sends TWM
+  for it. In 3.0 the header's copies go.
+
 - **tw_node 2.6: version and image.** Network settings both ways (above) in
   `tw_node-s3-ch11.bin`; includes 2.5.1. Program-only upgrade, numbers and
   settings kept; the network keys start from each board's header settings.

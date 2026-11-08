@@ -43,7 +43,8 @@ per frame (3 us for the five): kept as room for the unknown.
 
 Where the moved fields go:
 - network settings: standing settings on the transport (below);
-- uptime: the board's report (TWV), every 5 s;
+- uptime: the movement-score record (TWM), once a second, which has carried it
+  since 2.2;
 - the second frame's end: the movement-score record (TWM), once a second, as
   one more field.
 
@@ -130,8 +131,8 @@ night, then the next.
    simulator with the header's spreading switched off converges on its own
    (a board off for an hour, stranded boards, two changes in a row); on the
    boards a night with no disagreement, and a power change both ways.
-2. **2.7: reports both ways.** Uptime in TWV and the second frame's end in
-   TWM as well as in the header; the computer tools read the new places
+2. **2.7: reports both ways.** Uptime (TWM since 2.2) and the second frame's
+   end in TWM as well as in the header; the computer tools read the new places
    (falling back to the old). Check: `second_check.py` the same both ways.
 3. **3.0: the header changes.** Protocol version 3; the moved fields go, the
    delay gets byte 18, reserved bytes are 0 and ignored; TW_KIND_SET and

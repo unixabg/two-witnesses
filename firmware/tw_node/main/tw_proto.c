@@ -1160,15 +1160,18 @@ const tw_rec_t *tw_aux_record(tw_node_t *n, uint32_t now)
     uint32_t sec = now / 1000000u;
     if (sec != n->score_sec) {                  /* once a second: close it, queue the scores */
         n->score_sec = sec;
-        uint8_t sc[TW_MAX_NODES];
+        uint8_t sc[TW_MAX_NODES + 1];
         int any = 0;
         for (int i = 1; i <= TW_MAX_NODES; i++) {
             sc[i - 1] = i == n->id ? 0 : score_close(&n->score[i]);
             any |= sc[i - 1];
         }
-        memcpy(n->score_last, sc, sizeof(sc));
+        memcpy(n->score_last, sc, TW_MAX_NODES);
+        /* 2.7: and where its last second frame ended (as header byte 23, which goes in 3.0) */
+        sc[TW_MAX_NODES] = n->xend_q;
+        any |= n->xend_q;
         if (any) {
-            tw_rec_t *r = queue_aux(n, now, TW_KIND_SCORE, sc, TW_MAX_NODES);
+            tw_rec_t *r = queue_aux(n, now, TW_KIND_SCORE, sc, TW_MAX_NODES + 1);
             r->txseq = sec;                     /* this board's uptime, s */
             return r;
         }
@@ -1377,11 +1380,15 @@ int tw_format_record(const tw_rec_t *r, char *out, int max)
         return k;
     }
     if ((r->kind & TW_KIND_MASK) == TW_KIND_SCORE) {
-        /* TWM,board,boot,record number,its uptime s,the timekeeper's clock,score of board 1..16 (x10) */
+        /* TWM,board,boot,record number,its uptime s,the timekeeper's clock,score of board 1..16 (x10),
+           2.7: where its last second frame ended, us after its slot start by its clock (0: none) */
         int k = snprintf(out, (size_t)max, "TWM,%u,%u,%lu,%lu,%lu", r->rx, r->boot, (unsigned long)r->recseq,
                          (unsigned long)r->txseq, (unsigned long)r->net_us);
         for (int i = 0; i < TW_MAX_NODES && k > 0 && k < max - 6; i++) {
             k += snprintf(out + k, (size_t)(max - k), ",%u", i < r->n ? r->q[i] : 0);
+        }
+        if (r->n > TW_MAX_NODES && k > 0 && k < max - 8) {
+            k += snprintf(out + k, (size_t)(max - k), ",%u", 20u * r->q[TW_MAX_NODES]);
         }
         if (k > 0 && k < max - 1) {
             out[k++] = '\n';
