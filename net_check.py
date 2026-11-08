@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: 2026 Richard Nelson
 # SPDX-License-Identifier: Apache-2.0
-"""net_check.py - do the network settings agree both ways? (tw_node 2.6,
-docs/PROTOCOL-3.md step 1), from a run's own files.
+"""net_check.py - do the network settings and reports agree both ways?
+(tw_node 2.6 and 2.7, docs/PROTOCOL-3.md steps 1 and 2), from a run's own files.
 
     ~/scratch-esp/bin/python net_check.py RUN_FOLDER
 
@@ -15,8 +15,13 @@ as heard by it), at each of its announcements. It also reads the cabled
 board's own count of seconds the two disagreed (TWF net_diff).
 
 A few disagreements right after a change are the two ways arriving a moment
-apart; lasting ones are not. Writes RUN_FOLDER/net_check.txt too.
+apart; lasting ones are not.
+
+2.7: each board's uptime and where its last second frame ended travel in its
+once-a-second record (TWM) as well as in its frames' header (TWN, as the
+cabled board heard them): compared too. Writes RUN_FOLDER/net_check.txt too.
 """
+import numpy as np
 import argparse
 import collections
 import glob
@@ -56,6 +61,9 @@ def main():
     first_diff = {}                                 # board -> (time, header, transport)
     last = {}                                       # board -> transport values, latest
     twf_diff = twf_now = None
+    up_hdr = {}                                     # board -> (time, uptime) from TWN, latest
+    up_n, up_bad = collections.Counter(), collections.Counter()
+    xe_hdr, xe_rec = collections.defaultdict(list), collections.defaultdict(list)
     cable = None
     t0 = t1 = None
     for path in files:
@@ -71,6 +79,17 @@ def main():
                     header[cable] = (int(f[19]), int(f[24]))
                 elif kind == "TWN" and len(f) >= 15:
                     header[int(f[2])] = (int(f[11]), int(f[14]))
+                    up_hdr[int(f[2])] = (t, int(f[8]))
+                    if len(f) >= 21 and int(f[20]):
+                        xe_hdr[int(f[2])].append(int(f[20]))
+                elif kind == "TWM" and len(f) >= 24:      # 2.7: uptime and second-frame end by record
+                    b = int(f[2])
+                    if int(f[23]):
+                        xe_rec[b].append(int(f[23]))
+                    if b in up_hdr:
+                        th, uh = up_hdr[b]
+                        up_n[b] += 1
+                        up_bad[b] += abs(int(f[5]) - (uh + (t - th))) > 2
                 elif kind == "TWF":
                     d = dict(x.split("=", 1) for x in f[3:] if "=" in x)
                     if "net_diff" in d:
@@ -101,6 +120,14 @@ def main():
         print("\n".join(L))
         return
     L.append(f"  {(t1 - t0) / 60:.1f} minutes of announcements; cabled board {cable}")
+    if up_n:
+        L += ["", "  reports both ways (2.7): uptime in each board's record (TWM) against its header (TWN),",
+              "  and where its second frames ended (median / max, us; header: as the cabled board heard it)",
+              "  board   uptimes compared   off by over 2 s   second frame's end: header        record"]
+        for b in sorted(up_n):
+            def mm(v):
+                return f"{np.median(v):6.0f} / {max(v):5d}" if v else "      -       "
+            L.append(f"  {b:>5}   {up_n[b]:>16,}   {up_bad[b]:>15,}   {mm(xe_hdr[b]):>24}   {mm(xe_rec[b]):>14}")
     if twf_diff is not None:
         L.append(f"  the cabled board counted {twf_diff:,} s when its two ways disagreed"
                  + (f" (disagreeing at the end: keys {twf_now:#04x})" if twf_now else ""))

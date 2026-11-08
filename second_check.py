@@ -91,6 +91,7 @@ def main():
     tot = collections.defaultdict(collections.Counter)      # sender -> counts heard by the cabled board
     gaps = collections.defaultdict(list)                     # sender -> gap us, per second (longest)
     ends = collections.defaultdict(list)                     # sender -> its own end us, per second
+    ends_rec = collections.defaultdict(list)                 # 2.7: the same from its own record (TWM)
     flags_seen = collections.OrderedDict()                   # flags -> first time seen
     cable, fw = None, set()
     twf = []                                                 # the cabled board's TWF dicts
@@ -134,6 +135,8 @@ def main():
                         if int(f[20]):
                             ends[s].append(int(f[20]))
                     flags_seen.setdefault(int(f[14]), t)
+                elif kind == "TWM" and len(f) >= 24 and int(f[23]):
+                    ends_rec[int(f[2])].append(int(f[23]))  # 2.7: it says so itself, once a second
                 elif kind == "TWS" and len(f) >= 27:
                     cable = int(f[2])
                     flags_seen.setdefault(int(f[24]), t)
@@ -199,8 +202,9 @@ def main():
         heard = f"{c['heard']:,} ({100 * c['heard'] / ann:.1f}%)" if ann else f"{c['heard']:,}"
         csi = f"{c['csi']:,} ({100 * c['csi'] / c['heard']:.1f}%)" if c["heard"] else "0"
         g = f"{q(gaps[s], 50):.0f} / {max(gaps[s])} us" if gaps[s] else "-"
-        e = f"{q(ends[s], 50):.0f} / {max(ends[s])} us" if ends[s] else "-"
-        late = sum(1 for x in ends[s] if x > LIMIT_US)
+        own = ends_rec[s] or ends[s]                          # 2.7: its record first, the header else
+        e = f"{q(own, 50):.0f} / {max(own)} us" if own else "-"
+        late = sum(1 for x in own if x > LIMIT_US)
         e += f" ({late} s over {LIMIT_US})" if late else ""
         L.append(f"  {s:>5}  {c['frames']:7,d}  {ann:9,d}  {heard:>15}  {csi:>14}   {g:>30}   {e:>30}   "
                  f"{c['rx_err']:,d}")

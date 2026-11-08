@@ -5,6 +5,11 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **Computer side (tw_node 2.7): `net_check.py` compares the reports both
+  ways too** (uptime and the second frame's end, by record against header),
+  and `second_check.py` takes each board's own end from its record when it has
+  one.
+
 - **Firmware (tw_node 2.7): reports both ways (protocol 3, step 2).** Each
   board's once-a-second record (TWM) adds where its last second frame ended
   (a 17th value, us), as header byte 23 still says; its uptime has been in
