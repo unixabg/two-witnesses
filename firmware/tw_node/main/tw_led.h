@@ -9,7 +9,9 @@
  *                                                                   (2.4.1; 2.4 ran the dark theme's
  *                                                                   ramp, loud showing near-white)
  *   a lasting change (a link above quiet over 60 s, until the board's quiet level has
- *   relearned it: as the replay's orange mark)                      orange
+ *   relearned it: as the replay's orange mark)                      orange, blinking (one second
+ *                                                                   on, one off; 2.4.2: an LED's
+ *                                                                   amber, not the screen's)
  * A fresh change on another link shows over orange. Plain C, no ESP-IDF: main.c drives the LED;
  * this decides the color (and the simulator or a test can run it on a computer).
  */

@@ -14,6 +14,9 @@ static const uint8_t RAMP[5][3] = {
     {0xcd, 0xe2, 0xfb}, {0x86, 0xb6, 0xef}, {0x39, 0x87, 0xe5}, {0x1c, 0x5c, 0xab}, {0x0d, 0x36, 0x6b},
 };
 static const uint8_t ORANGE[3] = {0xd9, 0x59, 0x26};
+/* 2.4.2: the LED's own orange. The screen's, made linear for the LED, keeps a seventh of red as
+   green and reads as red, next to a board's red power light; an LED's amber orange: */
+static const uint8_t LED_ORANGE[3] = {255, 102, 0};
 
 /* how far along the scale a score is: 0 at quiet, 1 at 6 x quiet and above (log, as the replay) */
 static float scale_of(uint8_t score)
@@ -79,9 +82,16 @@ void tw_led_color(uint8_t score, int orange, uint8_t bright, uint8_t out[3])
     tw_led_srgb(score, orange, c);
     /* the blues: the color's hue, at a strength that grows with the change (a quarter of the
        brightness at quiet, all of it at 6 x): on screen the deep navy is dark, on an LED dark is
-       dim, so the hue alone would make the loudest the faintest. Orange at full brightness */
+       dim, so the hue alone would make the loudest the faintest. Orange: the LED's own, at full
+       brightness (2.4.2) */
+    if (orange) {
+        for (int k = 0; k < 3; k++) {
+            out[k] = (uint8_t)((LED_ORANGE[k] * bright + 127) / 255);
+        }
+        return;
+    }
     uint8_t mx = c[0] > c[1] ? (c[0] > c[2] ? c[0] : c[2]) : (c[1] > c[2] ? c[1] : c[2]);
-    float level = orange ? 1.0f : 0.25f + 0.75f * scale_of(score);
+    float level = 0.25f + 0.75f * scale_of(score);
     for (int k = 0; k < 3; k++) {
         float v = mx ? (float)c[k] / mx : 0.0f;                  /* the hue, brightest part 1 */
         out[k] = (uint8_t)lrintf(powf(v, 2.2f) * level * bright);  /* linear for the LED */

@@ -5,6 +5,12 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **Firmware (tw_node 2.4.2): the LED's orange, amber and blinking.** The
+  replay's orange, made linear for the LED, kept a seventh of red as green and
+  read as red, next to the boards' red power light. Now the LED's own amber
+  (255, 102, 0, scaled by the brightness: 32, 13, 0 at 32), blinking one
+  second on, one off, from the once-a-second update.
+
 - **tw_node 2.4.1: version and image.** The blues (above) in
   `tw_node-s3-ch11.bin`; otherwise as 2.4. Program-only upgrade, numbers and
   settings (the LED's too) kept.

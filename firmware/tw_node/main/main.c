@@ -747,10 +747,15 @@ static void led_second(void)
             tw_led_color(0, step == 6, s_led_bright, c);
         }
     } else {
+        static uint8_t blink;
         uint8_t show;
         int orange;
         tw_led_step(&s_led_st, s_node.score_last, &show, &orange);
         tw_led_color(show, orange, s_led_bright, c);
+        blink = orange ? !blink : 0;
+        if (orange && !blink) {
+            memset(c, 0, 3);            /* 2.4.2: orange blinks, one second on, one off */
+        }
     }
     if (memcmp(c, s_led_shown, 3)) {
         led_show(c);
