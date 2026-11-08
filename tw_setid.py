@@ -125,13 +125,17 @@ def status(p, seconds):
     """what every board reports: TWS for the board on the cable, TWN for each board it hears.
     -> {board: dict(set_seq, power_q, relay, heard, cable, fw)}. fw: what the board says it runs
     (tw_node 2.2+: TWV, every 5 s; None if it did not say in time)"""
-    seen, fw, led, keys = {}, {}, {}, {}
+    seen, fw, led, keys, net = {}, {}, {}, {}, {}
     for line in p.lines(seconds):
         f = line.split(",")
         try:
             if f[0] == "TWX":                       # 2.5.1+: report entries: a board's own keys
                 for b, k, g, v in reports(f):
                     keys.setdefault(b, {})[k] = (g, v)
+                for e in f[4:]:                     # 2.6+: its network keys, said to every board
+                    q = e.strip().split(":")
+                    if len(q) == 6 and q[0] == "0" and q[2] == "0" and q[1].isdigit() and 16 <= int(q[1]) <= 20:
+                        net.setdefault(int(f[1]), {})[int(q[1])] = int(q[5][:2], 16) if q[5] else 0
                 continue
             if f[0] == "TWV" and len(f) >= 6:
                 fw[int(f[1])] = f"{f[4]} (built {f[5]})"
@@ -155,6 +159,7 @@ def status(p, seconds):
             led[k] = (kv[K_PIN][1][0] if kv[K_PIN][1] else 0, kv[K_BRIGHT][1][0] if kv[K_BRIGHT][1] else 32,
                       kv[K_PIN][0], kv[K_BRIGHT][0])
     for k, b in seen.items():
+        b["net"] = tuple(net[k][x] for x in range(16, 21)) if len(net.get(k, {})) == 5 else None
         b["keys"] = keys.get(k, {})
         b["led"] = led.get(k)
         b["fw"] = fw.get(k)
@@ -180,6 +185,13 @@ def show(seen):
         b = seen[k]
         relay = "" if b["relay"] is None else f", relaying {'on' if b['relay'] else 'OFF'}"
         relay += flags_text(b.get("flags"))
+        if b.get("net") and b.get("flags") is not None and b["power_q"]:
+            f = b["flags"]
+            hdr = (b["power_q"], 0 if f & 0x01 else 1, 2 if f & SECOND_FORCE else 1 if f & SECOND_OFF else 0,
+                   1 if f & MEASURE else 0, f >> CAP_SHIFT)
+            names = ("power", "relay", "second", "measure-second", "cap")
+            diff = [f"{n} {t} (header {h})" for n, t, h in zip(names, b["net"], hdr) if t != h]
+            relay += ", transport agrees" if not diff else ", TRANSPORT DIFFERS: " + "; ".join(diff)
         if b.get("led"):
             pin, br = b["led"][:2]
             relay += f", LED on GPIO {pin} (brightness {br})" if pin else ", LED off"

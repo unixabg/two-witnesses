@@ -5,6 +5,12 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **Computer side: `net_check.py RUN`** (tw_node 2.6): per board, its network
+  settings on the transport against its frames' header, at each of its
+  announcements, and the cabled board's own count of seconds they disagreed.
+  `tw_setid.py PORT` says per board whether the transport agrees. `listen.py`
+  and the run tools already keep and count TWX lines.
+
 - **Firmware (tw_node 2.6): network settings both ways (protocol 3, step 1).**
   Power, relay, second frame, measure-second and cap are also network keys
   (16-20) on the transport: `tw_set_power`/`tw_set_flags` give the same change
