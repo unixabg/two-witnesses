@@ -60,8 +60,8 @@ list of entries:
 |---|---|
 | 0 | target: a board 1-16, or 0 = all |
 | 1 | key |
-| 2 | flags: 0x01 report (this is the sender's own state, not an instruction) |
-| 3 | generation (8 bits, wrapping: newer = (int8)(new - old) > 0) |
+| 2 | flags: 0x01 report (this is the sender's own state, not an instruction); 0x02 standing (3.0: a network key as its sender has it, an instruction to all like any other) |
+| 3 | generation (8 bits, wrapping: newer = (int8)(new - old) > 0; 3.0: 0 = never given) |
 | 4 | seconds left to pass it on |
 | 5 | value length L (0-8) |
 | 6.. | value, L bytes, little end first |
@@ -84,6 +84,17 @@ keys never break older boards on the same protocol.
 - Standing settings replace the header's spreading: a board that was off for
   hours catches up within about 5 s of coming back (the header: one frame),
   and nothing expires.
+- Generation 0 (3.0) means "never given": a board with nothing in its flash
+  (a new board, or one written with the whole image) says its keys at 0, and
+  0 is never newer than anything, nor anything older than it; counting on
+  skips it (255, then 1). Without this, a new board's 0 would look newer than
+  a network that had changed a setting 129 times or more.
+- Two givers at once (3.0): the same generation of a network key with two
+  values is settled the same everywhere, the larger value wins (2.x: the lower
+  board number, which the transport does not carry).
+- A board's setting number (TWS, TWN, `tw_setid.py`; 3.0) is the sum of its
+  network keys' generations: one more with every change, the same on every
+  board with the same settings.
 - An action runs once per new generation. Its generation is kept in memory
   only: a board that restarts within the minute may run it once more
   (harmless for the LED; any future action that must not repeat says so).

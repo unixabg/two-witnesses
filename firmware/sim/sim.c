@@ -38,7 +38,7 @@
  * timekeeper's clock (the truth), and what its TWF would say.
  * --fix ahead,hwrx,cb|queue: what tw_node 2.3 changes (implies --late). ahead: the frame built
  * ahead and handed over at its time (0-40 us late); hwrx: tw_proto.c's 2.3 clock (each frame
- * says its sender's least stamp-to-send-done delay, TW_F_DELAY, and receivers time it by the
+ * says its sender's least stamp-to-send-done delay, header byte 18 in 3.0, and receivers time it by the
  * radio's own receive time, its start, as the board learns it from the CSI callbacks); cb: as
  * tw_node 2.3's firmware, the extra frame built while the normal one is on the air, cut for a
  * send-done at the running mean + 2 spreads of the board's own and xbudget=310 us of access,
@@ -218,8 +218,6 @@ static void on_record(void *ctx, const tw_rec_t *r)
 static struct { double t; int target, key, val, gen, done; } give[MAXGIVE];
 static int n_give;
 static double took_t[MAXN + 1][TW_K_N];
-static int no_hdr_set = 0;                  /* 2.6 test: the header's settings not spread (transport only) */
-static long net_diff_s[MAXN + 1];
 
 static int parse_args(int argc, char **argv, char *kill_spec, char *exit_spec, unsigned *seed, char **outpath)
 {
@@ -232,7 +230,7 @@ static int parse_args(int argc, char **argv, char *kill_spec, char *exit_spec, u
         else if (!strcmp(argv[i], "--kill") && i + 1 < argc) strncpy(kill_spec, argv[++i], 255);
         else if (!strcmp(argv[i], "--seed") && i + 1 < argc) *seed = (unsigned)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--realtime")) realtime = 1;
-        else if (!strcmp(argv[i], "--no-hdr-set")) no_hdr_set = 1;
+        else if (!strcmp(argv[i], "--no-hdr-set")) ;      /* 2.6's test; 3.0: always so */
         else if (!strcmp(argv[i], "--give") && i + 1 < argc) {
             for (char *p = argv[++i]; *p && n_give < MAXGIVE;) {
                 if (sscanf(p, "%lf@%d:%d:%d:%d", &give[n_give].t, &give[n_give].target, &give[n_give].key,
@@ -361,7 +359,7 @@ int main(int argc, char **argv)
         s->last_status = -1e9;
         tw_init(&s->st, (uint8_t)id, (uint8_t)s->exit, seed * 31u + (unsigned)id);
         tw_set_info(&s->st, "sim|board");
-        tw_net_init(&s->st, NULL);                       /* 2.6: the network keys, from its header settings */
+        tw_net_init(&s->st, NULL);                       /* the network keys (3.0: their only way) */
     }
     /* kills: "id@from-to,id@from-to" in seconds */
     for (char *p = kill_spec; *p;) {
@@ -406,17 +404,6 @@ int main(int argc, char **argv)
             for (int k = 1; k < TW_K_N; k++)
                 if (ch & (1u << k)) took_t[id][k] = t / 1e6;
         }
-        {                                                /* 2.6: seconds the two ways disagree */
-            static double next_check = 1e6;
-            if (t >= next_check) {
-                next_check += 1e6;
-                for (int id = 1; id <= n_nodes; id++) {
-                    simnode_t *q = &N_[id];
-                    int qdead = q->dead_from >= 0 && t >= q->dead_from && (q->dead_to < 0 || t < q->dead_to);
-                    if (!qdead && tw_net_diff(&q->st)) net_diff_s[id]++;
-                }
-            }
-        }
         /* next sender: a board's slot, or the extra frame it has pending */
         /* ev: 0 build the normal frame, 1 build the extra one, 2 (--late) a built frame asks for the air */
         int who = 0, is_extra = 0, ev = 0;
@@ -459,13 +446,7 @@ int main(int argc, char **argv)
                 /* --fix hwrx (tw_node 2.3): the clock from the frame's start by the radio's own receive
                    time, as the board knows it: the offset to its clock is learned from the CSI
                    callbacks, so it comes out late by their least delay */
-                if (no_hdr_set) {                            /* 2.6 test: settings by the transport only */
-                    tw_hdr_t hh = h;
-                    hh.set_power = 0;
-                    tw_note_frame(&r->st, &hh, cb_l, fix_hwrx ? hw_l + (uint32_t)csi_lo : 0u);
-                } else {
-                    tw_note_frame(&r->st, &h, cb_l, fix_hwrx ? hw_l + (uint32_t)csi_lo : 0u);
-                }
+                tw_note_frame(&r->st, &h, cb_l, fix_hwrx ? hw_l + (uint32_t)csi_lo : 0u);
                 int8_t csi[CSI_LEN];
                 make_csi(id, h.src, busy_until, csi);
                 int compact = __builtin_popcount(tw_active(&r->st, cb_l)) > TW_FULL_MAX_ACTIVE;
@@ -509,7 +490,7 @@ int main(int argc, char **argv)
             if (!sets[k].fired && tx_t >= sets[k].t) {
                 sets[k].fired = 1;
                 tw_set_power(&N_[sets[k].at].st, sets[k].q);
-                sets[k].seq = N_[sets[k].at].st.set_seq;
+                sets[k].seq = N_[sets[k].at].st.set_gen[TW_K_POWER];   /* 3.0: the power key's generation */
             }
         }
         for (int k = 0; k < n_fsets; k++) {
@@ -540,7 +521,7 @@ int main(int argc, char **argv)
                 simnode_t *r = &N_[id];
                 int rd = r->dead_from >= 0 && tx_t >= r->dead_from && (r->dead_to < 0 || tx_t < r->dead_to);
                 if (rd) continue;
-                if ((int8_t)(uint8_t)(r->st.set_seq - sets[k].seq) < 0 || r->st.set_power == 0) { all = 0; break; }
+                if ((int8_t)(uint8_t)(r->st.set_gen[TW_K_POWER] - sets[k].seq) < 0 || r->st.set_power == 0) { all = 0; break; }
             }
             if (all) sets[k].done_t = tx_t;
         }
@@ -800,11 +781,11 @@ int main(int argc, char **argv)
 #undef LS
         }
     }
-    fprintf(stderr, "}, \"net\": {");              /* 2.6: each board's network keys, both ways */
+    fprintf(stderr, "}, \"net\": {");              /* each board's settings, and its network keys */
     for (int id = 1; id <= n_nodes; id++) {
         simnode_t *q = &N_[id];
-        fprintf(stderr, "%s\"%d\": {\"hdr\": [%u, %u, %u], \"diff_s\": %ld, \"keys\": [", id > 1 ? ", " : "", id,
-                q->st.set_seq, q->st.set_power, q->st.set_flags, net_diff_s[id]);
+        fprintf(stderr, "%s\"%d\": {\"hdr\": [%u, %u, %u], \"diff_s\": 0, \"keys\": [", id > 1 ? ", " : "", id,
+                q->st.set_seq, q->st.set_power, q->st.set_flags);
         for (int i = 0; i < TW_K_NET_N; i++) {
             int k = TW_K_NET_FIRST + i;
             fprintf(stderr, "%s[%u, %u, %.2f]", i ? ", " : "", q->st.set_val[k][0], q->st.set_gen[k], took_t[id][k]);

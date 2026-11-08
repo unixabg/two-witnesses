@@ -126,28 +126,68 @@ void tw_update_roles(tw_node_t *n, uint32_t now)
     }
 }
 
-/* 2.6: the header's network settings as the transport's keys */
-static void net_from_header(const tw_node_t *n, uint8_t v[TW_K_NET_N])
+/* the network settings as the transport's keys (TW_K_POWER..TW_K_CAP) */
+static void net_values(uint8_t power, uint8_t f, uint8_t v[TW_K_NET_N])
 {
-    uint8_t f = n->set_flags;
-    v[0] = n->set_power;
+    v[0] = power;
     v[1] = (f & TW_SET_RELAY_OFF) ? 0 : 1;
     v[2] = (f & TW_SET_SECOND_FORCE) ? 2 : (f & TW_SET_SECOND_OFF) ? 1 : 0;
     v[3] = (f & TW_SET_MEASURE_EXTRA) ? 1 : 0;
     v[4] = (uint8_t)(f >> TW_SET_CAP_SHIFT);
 }
 
+/* ... and back: the setting flags from the keys' values */
+static uint8_t net_flags(const uint8_t v[TW_K_NET_N])
+{
+    return (uint8_t)((v[1] ? 0 : TW_SET_RELAY_OFF) |
+                     (v[2] == 2 ? TW_SET_SECOND_FORCE : v[2] == 1 ? TW_SET_SECOND_OFF : 0) |
+                     (v[3] ? TW_SET_MEASURE_EXTRA : 0) | ((v[4] & 15) << TW_SET_CAP_SHIFT));
+}
+
+static uint8_t net_seq(const uint8_t gen[TW_K_NET_N])
+{
+    unsigned sum = 0;
+    for (int i = 0; i < TW_K_NET_N; i++) {
+        sum += gen[i];
+    }
+    return (uint8_t)sum;
+}
+
+/* 3.0: the settings this board uses, from its network keys (after one was taken) */
+static void net_apply(tw_node_t *n)
+{
+    uint8_t v[TW_K_NET_N], g[TW_K_NET_N];
+    for (int i = 0; i < TW_K_NET_N; i++) {
+        v[i] = n->set_val[TW_K_NET_FIRST + i][0];
+        g[i] = n->set_gen[TW_K_NET_FIRST + i];
+    }
+    uint8_t power = (v[0] >= TW_POWER_MIN_Q && v[0] <= TW_POWER_MAX_Q) ? v[0] : n->set_power;
+    uint8_t flags = net_flags(v);
+    n->set_seq = net_seq(g);
+    if (power != n->set_power || flags != n->set_flags) {
+        n->set_power = power;
+        n->set_flags = flags;
+        n->set_pending = 1;
+        n->set_changes++;
+    }
+}
+
 static void tw_setting_give_(tw_node_t *n, uint8_t target, uint8_t key, const uint8_t *val, int len, uint8_t gen);
 
-/* a setting given here by the header's way: the same on the transport, the next generation */
-static void net_give_changed(tw_node_t *n)
+static uint8_t gen_next(uint8_t g)
+{
+    return (uint8_t)(g + 1) ? (uint8_t)(g + 1) : 1u;     /* 0 is "never given" */
+}
+
+/* a setting given here: each key that changes, its next generation, for every board */
+static void net_give(tw_node_t *n, uint8_t power, uint8_t flags)
 {
     uint8_t v[TW_K_NET_N];
-    net_from_header(n, v);
+    net_values(power, flags, v);
     for (int i = 0; i < TW_K_NET_N; i++) {
         uint8_t k = (uint8_t)(TW_K_NET_FIRST + i);
         if (!n->set_len[k] || n->set_val[k][0] != v[i]) {
-            tw_setting_give_(n, TW_SET_ALL, k, &v[i], 1, (uint8_t)(n->set_gen[k] + 1));
+            tw_setting_give_(n, TW_SET_ALL, k, &v[i], 1, gen_next(n->set_gen[k]));
         }
     }
 }
@@ -155,26 +195,11 @@ static void net_give_changed(tw_node_t *n)
 void tw_net_init(tw_node_t *n, const uint8_t gen[TW_K_NET_N])
 {
     uint8_t v[TW_K_NET_N];
-    net_from_header(n, v);
+    net_values(n->set_power, n->set_flags, v);
     for (int i = 0; i < TW_K_NET_N; i++) {
         tw_setting_init(n, (uint8_t)(TW_K_NET_FIRST + i), &v[i], 1, gen ? gen[i] : 0);
     }
-}
-
-uint8_t tw_net_diff(const tw_node_t *n)
-{
-    uint8_t v[TW_K_NET_N], d = 0;
-    if (!n->set_power) {
-        return 0;                               /* the header has no settings yet */
-    }
-    net_from_header(n, v);
-    for (int i = 0; i < TW_K_NET_N; i++) {
-        uint8_t k = (uint8_t)(TW_K_NET_FIRST + i);
-        if (n->set_len[k] && n->set_val[k][0] != v[i]) {
-            d |= (uint8_t)(1u << i);
-        }
-    }
-    return d;
+    n->set_seq = gen ? net_seq(gen) : 0;
 }
 
 int tw_set_power(tw_node_t *n, uint8_t power_q)
@@ -182,47 +207,19 @@ int tw_set_power(tw_node_t *n, uint8_t power_q)
     if (power_q < TW_POWER_MIN_Q || power_q > TW_POWER_MAX_Q) {
         return -1;
     }
-    n->set_seq = (uint8_t)(n->set_seq + 1);
-    n->set_power = power_q;
-    n->set_pending = 1;
-    n->set_changes++;
-    net_give_changed(n);                        /* 2.6: and on the transport */
+    net_give(n, power_q, n->set_flags);
     return 0;
 }
 
 void tw_set_flags(tw_node_t *n, uint8_t mask, uint8_t value)
 {
-    n->set_seq = (uint8_t)(n->set_seq + 1);
-    if (n->set_power == 0) {
-        n->set_power = TW_POWER_MAX_Q;      /* a setting always carries a power: full, as before */
-    }
-    n->set_flags = (uint8_t)((n->set_flags & ~mask) | (value & mask));
-    n->set_pending = 1;
-    n->set_changes++;
-    net_give_changed(n);                        /* 2.6: and on the transport */
+    /* a setting always carries a power: full, as before, if none was ever set */
+    net_give(n, n->set_power ? n->set_power : TW_POWER_MAX_Q, (uint8_t)((n->set_flags & ~mask) | (value & mask)));
 }
 
 void tw_set_relay(tw_node_t *n, int on)
 {
     tw_set_flags(n, TW_SET_RELAY_OFF, on ? 0 : TW_SET_RELAY_OFF);
-}
-
-void tw_note_settings(tw_node_t *n, const tw_hdr_t *h)
-{
-    if (h->set_power < TW_POWER_MIN_Q || h->set_power > TW_POWER_MAX_Q) {
-        return;                     /* none (older firmware sends 0), or nonsense */
-    }
-    int8_t newer = (int8_t)(uint8_t)(h->set_seq - n->set_seq);
-    /* newer number wins; the same number with a different value (two computers set it at
-       the same moment) is settled the same way everywhere: the lower board number wins */
-    if (n->set_power == 0 || newer > 0 ||
-        (newer == 0 && (h->set_power != n->set_power || h->set_flags != n->set_flags) && h->src < n->id)) {
-        n->set_seq = h->set_seq;
-        n->set_power = h->set_power;
-        n->set_flags = h->set_flags;
-        n->set_pending = 1;
-        n->set_changes++;
-    }
 }
 
 void tw_note_frame(tw_node_t *n, const tw_hdr_t *h, uint32_t rx_local, uint32_t start_local)
@@ -251,13 +248,9 @@ void tw_note_frame(tw_node_t *n, const tw_hdr_t *h, uint32_t rx_local, uint32_t 
     if (n->c_frames[s] < 0xffff) {
         n->c_frames[s]++;
     }
-    if (h->xend_q) {
-        n->c_xend_q[s] = h->xend_q;
-    }
     if ((h->flags & TW_F_EXTRA_NEXT) && n->c_xnext[s] < 0xffff) {
         n->c_xnext[s]++;
     }
-    tw_note_settings(n, h);
     /* hearing: a smoothed share of src's frames (its frame numbers tell how many were missed) */
     const float a = 1.0f / 32.0f;
     if (!n->heard[s] || (uint32_t)(rx_local - n->heard_us[s]) >= TW_ACTIVE_US) {
@@ -285,10 +278,11 @@ void tw_note_frame(tw_node_t *n, const tw_hdr_t *h, uint32_t rx_local, uint32_t 
        little later than it was built (queueing, channel access), so each candidate is still an
        underestimate: keep the max */
     uint32_t cand = h->net_us - rx_local + tw_air_us(h->len);
-    if (start_local && (h->flags & TW_F_DELAY)) {
+    if (start_local && h->delay_us) {
         /* 2.3: the frame started on the air (the radio's own receive time) its sender's delay
-           after its stamp: the delay it says, to its send-done less the air, less the send-done's
-           own lateness. Its least delay, so still an underestimate: keeping the max still works */
+           after its stamp: the delay it says (byte 18), to its send-done less the air, less the
+           send-done's own lateness. Its least delay, so still an underestimate: keeping the max
+           still works */
         uint32_t pre = h->delay_us > TW_POST_EST_US ? h->delay_us - TW_POST_EST_US : 0u;
         cand = h->net_us + pre - start_local;
     }
@@ -386,7 +380,6 @@ void tw_clear_counts(tw_node_t *n)
     memset(n->c_xheard, 0, sizeof(n->c_xheard));
     memset(n->c_xcsi, 0, sizeof(n->c_xcsi));
     memset(n->c_xgap, 0, sizeof(n->c_xgap));
-    memset(n->c_xend_q, 0, sizeof(n->c_xend_q));
     memset(n->c_rxerr, 0, sizeof(n->c_rxerr));
 }
 
@@ -618,23 +611,19 @@ static void put_header(tw_node_t *n, uint32_t now, uint8_t *buf, uint32_t seq, u
     put16(buf + 14, act);
     buf[16] = tw_period_ms(n, now);
     buf[17] = (uint8_t)count;
-    put16(buf + 18, (uint16_t)(now / 1000000u));
-    buf[20] = n->set_seq;
-    buf[21] = n->set_power;
-    buf[22] = n->set_flags;
-    buf[23] = n->xend_q;
-    for (int i = 1; i <= TW_MAX_NODES; i++) {
-        buf[23 + i] = tw_hear_pct(n, now, (uint8_t)i);
-    }
-    if (n->n_delay) {                   /* 2.3: our own place says our delay instead (TW_F_DELAY) */
+    buf[18] = 0;                        /* 2.3: our delay (0 until known), the least of our last 16 */
+    if (n->n_delay) {
         uint16_t d = n->own_delay[0];
         for (int i = 1; i < n->n_delay; i++) {
             if (n->own_delay[i] < d) {
                 d = n->own_delay[i];
             }
         }
-        buf[23 + n->id] = (uint8_t)(d / 20u > 255u ? 255u : d / 20u);
-        buf[13] |= TW_F_DELAY;
+        buf[18] = (uint8_t)(d / 20u > 255u ? 255u : d / 20u < 1u ? 1u : d / 20u);
+    }
+    memset(buf + 19, 0, 5);             /* 3.0: reserved, sent as 0, ignored */
+    for (int i = 1; i <= TW_MAX_NODES; i++) {
+        buf[23 + i] = tw_hear_pct(n, now, (uint8_t)i);
     }
 }
 
@@ -752,18 +741,9 @@ int tw_peek_header(const uint8_t *buf, int len, tw_hdr_t *h)
     h->active = get16(buf + 14);
     h->period_ms = buf[16];
     h->n_records = buf[17];
-    h->uptime_s = get16(buf + 18);
-    h->set_seq = buf[20];
-    h->set_power = buf[21];
-    h->set_flags = buf[22];
-    h->xend_q = buf[23];
-    memcpy(h->hear, buf + 24, TW_MAX_NODES);
+    h->delay_us = (uint16_t)(buf[18] * 20u);
+    memcpy(h->hear, buf + 24, TW_MAX_NODES);   /* bytes 19-23: reserved, ignored */
     h->len = (uint16_t)len;
-    h->delay_us = 0;
-    if ((h->flags & TW_F_DELAY) && valid_id(h->src)) {
-        h->delay_us = (uint16_t)(h->hear[h->src - 1] * 20u);
-        h->hear[h->src - 1] = 100;      /* what the place says otherwise */
-    }
     return valid_id(h->src) ? 0 : -1;
 }
 
@@ -894,6 +874,9 @@ int tw_key_class(uint8_t key)
 
 static int gen_newer(uint8_t a, uint8_t b)
 {
+    if (a == 0 || b == 0) {                     /* 3.0: 0 is "never given" (tw_proto.h) */
+        return a != 0 && b == 0;
+    }
     return (int8_t)(uint8_t)(a - b) > 0;
 }
 
@@ -903,7 +886,11 @@ static void setting_take(tw_node_t *n, uint8_t target, uint8_t key, const uint8_
         !(target == TW_SET_ALL || target == n->id)) {
         return;
     }
-    if (gen_newer(gen, n->set_gen[key])) {
+    int net = tw_key_class(key) == TW_KC_NETWORK;
+    /* 3.0: a network key of the same generation and another value (given at two boards at once):
+       the larger value wins, the same everywhere, so every board ends with the same */
+    int tie = net && gen && gen == n->set_gen[key] && len >= 1 && n->set_len[key] >= 1 && val[0] > n->set_val[key][0];
+    if (gen_newer(gen, n->set_gen[key]) || tie) {
         n->set_gen[key] = gen;
         memset(n->set_val[key], 0, TW_CMD_VAL);
         if (len) {
@@ -912,6 +899,9 @@ static void setting_take(tw_node_t *n, uint8_t target, uint8_t key, const uint8_
         n->set_len[key] = (uint8_t)len;
         n->set_changed |= 1u << key;        /* the caller keeps it, acts on it */
         n->set_rep_sent = 0;                /* and it is reported within a second */
+        if (net) {
+            net_apply(n);                   /* 3.0: the settings it uses (set_pending if they changed) */
+        }
     }
 }
 
@@ -985,7 +975,7 @@ static void tw_setting_give_(tw_node_t *n, uint8_t target, uint8_t key, const ui
 void tw_setting_local(tw_node_t *n, uint8_t key, const uint8_t *val, int len)
 {
     if (key && key < TW_K_N) {
-        setting_take(n, n->id, key, val, len, (uint8_t)(n->set_gen[key] + 1));
+        setting_take(n, n->id, key, val, len, gen_next(n->set_gen[key]));
         n->set_rep_sent = 0;
     }
 }
@@ -1009,24 +999,31 @@ static void setting_entry(tw_node_t *n, uint8_t target, uint8_t key, uint8_t fla
 
 void tw_setting_heard(tw_node_t *n, const tw_rec_t *r)
 {
-    if (r->rx == n->id) {
+    uint8_t s = r->rx;
+    if (s == n->id || !valid_id(s)) {
         return;
     }
-    if ((r->kind & TW_KIND_MASK) == TW_KIND_CMD) {
+    int kind = r->kind & TW_KIND_MASK;
+    if (kind == TW_KIND_SCORE) {                /* 3.0: its uptime, and where its second frame ended */
+        n->peer_up[s] = (uint16_t)r->txseq;
+        if (r->n > TW_MAX_NODES) {
+            n->c_xend_q[s] = r->q[TW_MAX_NODES];
+        }
+    } else if (kind == TW_KIND_CMD) {
         for (int i = 0; i + TW_CMD_HDR <= r->n;) {
             const uint8_t *e = r->q + i;
             int len = e[5];
             if (len > TW_CMD_VAL || i + TW_CMD_HDR + len > r->n) {
                 break;                          /* not a whole entry: stop here */
             }
+            int k = e[1] - TW_K_NET_FIRST;
+            if ((e[2] & TW_CF_STANDING) && k >= 0 && k < TW_K_NET_N && len >= 1) {
+                n->peer_net[s][k] = e[TW_CMD_HDR];  /* 3.0: its own network key (for TWN) */
+                n->peer_gen[s][k] = e[3];
+                n->peer_has[s] |= (uint8_t)(1u << k);
+            }
             setting_entry(n, e[0], e[1], e[2], e[3], e[4], e + TW_CMD_HDR, len);
             i += TW_CMD_HDR + len;
-        }
-    } else if ((r->kind & TW_KIND_MASK) == TW_KIND_SET) {   /* 2.5's: a 2-byte value; LED keys 1 byte */
-        for (int i = 0; i + TW_SET_ENTRY <= r->n; i += TW_SET_ENTRY) {
-            const uint8_t *e = r->q + i;
-            uint8_t v[2] = {e[4], e[5]};
-            setting_entry(n, e[0], e[1], 0, e[2], e[3], v, tw_key_class(e[1]) == TW_KC_BOARD ? 1 : 2);
         }
     }
 }
@@ -1069,8 +1066,9 @@ static tw_rec_t *setting_record(tw_node_t *n, uint32_t now)
                 len = put_entry(q, len, n->id, k, TW_CF_REPORT, n->set_gen[k], 0, NULL, 0);
             } else if (c == TW_KC_NETWORK && n->set_len[k]) {
                 /* 2.6: standing: said to every board, newest generation wins (and, from the
-                   sender, its own value: the computer reads it as its report) */
-                len = put_entry(q, len, TW_SET_ALL, k, 0, n->set_gen[k], 1, n->set_val[k], n->set_len[k]);
+                   sender, its own value: the computer reads it as its report; 3.0: so marked) */
+                len = put_entry(q, len, TW_SET_ALL, k, TW_CF_STANDING, n->set_gen[k], 1, n->set_val[k],
+                                n->set_len[k]);
             }
         }
     }
@@ -1365,20 +1363,6 @@ int tw_format_record(const tw_rec_t *r, char *out, int max)
         }
         return k;
     }
-    if ((r->kind & TW_KIND_MASK) == TW_KIND_SET) {
-        /* 2.5's: TWX,board,boot,record number,target:key:generation:seconds left:value,... */
-        int k = snprintf(out, (size_t)max, "TWX,%u,%u,%lu", r->rx, r->boot, (unsigned long)r->recseq);
-        for (int i = 0; i + TW_SET_ENTRY <= r->n && k > 0 && k < max - 24; i += TW_SET_ENTRY) {
-            const uint8_t *e = r->q + i;
-            k += snprintf(out + k, (size_t)(max - k), ",%u:%u:%u:%u:%u", e[0], e[1], e[2], e[3],
-                          (unsigned)(e[4] | (e[5] << 8)));
-        }
-        if (k > 0 && k < max - 1) {
-            out[k++] = '\n';
-            out[k] = 0;
-        }
-        return k;
-    }
     if ((r->kind & TW_KIND_MASK) == TW_KIND_SCORE) {
         /* TWM,board,boot,record number,its uptime s,the timekeeper's clock,score of board 1..16 (x10),
            2.7: where its last second frame ended, us after its slot start by its clock (0: none) */
@@ -1421,11 +1405,15 @@ int tw_format_node(const tw_node_t *n, const tw_hdr_t *h, int8_t rssi, uint8_t h
        to its extra frame arriving here (us), when it says its last extra frame ended (us after
        its slot start, by its own clock; 0 = none), this board's records of it flagged by the
        radio (rx_state) */
+    /* 3.0: its uptime, settings and second frame's end as its records said them (TWM, its standing
+       network keys), not its header; the same fields as before (0 until said) */
     uint8_t s = h->src <= TW_MAX_NODES ? h->src : 0;
+    uint8_t all = (uint8_t)((1u << TW_K_NET_N) - 1), has = n->peer_has[s] == all;
+    uint8_t power = has ? n->peer_net[s][0] : 0, flags = has ? net_flags(n->peer_net[s]) : 0;
     return snprintf(out, (size_t)max, "TWN,%u,%lu,%u,%u,%04x,%u,%u,%d,%u,%u,%u,%u,%u,%u,%u,%u,%u,%d,%u,%u\n", h->src,
-                    (unsigned long)h->seq, h->leader, h->flags, h->active, h->period_ms, h->uptime_s, rssi,
-                    h->set_seq, h->set_power, (h->set_flags & TW_SET_RELAY_OFF) ? 0u : 1u, heard_pct,
-                    h->set_flags, n->c_frames[s], n->c_xnext[s], n->c_xheard[s], n->c_xcsi[s],
+                    (unsigned long)h->seq, h->leader, h->flags, h->active, h->period_ms, n->peer_up[s], rssi,
+                    has ? net_seq(n->peer_gen[s]) : 0u, power, (flags & TW_SET_RELAY_OFF) ? 0u : 1u, heard_pct,
+                    flags, n->c_frames[s], n->c_xnext[s], n->c_xheard[s], n->c_xcsi[s],
                     n->c_xgap[s], 20u * n->c_xend_q[s], n->c_rxerr[s]);
 }
 

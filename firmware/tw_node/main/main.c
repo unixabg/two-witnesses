@@ -283,15 +283,16 @@ static void load_settings(void)
     }
 }
 
-/* apply a new setting to the radio and keep it (called once a second) */
+/* apply a new setting to the radio and keep it (called once a second; 3.0: set_pending comes from
+   a network key taken, tw_proto.c) */
 static void apply_settings(void)
 {
     if (s_node.set_pending) {
         s_node.set_pending = 0;
-        if (s_node.set_power) {
-            if (esp_wifi_set_max_tx_power((int8_t)s_node.set_power) != ESP_OK) {
-                ESP_LOGW(TAG, "could not set transmit power %u/4 dBm", s_node.set_power);
-            }
+        if (s_node.set_power && esp_wifi_set_max_tx_power((int8_t)s_node.set_power) != ESP_OK) {
+            ESP_LOGW(TAG, "could not set transmit power %u/4 dBm", s_node.set_power);
+        }
+        {                                   /* kept as 2.x kept it (pseq: the setting number) */
             nvs_handle_t h;
             if (nvs_open("tw", NVS_READWRITE, &h) == ESP_OK) {
                 nvs_set_u8(h, "pseq", s_node.set_seq);
@@ -721,23 +722,18 @@ static void led_load(void)
     tw_setting_init(&s_node, TW_K_LED_BRIGHT, &s_led_bright, 1, gb);
 }
 
-/* 2.5: what the board says about itself every 5 s (TWV): firmware, build, and its LED setting
-   with the generations, so the computer can see every board's and choose the next generation */
+/* what the board says about itself every 5 s (TWV): firmware and build (2.5-2.7 added its LED
+   setting; 3.0: that is in its reports, TWX) */
 static void info_update(void)
 {
-    char t[TW_INFO_MAX + 1];
-    snprintf(t, sizeof(t), "%s|%s %s|%u|%u|%u|%u", FW_VERSION, __DATE__, __TIME__, s_led_pin, s_led_bright,
-             s_node.set_gen[TW_K_LED_PIN], s_node.set_gen[TW_K_LED_BRIGHT]);
-    tw_set_info(&s_node, t);
+    tw_set_info(&s_node, FW_VERSION "|" __DATE__ " " __TIME__);
 }
 
 static void led_save(void);
 static void led_start(void);
 
-/* 2.6: the network keys' generations, kept in flash (their values are the header's, kept as before) */
+/* 2.6: the network keys' generations, kept in flash (their values as the settings, "pwr" and "rflg") */
 static const char *NET_NVS[TW_K_NET_N] = {"ngp", "ngr", "ngs", "ngm", "ngc"};
-static uint32_t s_net_diff_s;                   /* seconds the transport and the header disagreed */
-static uint8_t s_net_diff_now;
 
 static void net_load(void)
 {
@@ -1101,8 +1097,6 @@ static void work_task(void *arg)
                 }
             }
             led_apply();                        /* 2.5: settings that came by record */
-            s_net_diff_now = tw_net_diff(&s_node);  /* 2.6: do the two ways agree? */
-            s_net_diff_s += s_net_diff_now != 0;
             led_second();                       /* 2.4: the LED, from the scores just closed */
             poll_commands();
         }
@@ -1142,7 +1136,7 @@ static void work_task(void *arg)
                 k += snprintf(line + k, sizeof(line) - (size_t)k,
                               ",tx_at=%s,tx_radio=%s,x_wake=%s,x_radio=%s,tx_len=%s,x_len=%s,"
                               "core0=%u,core1=%u,heap_min=%lu,psram_free=%lu,build=%s,rxcb=%s,rx_k=%ld,"
-                              "extra_late=%lu,x_cb=%lu,x_task=%lu,x_refused=%lu,ovh=%ld/%ld,net_diff=%lu,net_diff_now=%u\n",
+                              "extra_late=%lu,x_cb=%lu,x_task=%lu,x_refused=%lu,ovh=%ld/%ld\n",
                               tstat_text(&s_t_at, b1, sizeof(b1)), tstat_text(&s_t_radio, b2, sizeof(b2)),
                               tstat_text(&s_t_wake, b3, sizeof(b3)), tstat_text(&s_t_xradio, b4, sizeof(b4)),
                               tstat_text(&s_t_len, b5, sizeof(b5)), tstat_text(&s_t_xlen, b6, sizeof(b6)),
@@ -1151,8 +1145,7 @@ static void work_task(void *arg)
                               (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
                               tstat_text(&s_t_build, b7, sizeof(b7)), tstat_text(&s_t_rxcb, b8, sizeof(b8)),
                               (long)rxk, (unsigned long)s_node.n_extra_late, (unsigned long)s_x_cb,
-                              (unsigned long)s_x_task, (unsigned long)s_x_refused, (long)s_ovh, (long)s_ovh_dev,
-                              (unsigned long)s_net_diff_s, s_net_diff_now);
+                              (unsigned long)s_x_task, (unsigned long)s_x_refused, (long)s_ovh, (long)s_ovh_dev);
             }
             out(line, k);
         }
@@ -1179,9 +1172,8 @@ void app_main(void)
     espnow_init();
     csi_init();
     apply_settings();                   /* the power kept from before a restart, if any */
-    net_load();                         /* 2.6: and the same settings on the transport */
+    net_load();                         /* the settings as network keys (3.0: their only way) */
     led_load();                         /* 2.4: the LED, if this board has one set */
-    info_update();                      /* 2.5: and say so in the TWV report */
     led_start();
     ESP_LOGW(TAG, "%s: board %u, address " MACSTR ", channel %d, frames up to %d bytes", FW_VERSION, s_id,
              MAC2STR(s_fake_mac), TW_CHANNEL, s_max_payload);

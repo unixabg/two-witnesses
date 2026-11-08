@@ -12,13 +12,14 @@
  * (the "leader"); its frames set the superframe for everyone. Both roles move
  * by themselves when a board goes quiet.
  *
- * Network settings (transmit power, for now) are set at one board, the one with
- * the computer, and spread by themselves: every frame carries the sender's
- * current setting and its setting number; a board that hears a newer setting
- * adopts it, keeps it in flash and carries it on. A board that was off when it
- * changed picks it up from the first frame it hears. (The setting rides in two
- * header bytes that older firmware sent as zero and ignores, so old and new
- * boards still work together; an old board just keeps full power.)
+ * Network settings (transmit power, relaying, the second frame) are set at one
+ * board, the one with the computer, and spread by themselves (protocol 3,
+ * docs/PROTOCOL-3.md): each is a network key on the settings transport
+ * (tw_setting_*), which every board says every 5 s with its generation; a
+ * board that hears a newer generation takes it, keeps it in flash and says it
+ * from then on. A board that was off when it changed catches up within about
+ * 5 s of coming back. (Before 3.0 the frame header carried them; 2.x and 3.x
+ * boards ignore each other's frames.)
  *
  * Relaying (version 2): every frame also says how well its sender hears each
  * board (percent of that board's frames, over about the last second). When the
@@ -53,13 +54,15 @@
 #include <stdint.h>
 #include <stddef.h>
 
-#define TW_VERSION          2           /* 2: hearing reports and relaying (1.x boards cannot mix) */
+#define TW_VERSION          3           /* 3: the lean header (docs/PROTOCOL-3.md); 2: hearing reports and
+                                           relaying. Boards of different versions ignore each other */
 #define TW_MAGIC0           'T'
 #define TW_MAGIC1           'W'
 #define TW_MAX_NODES        16          /* board numbers 1..16 */
 #define TW_MAX_AMPS         192         /* amplitudes in a full record (HT40: 64 L-LTF + 128 HT-LTF bins) */
 #define TW_COMPACT_AMPS     52          /* L-LTF only (as esp-radar uses) */
-#define TW_HDR_LEN          40          /* 24 bytes, then how well the sender hears boards 1..16 */
+#define TW_HDR_LEN          40          /* 24 bytes (19-23 reserved: sent 0, ignored), then how well the
+                                           sender hears boards 1..16 */
 #define TW_REC_HDR_LEN      28
 #define TW_MAX_PAYLOAD      1400        /* ESP-NOW v2 allows 1470 */
 #define TW_QUEUE_LEN        96          /* own records waiting to be carried */
@@ -75,6 +78,7 @@
 #define TW_RELAY_STRANDED   70          /* the exit hears a board under this %: it is stranded */
 #define TW_RELAY_GOOD       80          /* a relay must hear it, and be heard by the exit, at least this % */
 #define TW_RELAY_MAX        8           /* at most this many relays share one stranded board */
+/* the setting flags: the network keys TW_K_RELAY..TW_K_CAP, as one byte (n->set_flags) */
 #define TW_SET_RELAY_OFF    0x01        /* setting flag: relaying off (default on) */
 #define TW_SET_SECOND_OFF   0x02        /* setting flag: no extra frames (default: when records wait) */
 #define TW_SET_SECOND_FORCE 0x04        /* test: every board sends an extra frame in every slot, and both
@@ -101,11 +105,9 @@
 #define TW_KIND_SCORE       3           /* 2.2+: not a measurement: once a second, this board's movement
                                            score for each board it heard (q[i]: board i+1, x10; 0 =
                                            none); 2.7: q[16] where its last second frame ended (20 us
-                                           steps); txseq its uptime, s; printed as TWM */
-#define TW_KIND_SET         4           /* 2.5: settings for boards, 6-byte entries: target (0 = all),
-                                           key, generation, seconds left, value (2 bytes). Read since
-                                           2.5.1 (from 2.5 boards), not sent; gone in 3.0 */
-#define TW_SET_ENTRY        6
+                                           steps); txseq its uptime, s; printed as TWM. 3.0: the only
+                                           place of both (the header carried them before) */
+                                        /* 4: 2.5's settings record (TW_KIND_SET), gone in 3.0 */
 #define TW_KIND_CMD         5           /* 2.5.1+: settings and commands for boards (docs/PROTOCOL-3.md):
                                            entries of TW_CMD_HDR bytes and a value: target (0 = all),
                                            key, flags (TW_CF_REPORT), generation, seconds left to pass
@@ -114,6 +116,8 @@
 #define TW_CMD_HDR          6
 #define TW_CMD_VAL          8
 #define TW_CF_REPORT        0x01        /* a board's own state (target = itself), not an instruction */
+#define TW_CF_STANDING      0x02        /* 3.0: a network key as its sender has it (standing, every 5 s):
+                                           an instruction to all like any, and its sender's own value */
 #define TW_SET_ALL          0           /* an entry's target: every board */
 /* keys (docs/PROTOCOL-3.md, "Keys"); a board skips keys it does not know, by their length */
 #define TW_K_LED_PIN        1           /* board: the LED's GPIO, 1 byte (0 = no LED) */
@@ -131,6 +135,9 @@
 #define TW_KC_BOARD         1           /* key classes: a setting of one board, kept in its flash */
 #define TW_KC_NETWORK       2           /*   one value for every board, said by every board (2.6+) */
 #define TW_KC_ACTION        3           /*   do it once per new generation; not kept */
+/* generations: 8 bits, wrapping (newer: (int8_t)(new - old) > 0); 3.0: 0 is "never given" (a
+   board's flash had none): any other is newer than it, it is newer than none, and counting on
+   skips it */
 #define TW_SET_TABLE        8           /* entries a board passes on at once */
 #define TW_SET_TTL_S        60          /* seconds an entry is passed on after it was given */
 #define TW_REPORT_EVERY_US  5000000u    /* each board's report entries: its keys' values, generations */
@@ -149,9 +156,8 @@
 #define TW_F_LEADER         0x04        /* sender thinks it is the leader */
 #define TW_F_EXTRA          0x08        /* an extra frame: the second in the sender's slot, same number */
 #define TW_F_EXTRA_NEXT     0x10        /* an extra frame should follow this one */
-#define TW_F_DELAY          0x20        /* 2.3: the sender's own place in the hearing list (always 100%,
-                                           never read) says its delay instead: the least, over its last
-                                           16 frames, of time stamp to send-done less the air, 20 us steps */
+                                        /* 0x20: 2.3-2.7's TW_F_DELAY (the delay in the sender's own
+                                           place of the hearing list); 3.0: header byte 18. Free */
 #define TW_POST_EST_US      100u        /* 2.3: a send-done comes about this long after the frame's end */
 
 typedef struct {
@@ -159,15 +165,11 @@ typedef struct {
     uint32_t seq;           /* sender's frame counter */
     uint32_t net_us;        /* sender's estimate of the leader's clock when the frame was built */
     uint16_t active;        /* bit (id-1): boards the sender counts as active */
-    uint16_t uptime_s;
-    uint8_t  set_seq;       /* network setting number (0 and set_power 0: none yet) */
-    uint8_t  set_power;     /* transmit power in quarter dBm, 0 = never set (full power) */
-    uint8_t  set_flags;     /* TW_SET_RELAY_OFF */
-    uint8_t  xend_q;        /* 2.1+: when the sender's last extra frame ended, by its own clock, in
-                               20 us steps after its slot start (0: none yet; byte 23, zero before) */
     uint8_t  hear[TW_MAX_NODES];   /* how well the sender hears board i+1, % (0 = not heard) */
     uint16_t len;           /* the whole frame's length, bytes (from the receiver, not on the air) */
-    uint16_t delay_us;      /* 2.3: the sender's delay (TW_F_DELAY), us; 0 if it does not say */
+    uint16_t delay_us;      /* byte 18 (2.3's, its own byte since 3.0): the sender's delay, the least
+                               over its last 16 frames of time stamp to send-done less the air, in
+                               20 us steps; 0 if it does not know yet */
 } tw_hdr_t;
 
 typedef struct {
@@ -231,9 +233,12 @@ typedef struct {
     uint8_t  lead_period_ms;
     uint32_t lead_heard_us;
     uint8_t  leader_changes;
-    /* network settings (see the top of this file) */
-    uint8_t  set_seq, set_power;            /* the setting this board uses and carries on */
-    uint8_t  set_flags;                     /* TW_SET_RELAY_OFF */
+    /* network settings (see the top of this file): what this board uses, from its network keys */
+    uint8_t  set_seq;                       /* 3.0: the setting number: the sum of the network keys'
+                                               generations (one more with every change, the same on
+                                               every board that has the same settings) */
+    uint8_t  set_power;                     /* quarter dBm, 0 = never set (full power) */
+    uint8_t  set_flags;                     /* TW_SET_* */
     uint8_t  set_pending;                   /* 1: a new setting to apply (the firmware applies it) */
     uint8_t  set_changes;                   /* how many times it changed since start */
     uint8_t  tx_power_q;                    /* the power the radio reports it uses (filled in by the firmware) */
@@ -294,8 +299,14 @@ typedef struct {
     uint16_t c_xheard[TW_MAX_NODES + 1];    /* its extra frames heard right after their normal frame */
     uint16_t c_xcsi[TW_MAX_NODES + 1];      /* CSI the radio gave on them (after their normal frame) */
     int16_t  c_xgap[TW_MAX_NODES + 1];      /* longest time from its normal frame to its extra frame, here */
-    uint8_t  c_xend_q[TW_MAX_NODES + 1];    /* what it last said about its own extra frame's end */
+    uint8_t  c_xend_q[TW_MAX_NODES + 1];    /* what it last said about its own extra frame's end (TWM) */
     uint16_t c_rxerr[TW_MAX_NODES + 1];     /* this board's records of it flagged TW_KIND_RXERR */
+    /* 3.0: what each board says of itself in its records (the header did before): its uptime (TWM),
+       and its network keys (its standing entries); for TWN */
+    uint16_t peer_up[TW_MAX_NODES + 1];
+    uint8_t  peer_net[TW_MAX_NODES + 1][TW_K_NET_N];
+    uint8_t  peer_gen[TW_MAX_NODES + 1][TW_K_NET_N];
+    uint8_t  peer_has[TW_MAX_NODES + 1];    /* bit i: peer_net[.][i] heard */
 } tw_node_t;
 
 void     tw_init(tw_node_t *n, uint8_t id, uint8_t is_exit, uint32_t seed);
@@ -304,7 +315,7 @@ void     tw_init(tw_node_t *n, uint8_t id, uint8_t is_exit, uint32_t seed);
    receive time; 0 = not known (then the receive callback's time and the frame's length are used) */
 void     tw_note_frame(tw_node_t *n, const tw_hdr_t *h, uint32_t rx_local_us, uint32_t start_local_us);
 /* 2.3: our normal frame, stamped for stamp_local_us and len bytes long, had its send-done at
-   done_local_us: its delay goes into our next headers (TW_F_DELAY) */
+   done_local_us: its delay goes into our next headers (byte 18) */
 void     tw_note_sent_normal(tw_node_t *n, uint32_t stamp_local_us, uint32_t done_local_us, int len);
 /* refresh the active list, leader and period; call before building or scheduling */
 void     tw_update_roles(tw_node_t *n, uint32_t now_local_us);
@@ -354,16 +365,14 @@ void     tw_setting_give(tw_node_t *n, uint8_t target, uint8_t key, const uint8_
 void     tw_setting_local(tw_node_t *n, uint8_t key, const uint8_t *val, int len);
 /* this board's value of a key (its first two bytes, low first) */
 uint16_t tw_setting_u16(const tw_node_t *n, uint8_t key);
-/* a TW_KIND_CMD (or 2.5's TW_KIND_SET) record heard: take what is for this board, pass the rest on */
+/* call for every record heard from another board (3.0: also what it says of itself, for TWN): a
+   TW_KIND_CMD record's entries for this board are taken, the rest passed on */
 void     tw_setting_heard(tw_node_t *n, const tw_rec_t *r);
-/* 2.6: the network settings both ways (docs/PROTOCOL-3.md, step 1). The header still spreads and
-   decides them; they are also network keys on the transport, which every board says every 5 s
-   (standing: newest generation wins). tw_set_power, tw_set_flags and tw_set_relay give the same
-   change on the transport. Start (at boot, after the header settings are loaded) with the keys'
-   generations kept in flash: */
+/* the network settings (3.0: the transport is their only way). set_power and set_flags are what
+   the network keys say; a newer key taken sets set_pending (the firmware applies and keeps it).
+   Start (at boot) with the settings and the keys' generations kept in flash: set_power and
+   set_flags filled in first, then this */
 void     tw_net_init(tw_node_t *n, const uint8_t gen[TW_K_NET_N]);
-/* which network keys the transport has differently from the header (bit 0 = TW_K_POWER, ...) */
-uint8_t  tw_net_diff(const tw_node_t *n);
 /* records that are not measurements, queued when due (2.2: the info record, every
    TW_INFO_EVERY_US): call about once a second; returns one record queued now (for an exit to
    print), or NULL. Call again until NULL. They take the board's ordinary record numbers, so the
@@ -387,15 +396,14 @@ int      tw_format_status(const tw_node_t *n, uint32_t now_local_us, char *out, 
 int      tw_lltf_ranges(uint8_t secondary, uint8_t sig_mode, uint8_t cwb, uint8_t stbc, int len,
                         int ranges[4]);
 uint32_t tw_rand(tw_node_t *n);
-/* a new setting given at this board (the computer asked for it): power in quarter dBm,
-   TW_POWER_MIN_Q..TW_POWER_MAX_Q. Returns 0, or -1 if out of range */
+/* a new setting given at this board (the computer asked for it), for every board: the network
+   key's next generation. Power in quarter dBm, TW_POWER_MIN_Q..TW_POWER_MAX_Q. Returns 0, or -1 if
+   out of range */
 int      tw_set_power(tw_node_t *n, uint8_t power_q);
 /* relaying on (1) or off (0) for every board, the same way (a new setting number) */
 void     tw_set_relay(tw_node_t *n, int on);
 /* any of the setting flags: the bits in mask become those of value (a new setting number) */
 void     tw_set_flags(tw_node_t *n, uint8_t mask, uint8_t value);
-/* adopt a setting from another board's frame if it is newer (called by tw_note_frame) */
-void     tw_note_settings(tw_node_t *n, const tw_hdr_t *h);
 /* how well this board hears board id now, % (100 for itself, 0 if not heard in 2 s) */
 uint8_t  tw_hear_pct(const tw_node_t *n, uint32_t now_local_us, uint8_t id);
 /* the exit this board's relays serve: the lowest-numbered board with a computer, heard in the

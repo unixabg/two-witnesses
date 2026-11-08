@@ -5,6 +5,29 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **Firmware (tw_node 3.0): protocol 3, the lean header** (docs/PROTOCOL-3.md,
+  step 3). Protocol version 3: 2.x and 3.0 boards ignore each other's frames,
+  so every board is flashed together. The header drops the uptime, the network
+  settings and the second frame's end (bytes 18-23); the sender's delay (2.3's,
+  in its own place of the hearing list until now) gets byte 18, and 19-23 are
+  reserved (sent 0, ignored); flag 0x20 is free. The network settings travel
+  only on the transport: a newer network key taken sets the power and flags
+  the board uses (applied and kept in flash as before); a setting given at the
+  cabled board is its keys' next generations. The cabled board fills TWN's
+  uptime, settings and second-frame end from each board's records (its TWM,
+  its standing keys, now flagged 0x02) instead of its header: 0 until said.
+  Generation 0 is "never given" (a new board with an empty flash can never
+  undo the network's settings); the setting number is the sum of the network
+  keys' generations; two givers at once: the larger value wins. 2.5's settings
+  record (kind 4), TWF `net_diff` and TWV's LED fields are gone. Simulator
+  (same seed, 2.7 against 3.0): delivery and timing the same in every case
+  (`timing_cases.py`: identical but the ideal radio's forced cases, by 0.1%);
+  a power change reaches 3 boards in 0.47 s (2.7's header: 0.014 s), two
+  changes 0.5 s apart both arrive, two boards not heard by the giver 0.62 s,
+  a board off for an hour takes the changes made meanwhile 0.43 s after it is
+  back; two exits giving different powers at once end the same on every
+  board; LED keys and actions as in 2.7.
+
 - **tw_node 2.7: version and image.** Reports both ways (above) in
   `tw_node-s3-ch11.bin`; includes 2.5.1 and 2.6. Program-only upgrade.
 
