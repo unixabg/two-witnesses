@@ -32,12 +32,7 @@
 #   DASH_TAP=47001             the port the dashboard listens on
 set -u
 KIT=$(cd "$(dirname "$0")" && pwd)
-TW_DATA=${TW_DATA:-$HOME/tw-data}; PORT=${PORT:-/dev/ttyACM0}; VENV=${VENV:-$HOME/scratch-esp}
-PY=$VENV/bin/python; [ -x "$PY" ] || PY=python3
-DASH_TAP=${DASH_TAP:-47001}
-SLEEP_UNITS="sleep.target suspend.target hibernate.target hybrid-sleep.target"
-SYSTEMCTL=$(command -v systemctl || echo /usr/bin/systemctl)
-. "$KIT/tw_lib.sh"
+. "$KIT/tw_lib.sh"                      # the settings (TW_DATA, PORT, VENV, PY, ...) and shared steps
 
 # shellcheck disable=SC2086
 unmask_sleep() { sudo -n "$SYSTEMCTL" unmask $SLEEP_UNITS 2>/dev/null; }

@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Richard Nelson
 # SPDX-License-Identifier: Apache-2.0
-# tw_lib.sh - shared by run.sh, watch.sh, survey.sh and live.sh (sourced, not run).
+# tw_lib.sh - shared by run.sh, watch.sh, survey.sh, live.sh and after_run.sh (sourced, not run).
 #
 # Each of them runs in its own tmux session (run, watch, survey, live). When a
 # session's work is done (recording, view, sheets), its last step marks the
@@ -8,6 +8,16 @@
 # minutes for anyone looking, then closes the session. A finished session that
 # is still open is closed by the next start, so it can never block a run
 # (it blocked the cron start once, 2026-10-28).
+
+# The settings every script shares, each from the environment if given (run.sh's
+# head says what they are); KIT is set by the script before it sources this.
+TW_DATA=${TW_DATA:-$HOME/tw-data}
+PORT=${PORT:-/dev/ttyACM0}
+VENV=${VENV:-$HOME/scratch-esp}
+PY=$VENV/bin/python; [ -x "$PY" ] || PY=python3
+DASH_TAP=${DASH_TAP:-47001}
+SLEEP_UNITS="sleep.target suspend.target hibernate.target hybrid-sleep.target"
+SYSTEMCTL=$(command -v systemctl || echo /usr/bin/systemctl)
 
 TW_SESSIONS="run watch survey live"
 

@@ -23,12 +23,8 @@
 #   SCENE="..." to skip the scene question; USUAL=, QUIET= as run.sh
 set -u
 KIT=$(cd "$(dirname "$0")" && pwd)
-TW_DATA=${TW_DATA:-$HOME/tw-data}; PORT=${PORT:-/dev/ttyACM0}; VENV=${VENV:-$HOME/scratch-esp}
-TAP=${TAP:-47000}; DASH_TAP=${DASH_TAP:-47001}
-PY=$VENV/bin/python; [ -x "$PY" ] || PY=python3
-SLEEP_UNITS="sleep.target suspend.target hibernate.target hybrid-sleep.target"
-SYSTEMCTL=$(command -v systemctl || echo /usr/bin/systemctl)
-. "$KIT/tw_lib.sh"
+TAP=${TAP:-47000}
+. "$KIT/tw_lib.sh"                      # the settings (TW_DATA, PORT, VENV, PY, ...) and shared steps
 
 if [ "${1:-}" = "stop" ]; then
   tmux has-session -t watch 2>/dev/null || { echo "nothing is being watched"; exit 1; }

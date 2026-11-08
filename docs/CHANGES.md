@@ -5,6 +5,12 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **Scripts: the shared settings in one place.** `TW_DATA`, `PORT`, `VENV`
+  (and the Python it gives), `DASH_TAP` and the sleep settings are set in
+  `tw_lib.sh` instead of in each of `run.sh`, `watch.sh`, `survey.sh` and
+  `live.sh`; each still takes them from the environment. Checked: every
+  script ends with the same values as before, by default and when given.
+
 - **tw_node 3.0: version and image.** Protocol 3 (below) in
   `tw_node-s3-ch11.bin`. Program-only upgrade (its first 128 KB are 2.7's),
   numbers and settings kept, but **every board together**: 3.0 and 2.x boards

@@ -28,12 +28,7 @@
 # Settings: TW_DATA=~/tw-data PORT=/dev/ttyACM0 VENV=~/scratch-esp DASH_TAP=47001
 set -u
 KIT=$(cd "$(dirname "$0")" && pwd)
-TW_DATA=${TW_DATA:-$HOME/tw-data}; PORT=${PORT:-/dev/ttyACM0}; VENV=${VENV:-$HOME/scratch-esp}
-PY=$VENV/bin/python; [ -x "$PY" ] || PY=python3
-DASH_TAP=${DASH_TAP:-47001}
-SLEEP_UNITS="sleep.target suspend.target hibernate.target hybrid-sleep.target"
-SYSTEMCTL=$(command -v systemctl || echo /usr/bin/systemctl)
-. "$KIT/tw_lib.sh"
+. "$KIT/tw_lib.sh"                      # the settings (TW_DATA, PORT, VENV, PY, ...) and shared steps
 
 case "${1:-}" in
   stop)
