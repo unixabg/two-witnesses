@@ -5,6 +5,10 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **tw_node 2.4.3: version and image.** Movement only (above) in
+  `tw_node-s3-ch11.bin`; otherwise as 2.4.2. Program-only upgrade, the LED
+  setting kept.
+
 - **Firmware (tw_node 2.4.3): the LED shows movement only; orange is gone.**
   2.4's orange counted a minute of movement as a lasting change, which is not
   what the replay's orange means (a link's shape standing apart from its usual,
