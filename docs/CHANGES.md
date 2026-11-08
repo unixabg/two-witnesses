@@ -5,6 +5,8 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **Computer side: `tw_setid.py PORT led try R G B`** (tw_node 2.4.2).
+
 - **Firmware (tw_node 2.4.2): `TWSET led try R G B`** shows exactly that color
   (0..255 each, not scaled by the brightness) for 10 seconds, then back to
   what the LED shows: to choose colors by eye. Nothing is kept.

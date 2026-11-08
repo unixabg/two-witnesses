@@ -18,6 +18,7 @@
     ~/scratch-esp/bin/python tw_setid.py PORT led off         THIS board's LED off (the default)
     ~/scratch-esp/bin/python tw_setid.py PORT led bright N    its brightness, 1-255 (32 by default)
     ~/scratch-esp/bin/python tw_setid.py PORT led test        red, green, blue, three blues, orange, off (8 s)
+    ~/scratch-esp/bin/python tw_setid.py PORT led try R G B   that color (0-255 each) for 10 s, to choose by eye (2.4.2)
     e.g. ~/scratch-esp/bin/python tw_setid.py /dev/ttyACM0 power 11
 
 Board number: the board stores it in its flash and restarts; erase-flash clears it.
@@ -197,7 +198,7 @@ def set_network(p, command, check, what):
 
 def main():
     a = sys.argv[1:]
-    if not a or len(a) > 4:
+    if not a or len(a) > 6:
         sys.exit(__doc__)
     p = Port(a[0])
 
@@ -249,8 +250,10 @@ def main():
             cmd = f"TWSET led on {int(a[3])}"
         elif len(a) == 4 and a[2] == "bright" and a[3].isdigit() and 1 <= int(a[3]) <= 255:
             cmd = f"TWSET led bright {int(a[3])}"
+        elif len(a) == 6 and a[2] == "try" and all(x.isdigit() and int(x) <= 255 for x in a[3:]):
+            cmd = "TWSET led try " + " ".join(str(int(x)) for x in a[3:])
         else:
-            sys.exit("led on [GPIO] | led off | led bright 1-255 | led test")
+            sys.exit("led on [GPIO] | led off | led bright 1-255 | led test | led try R G B (0-255)")
         for attempt in range(1, TRIES + 1):
             p.send(cmd)
             for line in p.lines(4):
