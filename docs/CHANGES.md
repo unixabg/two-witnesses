@@ -5,6 +5,10 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **Computer side: `tw_setid.py PORT led on [GPIO] | off | bright N | test`**
+  for the board on the cable (tw_node 2.4), and `tw_setid.py PORT` shows its
+  LED setting.
+
 - **Firmware (tw_node 2.4): an RGB LED shows the board's movement score.**
   Off unless set (per board, kept in its flash; not a network setting). It
   shows the loudest link the board measures, in the replay's colors (dark

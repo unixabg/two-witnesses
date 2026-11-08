@@ -14,6 +14,10 @@
     ~/scratch-esp/bin/python tw_setid.py PORT second force    test: every board, every slot, full-length frames
     ~/scratch-esp/bin/python tw_setid.py PORT measure-second on|off   test: measure the second frames too
     ~/scratch-esp/bin/python tw_setid.py PORT cap N|off       test: at most N records per frame (1-15)
+    ~/scratch-esp/bin/python tw_setid.py PORT led on [GPIO]   THIS board's RGB LED on (GPIO 48 if not given; tw_node 2.4)
+    ~/scratch-esp/bin/python tw_setid.py PORT led off         THIS board's LED off (the default)
+    ~/scratch-esp/bin/python tw_setid.py PORT led bright N    its brightness, 1-255 (32 by default)
+    ~/scratch-esp/bin/python tw_setid.py PORT led test        red, green, blue, three blues, orange, off (8 s)
     e.g. ~/scratch-esp/bin/python tw_setid.py /dev/ttyACM0 power 11
 
 Board number: the board stores it in its flash and restarts; erase-flash clears it.
@@ -29,6 +33,13 @@ change one thing per run, as always: each run records the settings it used).
 The second frame and its test settings (tw_node 2.1, docs/SECOND-FRAME.md) are
 network settings too, kept in flash: after a test put them back
 (second on, measure-second off, cap off). This shows them for every board.
+
+The LED (tw_node 2.4) is not a network setting: it is set for the board on the
+cable only, and kept in its flash. It shows the board's own movement score in
+the replay's colors: off when quiet, blue to pale blue as it changes, orange for
+a lasting change. Boards without one keep it off. On boards like the ones in
+this setup the LED is on GPIO 48; on some, an "RGB" solder pad next to it must
+be bridged first (led test shows whether it lights).
 
 The board's USB line can drop a command or an answer when it is busy, so this
 tries up to three times and only says "done" when the board itself reports the
@@ -186,7 +197,7 @@ def set_network(p, command, check, what):
 
 def main():
     a = sys.argv[1:]
-    if not a or len(a) > 3:
+    if not a or len(a) > 4:
         sys.exit(__doc__)
     p = Port(a[0])
 
@@ -231,6 +242,26 @@ def main():
                     f"{a[1]} {val}")
         return
 
+    if len(a) >= 2 and a[1] == "led":
+        if len(a) == 3 and a[2] in ("off", "on", "test"):
+            cmd = f"TWSET led {a[2]}"
+        elif len(a) == 4 and a[2] == "on" and a[3].isdigit():
+            cmd = f"TWSET led on {int(a[3])}"
+        elif len(a) == 4 and a[2] == "bright" and a[3].isdigit() and 1 <= int(a[3]) <= 255:
+            cmd = f"TWSET led bright {int(a[3])}"
+        else:
+            sys.exit("led on [GPIO] | led off | led bright 1-255 | led test")
+        for attempt in range(1, TRIES + 1):
+            p.send(cmd)
+            for line in p.lines(4):
+                if line.startswith(("TWOK led", "TWERR")):
+                    print(line)
+                    if line.startswith("TWERR"):
+                        sys.exit(1)
+                    return
+            print(f"  no answer yet (try {attempt} of {TRIES})")
+        sys.exit("no answer: is it running tw_node 2.4 or newer, and is this its native USB port?")
+
     if len(a) == 2:
         try:
             n = int(a[1])
@@ -265,7 +296,10 @@ def main():
             if len(f) >= 7 and f[6].strip().isdigit():          # 2.2+: PSRAM found, bytes
                 n = int(f[6])
                 psram = f", PSRAM {n / 2**20:g} MB" if n else ", no PSRAM"
-            print(f"board {f[1]}, factory address {f[2]}, firmware {f[3]}{psram}")
+            led = ""
+            if len(f) >= 9 and f[7].strip().isdigit():          # 2.4+: the LED's pin (0 = off), brightness
+                led = f", LED on GPIO {f[7]} (brightness {f[8].strip()})" if int(f[7]) else ", LED off"
+            print(f"board {f[1]}, factory address {f[2]}, firmware {f[3]}{psram}{led}")
             print("every board:")
             show(status(p, 6))          # 6 s: every board says its firmware every 5 s (2.2+)
             return
