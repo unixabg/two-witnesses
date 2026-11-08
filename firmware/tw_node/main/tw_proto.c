@@ -907,6 +907,7 @@ const tw_rec_t *tw_aux_record(tw_node_t *n, uint32_t now)
             sc[i - 1] = i == n->id ? 0 : score_close(&n->score[i]);
             any |= sc[i - 1];
         }
+        memcpy(n->score_last, sc, sizeof(sc));
         if (any) {
             tw_rec_t *r = queue_aux(n, now, TW_KIND_SCORE, sc, TW_MAX_NODES);
             r->txseq = sec;                     /* this board's uptime, s */

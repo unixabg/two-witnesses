@@ -5,6 +5,18 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **Firmware (tw_node 2.4): an RGB LED shows the board's movement score.**
+  Off unless set (per board, kept in its flash; not a network setting). It
+  shows the loudest link the board measures, in the replay's colors (dark
+  theme): off when quiet (under 1.15 x), the blue ramp up to 6 x, orange for a
+  lasting change (a link above quiet for 60 s, until the board's quiet level
+  has relearned it; a fresh change elsewhere shows over it). A WS2812-type LED
+  on any free pin (not 19, 20, 26-37), driven by the RMT peripheral: 3 bytes a
+  second from the status block. `tw_led.c` decides the color (plain C,
+  checked against replay.py's colorFor: within 1 of 255 at every score). The
+  hello line (TWH) adds the LED's pin and brightness. USB commands `TWSET led
+  on [GPIO] | off | bright N | test`.
+
 - **tw_node 2.3: version and image.** The changes above in
   `tw_node-s3-ch11.bin`, built with ESP-IDF v5.5.6; docs/TW_NODE-2.3.md (what
   changes, the simulator, the tests). Upgrade from 2.0-2.2: the program part

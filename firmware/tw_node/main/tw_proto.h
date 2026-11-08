@@ -239,6 +239,7 @@ typedef struct {
     /* 2.2: the movement score, per board heard, and when the last second was closed */
     tw_score_t score[TW_MAX_NODES + 1];
     uint32_t score_sec;
+    uint8_t  score_last[TW_MAX_NODES];      /* 2.4: the last second's scores (as TWM; 0 = none) */
     uint8_t  xend_q;                        /* when our last extra frame ended (tw_note_sent), 20 us steps */
     uint32_t xend_us;                       /* ... and when that was (2.2: said only for 1 s after) */
     /* about each board heard, since tw_clear_counts (the firmware: once a second, after TWN) */

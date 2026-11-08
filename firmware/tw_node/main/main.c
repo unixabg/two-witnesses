@@ -36,6 +36,10 @@
  * settings like the power: tw_setid.py PORT second on|off|force,
  * measure-second on|off, cap N|off.
  *
+ * An RGB LED (2.4, off by default; per board, kept in its flash): shows the board's own
+ * movement score in the replay's colors (tw_led.h). tw_setid.py PORT led on [GPIO] (48 if not
+ * given), led off, led bright N (1..255, 32 by default), led test.
+ *
  * Output on the native USB port (text lines; listen.py adds the computer's time):
  *   TWR,...  one measurement record   TWN,...  a board heard (once a second)
  *   TWS,...  this board's status      TWH,...  hello: board number, MAC, version
@@ -56,6 +60,8 @@
 #include "esp_rom_sys.h"
 #include "esp_heap_caps.h"
 #include "esp_psram.h"
+#include "driver/rmt_tx.h"
+#include "tw_led.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "freertos/FreeRTOS.h"
@@ -620,6 +626,139 @@ static void handle(ev_t *ev)
     }
 }
 
+/* 2.4: the RGB LED (a WS2812-type: one data pin, 24 bits per color, green first), driven by the
+   RMT peripheral: the hardware times the bits, the work task only queues 3 bytes a second */
+#define LED_PIN_DEFAULT  48
+#define LED_BRIGHT_DEFAULT 32
+static uint8_t s_led_pin, s_led_bright = LED_BRIGHT_DEFAULT;     /* pin 0: no LED */
+static rmt_channel_handle_t s_led_ch;
+static rmt_encoder_handle_t s_led_enc;
+static tw_led_state_t s_led_st;
+static uint8_t s_led_test;                      /* seconds of the test sequence left */
+static uint8_t s_led_shown[3];
+
+static int led_pin_ok(int pin)
+{
+    /* not the USB pins (19, 20) nor the flash and PSRAM's (26-37 on the S3) */
+    return pin >= 0 && pin <= 48 && pin != 19 && pin != 20 && !(pin >= 26 && pin <= 37);
+}
+
+static void led_show(const uint8_t rgb[3])
+{
+    static uint8_t grb[3];              /* stays put while the RMT sends it */
+    if (!s_led_ch) {
+        return;
+    }
+    grb[0] = rgb[1];
+    grb[1] = rgb[0];
+    grb[2] = rgb[2];
+    memcpy(s_led_shown, rgb, 3);
+    rmt_transmit_config_t t = {.loop_count = 0};
+    rmt_transmit(s_led_ch, s_led_enc, grb, sizeof(grb), &t);  /* queued; a full queue just skips */
+}
+
+static void led_stop(void)
+{
+    if (s_led_ch) {
+        static const uint8_t off[3] = {0, 0, 0};
+        led_show(off);
+        rmt_tx_wait_all_done(s_led_ch, 10);
+        rmt_disable(s_led_ch);
+        rmt_del_channel(s_led_ch);
+        rmt_del_encoder(s_led_enc);
+        s_led_ch = NULL;
+        s_led_enc = NULL;
+    }
+}
+
+static void led_start(void)
+{
+    led_stop();
+    if (!s_led_pin || !led_pin_ok(s_led_pin)) {
+        return;
+    }
+    rmt_tx_channel_config_t c = {
+        .gpio_num = s_led_pin, .clk_src = RMT_CLK_SRC_DEFAULT, .resolution_hz = 10000000,
+        .mem_block_symbols = 48, .trans_queue_depth = 2,
+    };
+    rmt_bytes_encoder_config_t e = {    /* 0.1 us ticks: a 0 is 0.3 us high, 0.9 low; a 1 the reverse */
+        .bit0 = {.level0 = 1, .duration0 = 3, .level1 = 0, .duration1 = 9},
+        .bit1 = {.level0 = 1, .duration0 = 9, .level1 = 0, .duration1 = 3},
+        .flags.msb_first = 1,
+    };
+    if (rmt_new_tx_channel(&c, &s_led_ch) != ESP_OK) {
+        s_led_ch = NULL;
+        ESP_LOGW(TAG, "LED: no RMT channel for GPIO %u", s_led_pin);
+        return;
+    }
+    if (rmt_new_bytes_encoder(&e, &s_led_enc) != ESP_OK || rmt_enable(s_led_ch) != ESP_OK) {
+        rmt_del_channel(s_led_ch);
+        s_led_ch = NULL;
+        ESP_LOGW(TAG, "LED: could not start on GPIO %u", s_led_pin);
+        return;
+    }
+    static const uint8_t off[3] = {0, 0, 0};
+    led_show(off);
+}
+
+static void led_load(void)
+{
+    nvs_handle_t h;
+    if (nvs_open("tw", NVS_READONLY, &h) == ESP_OK) {
+        nvs_get_u8(h, "led", &s_led_pin);
+        nvs_get_u8(h, "ledb", &s_led_bright);
+        nvs_close(h);
+    }
+    if (!s_led_bright) {
+        s_led_bright = LED_BRIGHT_DEFAULT;
+    }
+}
+
+static void led_save(void)
+{
+    nvs_handle_t h;
+    if (nvs_open("tw", NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_u8(h, "led", s_led_pin);
+        nvs_set_u8(h, "ledb", s_led_bright);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+}
+
+/* once a second: the test sequence, or what the board's scores say */
+static void led_second(void)
+{
+    if (!s_led_ch) {
+        return;
+    }
+    uint8_t c[3];
+    if (s_led_test) {
+        /* red, green, blue, then the ramp (1.5, 3, 6 x quiet) and orange, then off */
+        static const uint8_t prim[3][3] = {{255, 0, 0}, {0, 255, 0}, {0, 0, 255}};
+        static const uint8_t ramp[3] = {15, 30, 60};
+        int step = 8 - s_led_test--;
+        if (step < 3) {
+            for (int k = 0; k < 3; k++) {
+                c[k] = (uint8_t)((prim[step][k] * s_led_bright) / 255);
+            }
+        } else if (step < 6) {
+            tw_led_color(ramp[step - 3], 0, s_led_bright, c);
+        } else {
+            tw_led_color(0, step == 6, s_led_bright, c);
+        }
+    } else {
+        uint8_t show;
+        int orange;
+        tw_led_step(&s_led_st, s_node.score_last, &show, &orange);
+        tw_led_color(show, orange, s_led_bright, c);
+    }
+    if (memcmp(c, s_led_shown, 3)) {
+        led_show(c);
+    }
+}
+
+static void hello(void);
+
 static void poll_commands(void)
 {
     static char cmd[64];
@@ -688,6 +827,37 @@ static void poll_commands(void)
                                  TW_POWER_MIN_Q / 4, TW_POWER_MAX_Q / 4);
                 }
                 out_wait(msg, k);
+            } else if (n && !strncmp(cmd, "TWSET led ", 10)) {
+                /* 2.4: this board's LED only (kept in its flash; not spread to the others) */
+                char msg[96];
+                int k, pin, br;
+                if (!strcmp(cmd, "TWSET led off")) {
+                    s_led_pin = 0;
+                    led_save();
+                    led_start();
+                    k = snprintf(msg, sizeof(msg), "TWOK led off\n");
+                } else if (!strcmp(cmd, "TWSET led on") ||
+                           (sscanf(cmd, "TWSET led on %d", &pin) == 1 && led_pin_ok(pin) && pin > 0)) {
+                    s_led_pin = (uint8_t)(strcmp(cmd, "TWSET led on") ? pin : LED_PIN_DEFAULT);
+                    led_save();
+                    led_start();
+                    k = snprintf(msg, sizeof(msg), "TWOK led on GPIO %u, brightness %u%s\n", s_led_pin,
+                                 s_led_bright, s_led_ch ? "" : " (could not start it)");
+                } else if (sscanf(cmd, "TWSET led bright %d", &br) == 1 && br >= 1 && br <= 255) {
+                    s_led_bright = (uint8_t)br;
+                    led_save();
+                    s_led_shown[0] = s_led_shown[1] = s_led_shown[2] = 255;   /* redraw */
+                    k = snprintf(msg, sizeof(msg), "TWOK led brightness %u\n", s_led_bright);
+                } else if (!strcmp(cmd, "TWSET led test")) {
+                    s_led_test = 8;
+                    k = snprintf(msg, sizeof(msg), s_led_ch ? "TWOK led test: red, green, blue, three blues, "
+                                 "orange, off (8 s)\n" : "TWERR led is off: led on first\n");
+                } else {
+                    k = snprintf(msg, sizeof(msg), "TWERR led on [GPIO], led off, led bright 1..255, led test "
+                                 "(not GPIO 19, 20, 26-37)\n");
+                }
+                out_wait(msg, k);
+                hello();
             } else if (n && sscanf(cmd, "TWSET id %d", &id) == 1 && id >= 1 && id <= TW_MAX_NODES) {
                 save_id((uint8_t)id);
                 char msg[64];
@@ -709,10 +879,11 @@ static void hello(void)
     uint8_t mac[6];
     esp_efuse_mac_get_default(mac);
     char line[180];
-    /* ...,max payload, 2.2: PSRAM found (bytes; 0 = none) */
-    int k = snprintf(line, sizeof(line), "TWH,%u,%02x:%02x:%02x:%02x:%02x:%02x,%s,%s %s,%d,%lu\n", s_id,
+    /* ...,max payload, 2.2: PSRAM found (bytes; 0 = none), 2.4: the LED's pin (0 = none), brightness */
+    int k = snprintf(line, sizeof(line), "TWH,%u,%02x:%02x:%02x:%02x:%02x:%02x,%s,%s %s,%d,%lu,%u,%u\n", s_id,
                      mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], FW_VERSION, __DATE__, __TIME__,
-                     s_max_payload, (unsigned long)(esp_psram_is_initialized() ? esp_psram_get_size() : 0));
+                     s_max_payload, (unsigned long)(esp_psram_is_initialized() ? esp_psram_get_size() : 0),
+                     s_led_pin, s_led_bright);
     out(line, k);
 }
 
@@ -804,6 +975,7 @@ static void work_task(void *arg)
                     out(line, tw_format_record(a, line, sizeof(line)));
                 }
             }
+            led_second();                       /* 2.4: the LED, from the scores just closed */
             poll_commands();
         }
         if ((int32_t)(now - next_hello) >= 0) {
@@ -878,6 +1050,8 @@ void app_main(void)
     espnow_init();
     csi_init();
     apply_settings();                   /* the power kept from before a restart, if any */
+    led_load();                         /* 2.4: the LED, if this board has one set */
+    led_start();
     ESP_LOGW(TAG, "%s: board %u, address " MACSTR ", channel %d, frames up to %d bytes", FW_VERSION, s_id,
              MAC2STR(s_fake_mac), TW_CHANNEL, s_max_payload);
     xTaskCreatePinnedToCore(work_task, "tw_work", 8192, NULL, 5, NULL, 1);
