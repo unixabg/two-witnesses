@@ -5,6 +5,10 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **tw_node 2.6: version and image.** Network settings both ways (above) in
+  `tw_node-s3-ch11.bin`; includes 2.5.1. Program-only upgrade, numbers and
+  settings kept; the network keys start from each board's header settings.
+
 - **Computer side: `net_check.py RUN`** (tw_node 2.6): per board, its network
   settings on the transport against its frames' header, at each of its
   announcements, and the cabled board's own count of seconds they disagreed.

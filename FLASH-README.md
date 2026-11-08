@@ -7,10 +7,12 @@ cabled to a computer prints everything (its own measurements and those relayed
 to it), so the other boards need only a power bank.
 
 ```
-f1b662b5e311e8eaf982aac0c17e1c6039acb6b5422be1adad8700a171665f28  tw_node-s3-ch11.bin
+c4045c86b7b414583a2498b2cf8beb36dae71a5671c03054388b2dd8a765f9a6  tw_node-s3-ch11.bin
 ```
-Firmware tw_node 2.5.1: settings and commands by record (protocol 3's
-transport, docs/PROTOCOL-3.md), so a board's LED can be set, tested or tried
+Firmware tw_node 2.6: the network settings (power, relay, second frame, ...)
+travel both ways, in the header as before and on protocol 3's transport, and
+the boards count any disagreement (`net_check.py RUN`). 2.5.1: settings and
+commands by record (protocol 3's transport, docs/PROTOCOL-3.md), so a board's LED can be set, tested or tried
 over the air, for one board or all (below; 2.5: settings by record). 2.4: a board's RGB LED can show its own movement score in the
 replay's colors (off unless set: below; 2.4.1: its blues pale to deep, as the
 replay's light theme; 2.4.2: led try; 2.4.3: movement only, no orange). tw_node 2.3: frames go out on time (built ahead), the second frame
@@ -42,6 +44,7 @@ comparable with the recordings so far. Source: `firmware/tw_node/`.
 | firmware report (2.2) | every 5 s each board sends its firmware and build (TWV); `tw_setid.py PORT` shows it for every board |
 | load, memory, PSRAM (2.2) | the cabled board's TWF line says how busy each core was (`core0=`, `core1=` %), the lowest free memory (`heap_min=`) and free PSRAM (`psram_free=`); its hello says the PSRAM found (8 MB on the N16R8) |
 | second frame timing (2.2) | the cabled board times its own frames (`tx_at`, `tx_radio`, `x_wake`, `x_radio` in TWF); `second_check.py` explains them (run with `second force`) |
+| network settings both ways (2.6) | nothing to do: `power`, `relay`, `second`, `measure-second`, `cap` work as before and also travel on the transport, where every board says them every 5 s. `tw_setid.py PORT` says per board "transport agrees"; `net_check.py RUN` compares them over a run; TWF counts seconds they disagreed (`net_diff`) |
 | settings by record (2.5, 2.5.1) | `tw_setid.py PORT led on [GPIO] board N` (or `board all`; also `led off`, `led bright N`, and 2.5.1 `led test`, `led try R G B`): the board on the cable gives it, every board passes it on for 60 s, the named board(s) take it and report it (2.5.1: within a second or two; through relays a few more); tw_setid waits for that and names any board that did not (off, out of reach). `tw_setid.py PORT` shows every board's LED. The run's TWX lines are these records |
 | RGB LED (2.4) | per board, kept in its flash; over the cable: `tw_setid.py PORT led on` (GPIO 48; `led on N` for another pin), `led off` (the default), `led bright 1-255` (32), `led test` (7 s: red, green, blue, three blues, off), `led try R G B` (that color for 10 s, to choose by eye). Shows the board's own movement score on the loudest link it measures: off when quiet, faint pale blue to full deep blue as the change grows (the replay's light theme). Movement only: the replay's orange (a link's shape standing apart from its usual) is not made on the board On boards like this setup's, an "RGB" solder pad by the LED may need bridging: `led test` shows it |
 | frame timing (2.3) | a board builds its frame 800 us ahead and hands it over at its slot time; its second frame is built while the first is on the air and sent from the send-done (dropped, records kept, if it would end late); followers time the timekeeper's frames by the radio's receive time. TWF adds `build`, `rxcb`, `rx_k`, `x_cb`, `x_task`, `x_refused`, `extra_late`, `ovh`; `second_check.py` and `lag_check.py` explain them |
@@ -91,7 +94,7 @@ Board on the native USB port, in download mode (hold BOOT, tap RST, release BOOT
 Tap RST. Then check who it is (it says hello every 10 s):
 ```
 ~/scratch-esp/bin/python tw_setid.py /dev/ttyACM0
-# -> board 16, factory address 30:30:f9:xx:xx:xx, firmware tw_node 2.5.1, PSRAM 8 MB, LED off
+# -> board 16, factory address 30:30:f9:xx:xx:xx, firmware tw_node 2.6, PSRAM 8 MB, LED off
 ```
 A new board says it is board 16 and needs a number:
 `~/scratch-esp/bin/python tw_setid.py /dev/ttyACM0 1` (then 2, 3, ... for the
@@ -110,7 +113,7 @@ dd if=tw_node-s3-ch11.bin of=/tmp/tw_node-app.bin bs=4096 skip=32
 ~/scratch-esp/bin/esptool --chip esp32s3 --port /dev/ttyACM0 write-flash 0x20000 /tmp/tw_node-app.bin
 ```
 (no erase-flash). Tap RST; `tw_setid.py /dev/ttyACM0` should say
-`firmware tw_node 2.5.1` with the board's old number (and, once all are done,
+`firmware tw_node 2.6` with the board's old number (and, once all are done,
 every board's firmware). If it says board 16, write
 the whole image as above and set the number again. `tw_setid.py` tries up to three times and
 says "done" only when the board reports the new number.
