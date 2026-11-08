@@ -5,6 +5,12 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **Computer side (tw_node 3.0):** `tw_setid.py PORT` listens 11 s for every
+  board (two report periods, and time for a relayed one: 6 s missed some),
+  reads 3.0's standing entries, says "transport agrees" only for 2.6-2.7
+  boards (3.0 has one way), and never chooses generation 0. `net_check.py
+  RUN` on a 3.0 run compares each board's settings with the cabled board's.
+
 - **Firmware (tw_node 3.0): protocol 3, the lean header** (docs/PROTOCOL-3.md,
   step 3). Protocol version 3: 2.x and 3.0 boards ignore each other's frames,
   so every board is flashed together. The header drops the uptime, the network

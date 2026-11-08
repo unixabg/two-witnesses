@@ -20,6 +20,11 @@ apart; lasting ones are not.
 2.7: each board's uptime and where its last second frame ended travel in its
 once-a-second record (TWM) as well as in its frames' header (TWN, as the
 cabled board heard them): compared too. Writes RUN_FOLDER/net_check.txt too.
+
+3.0 (protocol 3): the header carries none of these any more; the transport and
+the records are their only way (TWN's fields are filled from them), so there
+is nothing to compare both ways. Instead each board's announcements are
+compared with the cabled board's latest: do all boards have the same settings?
 """
 import numpy as np
 import argparse
@@ -66,6 +71,7 @@ def main():
     xe_hdr, xe_rec = collections.defaultdict(list), collections.defaultdict(list)
     cable = None
     t0 = t1 = None
+    proto3 = False                                  # a board says it runs tw_node 3.x (TWV)
     for path in files:
         for line in A.read_lines(path):
             f = line.rstrip("\n").split(",")
@@ -90,6 +96,8 @@ def main():
                         th, uh = up_hdr[b]
                         up_n[b] += 1
                         up_bad[b] += abs(int(f[5]) - (uh + (t - th))) > 2
+                elif kind == "TWV" and len(f) >= 6 and f[5].startswith("tw_node 3"):
+                    proto3 = True
                 elif kind == "TWF":
                     d = dict(x.split("=", 1) for x in f[3:] if "=" in x)
                     if "net_diff" in d:
@@ -99,9 +107,21 @@ def main():
                     vals = {}
                     for e in f[5:]:
                         p = e.split(":")
-                        if len(p) == 6 and p[0] == "0" and p[2] == "0" and p[1].isdigit() and 16 <= int(p[1]) <= 20:
+                        # 2.6: flags 0; 3.0: 2 (standing: the board's own)
+                        if len(p) == 6 and p[0] == "0" and p[2] in ("0", "2") and p[1].isdigit() and \
+                                16 <= int(p[1]) <= 20:
                             vals[int(p[1])] = int(p[5][:2], 16) if p[5] else 0
-                    if len(vals) == 5 and b in header and header[b][0]:
+                    if len(vals) == 5 and proto3:       # 3.0: against the cabled board's own
+                        tr = tuple(vals[k] for k in range(16, 21))
+                        last[b] = tr
+                        if cable is not None and cable in last:
+                            t0 = t if t0 is None else t0
+                            t1 = t
+                            seen[b] += 1
+                            if tr != last[cable]:
+                                differ[b] += 1
+                                first_diff.setdefault(b, (t, last[cable], tr))
+                    elif len(vals) == 5 and b in header and header[b][0]:
                         t0 = t if t0 is None else t0
                         t1 = t
                         tr = tuple(vals[k] for k in range(16, 21))
@@ -120,6 +140,20 @@ def main():
         print("\n".join(L))
         return
     L.append(f"  {(t1 - t0) / 60:.1f} minutes of announcements; cabled board {cable}")
+    if proto3:
+        L += ["  protocol 3 (tw_node 3.x): the settings travel only on the transport; each board's against the",
+              "  cabled board's", "", "  board   announcements compared   differed   settings (last)"]
+        for b in sorted(seen):
+            L.append(f"  {b:>5}   {seen[b]:>22,}   {differ[b]:>8,}   {text(last[b])}")
+        for b, (t, cb, tr) in sorted(first_diff.items()):
+            L.append(f"  board {b}, first difference {t - t0:.0f} s in: cabled board {text(cb)}; board {b} {text(tr)}")
+        L += ["", "A difference or two right after a change is the change spreading (about a second a hop);",
+              "lasting ones are not."]
+        out = "\n".join(L) + "\n"
+        print(out)
+        open(os.path.join(a.folder, "net_check.txt"), "w").write(out)
+        print(f"saved {os.path.join(a.folder, 'net_check.txt')}")
+        return
     if up_n:
         L += ["", "  reports both ways (2.7): uptime in each board's record (TWM) against its header (TWN),",
               "  and where its second frames ended (median / max, us; header: as the cabled board heard it)",

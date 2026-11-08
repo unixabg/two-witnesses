@@ -133,8 +133,9 @@ def status(p, seconds):
                 for b, k, g, v in reports(f):
                     keys.setdefault(b, {})[k] = (g, v)
                 for e in f[4:]:                     # 2.6+: its network keys, said to every board
-                    q = e.strip().split(":")
-                    if len(q) == 6 and q[0] == "0" and q[2] == "0" and q[1].isdigit() and 16 <= int(q[1]) <= 20:
+                    q = e.strip().split(":")        # (flags 0; 3.0: 2, its own standing value)
+                    if len(q) == 6 and q[0] == "0" and q[2] in ("0", "2") and q[1].isdigit() and \
+                            16 <= int(q[1]) <= 20:
                         net.setdefault(int(f[1]), {})[int(q[1])] = int(q[5][:2], 16) if q[5] else 0
                 continue
             if f[0] == "TWV" and len(f) >= 6:
@@ -185,7 +186,8 @@ def show(seen):
         b = seen[k]
         relay = "" if b["relay"] is None else f", relaying {'on' if b['relay'] else 'OFF'}"
         relay += flags_text(b.get("flags"))
-        if b.get("net") and b.get("flags") is not None and b["power_q"]:
+        two_ways = not (b.get("fw") or "").startswith("tw_node 3")    # 3.0: the transport is the only way
+        if two_ways and b.get("net") and b.get("flags") is not None and b["power_q"]:
             f = b["flags"]
             hdr = (b["power_q"], 0 if f & 0x01 else 1, 2 if f & SECOND_FORCE else 1 if f & SECOND_OFF else 0,
                    1 if f & MEASURE else 0, f >> CAP_SHIFT)
@@ -228,8 +230,9 @@ def set_network(p, command, check, what):
         if cable and check(cable[0]):
             if not answered:
                 print("(its answer was lost on the way, but it reports the new setting)")
-            print("each board takes it within a second; what they report now:")
-            show(status(p, 4) or seen)
+            # 3.0: each board says its settings every 5 s (the others' come from that): 11 s shows them all
+            print("each board takes it within a second or two; what they report now:")
+            show(status(p, 11) or seen)
             return
         if cable and cable[0].get("relay") is None and what.startswith("relaying"):
             sys.exit("this board's firmware has no relaying: it needs tw_node 2.0 or later")
@@ -322,7 +325,7 @@ def main():
             sys.exit("no answer: is it running tw_node 2.4 or newer, and is this its native USB port?")
         key = {"on": K_PIN, "off": K_PIN, "bright": K_BRIGHT, "test": K_TEST, "try": K_TRY}[rest[0]]
         print("listening for each board's report (every 5 s) ...")
-        st = status(p, 7)
+        st = status(p, 11)
         def gen_of(b):                              # 2.5.1 reports; 2.5's TWV for the LED settings
             if key in st[b].get("keys", {}):
                 return st[b]["keys"][key][0]
@@ -332,10 +335,10 @@ def main():
         known = {b: gen_of(b) for b in st if gen_of(b) is not None}
         targets = sorted(known) if target == 0 else [target]
         if target and target not in known:
-            print(f"  board {target} did not report this in 7 s (not on tw_node 2.5.1, or not heard now); "
+            print(f"  board {target} did not report this in 11 s (not on tw_node 2.5.1, or not heard now); "
                   "sending anyway")
         gens = [known[b] for b in targets if b in known]
-        gen = (max(gens, default=0) + 1) % 256
+        gen = (max(gens, default=0) + 1) % 256 or 1     # 3.0: 0 is "never given"
         what = {K_PIN: "LED pin", K_BRIGHT: "LED brightness", K_TEST: "LED test", K_TRY: "LED try"}[key]
         pin_key = key == K_PIN
         done = set()
@@ -408,7 +411,8 @@ def main():
                 led = f", LED on GPIO {f[7]} (brightness {f[8].strip()})" if int(f[7]) else ", LED off"
             print(f"board {f[1]}, factory address {f[2]}, firmware {f[3]}{psram}{led}")
             print("every board:")
-            show(status(p, 6))          # 6 s: every board says its firmware every 5 s (2.2+)
+            show(status(p, 11))         # 11 s: every board says its firmware and reports every 5 s, and a
+                                        # relayed one can come a few seconds later
             return
     sys.exit("no answer: is it running tw_node, and is this its native USB port? (it says hello every 10 s)")
 
