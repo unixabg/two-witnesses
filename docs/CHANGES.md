@@ -5,6 +5,10 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **tw_node 2.4.1: version and image.** The blues (above) in
+  `tw_node-s3-ch11.bin`; otherwise as 2.4. Program-only upgrade, numbers and
+  settings (the LED's too) kept.
+
 - **Firmware (tw_node 2.4.1): the LED's blues in the replay's usual order.**
   2.4 took the dark theme's ramp, so a loud change showed near-white. Now the
   light theme's, as the replay is usually seen: faint pale blue for a small
