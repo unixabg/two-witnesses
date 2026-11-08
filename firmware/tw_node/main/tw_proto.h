@@ -101,6 +101,17 @@
 #define TW_KIND_SCORE       3           /* 2.2+: not a measurement: once a second, this board's movement
                                            score for each board it heard (q[i]: board i+1, x10; 0 =
                                            none); printed as TWM */
+#define TW_KIND_SET         4           /* 2.5+: not a measurement: settings for boards, passed on by
+                                           every board (tw_setting_*); q[] holds TW_SET_ENTRY-byte
+                                           entries: target (0 = all), key, generation, seconds left to
+                                           pass it on, value (2 bytes); printed as TWX */
+#define TW_SET_ALL          0           /* an entry's target: every board */
+#define TW_SETK_LED_PIN     1           /* keys: the LED's GPIO (0 = no LED) */
+#define TW_SETK_LED_BRIGHT  2           /*       its brightness, 1..255 */
+#define TW_SETK_N           3           /* keys 1..TW_SETK_N-1 */
+#define TW_SET_ENTRY        6
+#define TW_SET_TABLE        8           /* settings a board passes on at once */
+#define TW_SET_TTL_S        60          /* seconds a setting is passed on after it was given */
 #define TW_SCORE_BAND       4           /* subcarriers per band (as replay.py, dash.py) */
 #define TW_SCORE_BANDS      (TW_MAX_AMPS / TW_SCORE_BAND)
 #define TW_SCORE_LEARN      50          /* records that decide which bins are live */
@@ -240,6 +251,17 @@ typedef struct {
     tw_score_t score[TW_MAX_NODES + 1];
     uint32_t score_sec;
     uint8_t  score_last[TW_MAX_NODES];      /* 2.4: the last second's scores (as TWM; 0 = none) */
+    /* 2.5: settings for boards, by record (tw_setting_*): those being passed on, and this board's
+       own value and generation for each key (a newer generation wins; 8 bits, wrapping) */
+    struct {
+        uint8_t  target, key, gen, ttl;     /* ttl 0: free */
+        uint16_t val;
+    } set_tab[TW_SET_TABLE];
+    uint16_t set_val[TW_SETK_N];
+    uint8_t  set_gen[TW_SETK_N];
+    uint8_t  set_changed;                   /* keys of this board's that changed (bit = key); the
+                                               caller clears it */
+    uint32_t set_sec;
     uint8_t  xend_q;                        /* when our last extra frame ended (tw_note_sent), 20 us steps */
     uint32_t xend_us;                       /* ... and when that was (2.2: said only for 1 s after) */
     /* about each board heard, since tw_clear_counts (the firmware: once a second, after TWN) */
@@ -292,6 +314,21 @@ int      tw_peek_header(const uint8_t *buf, int len, tw_hdr_t *h);
 /* what this board says about itself in its TW_KIND_INFO records: "firmware|build" (commas and
    line ends become spaces; at most TW_INFO_MAX bytes) */
 void     tw_set_info(tw_node_t *n, const char *text);
+
+/* 2.5: settings by record. A setting is (target board or TW_SET_ALL, key, generation, value): a
+   board takes it when it is for it and its generation is newer than the one it has (8 bits,
+   wrapping), and every board passes it on once a second for TW_SET_TTL_S seconds, so it reaches
+   boards the giver does not hear. The computer chooses the generation (one more than the boards
+   report) and watches for the board to report it. */
+/* what this board starts with (from its flash) */
+void     tw_setting_init(tw_node_t *n, uint8_t key, uint16_t val, uint8_t gen);
+/* a setting given here (the board on the computer): taken here too if it is for this board, and
+   passed on */
+void     tw_setting_give(tw_node_t *n, uint8_t target, uint8_t key, uint16_t val, uint8_t gen);
+/* this board's own setting, changed here (over its cable): the next generation, not passed on */
+void     tw_setting_local(tw_node_t *n, uint8_t key, uint16_t val);
+/* a TW_KIND_SET record heard: take what is for this board, pass the rest on */
+void     tw_setting_heard(tw_node_t *n, const tw_rec_t *r);
 /* records that are not measurements, queued when due (2.2: the info record, every
    TW_INFO_EVERY_US): call about once a second; returns one record queued now (for an exit to
    print), or NULL. Call again until NULL. They take the board's ordinary record numbers, so the

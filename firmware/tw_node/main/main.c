@@ -506,6 +506,9 @@ typedef struct {
 static void relay_cb(void *ctx, const tw_rec_t *r)
 {
     const rctx_t *c = ctx;
+    if ((r->kind & TW_KIND_MASK) == TW_KIND_SET) {
+        tw_setting_heard(&s_node, r);   /* 2.5: settings for this board, or to pass on */
+    }
     if (!s_node.is_exit) {
         tw_relay_record(&s_node, c->now, c->src, r);    /* carry it on, if this board is a relay for src */
         return;
@@ -705,14 +708,55 @@ static void led_start(void)
 static void led_load(void)
 {
     nvs_handle_t h;
+    uint8_t gp = 0, gb = 0;
     if (nvs_open("tw", NVS_READONLY, &h) == ESP_OK) {
         nvs_get_u8(h, "led", &s_led_pin);
         nvs_get_u8(h, "ledb", &s_led_bright);
+        nvs_get_u8(h, "lgp", &gp);          /* 2.5: the settings' generations */
+        nvs_get_u8(h, "lgb", &gb);
         nvs_close(h);
     }
     if (!s_led_bright) {
         s_led_bright = LED_BRIGHT_DEFAULT;
     }
+    tw_setting_init(&s_node, TW_SETK_LED_PIN, s_led_pin, gp);
+    tw_setting_init(&s_node, TW_SETK_LED_BRIGHT, s_led_bright, gb);
+}
+
+/* 2.5: what the board says about itself every 5 s (TWV): firmware, build, and its LED setting
+   with the generations, so the computer can see every board's and choose the next generation */
+static void info_update(void)
+{
+    char t[TW_INFO_MAX + 1];
+    snprintf(t, sizeof(t), "%s|%s %s|%u|%u|%u|%u", FW_VERSION, __DATE__, __TIME__, s_led_pin, s_led_bright,
+             s_node.set_gen[TW_SETK_LED_PIN], s_node.set_gen[TW_SETK_LED_BRIGHT]);
+    tw_set_info(&s_node, t);
+}
+
+static void led_save(void);
+static void led_start(void);
+
+/* the board's LED settings changed (over its cable, or by a settings record): take them */
+static void led_apply(void)
+{
+    uint8_t ch = s_node.set_changed;
+    s_node.set_changed = 0;
+    if (!(ch & ((1u << TW_SETK_LED_PIN) | (1u << TW_SETK_LED_BRIGHT)))) {
+        return;
+    }
+    uint16_t pin = s_node.set_val[TW_SETK_LED_PIN], br = s_node.set_val[TW_SETK_LED_BRIGHT];
+    uint8_t new_pin = (uint8_t)(pin <= 48 && led_pin_ok(pin) ? pin : 0);   /* a pin it must not drive: none */
+    uint8_t new_br = (uint8_t)(br >= 1 && br <= 255 ? br : s_led_bright);
+    int restart = new_pin != s_led_pin;
+    s_led_pin = new_pin;
+    s_led_bright = new_br;
+    led_save();
+    if (restart) {
+        led_start();
+    } else {
+        s_led_shown[0] = s_led_shown[1] = s_led_shown[2] = 255;   /* redraw */
+    }
+    info_update();
 }
 
 static void led_save(void)
@@ -721,6 +765,8 @@ static void led_save(void)
     if (nvs_open("tw", NVS_READWRITE, &h) == ESP_OK) {
         nvs_set_u8(h, "led", s_led_pin);
         nvs_set_u8(h, "ledb", s_led_bright);
+        nvs_set_u8(h, "lgp", s_node.set_gen[TW_SETK_LED_PIN]);
+        nvs_set_u8(h, "lgb", s_node.set_gen[TW_SETK_LED_BRIGHT]);
         nvs_commit(h);
         nvs_close(h);
     }
@@ -827,27 +873,31 @@ static void poll_commands(void)
                 }
                 out_wait(msg, k);
             } else if (n && !strncmp(cmd, "TWSET led ", 10)) {
-                /* 2.4: this board's LED only (kept in its flash; not spread to the others) */
-                char msg[128];
-                int k, pin, br, tr, tg, tb;
+                /* 2.4: this board's LED (kept in its flash). 2.5: "... board N gen G" gives it to
+                   board N (0 = all) by settings record instead, generation G (the computer
+                   chooses it: one more than the board reports) */
+                char msg[128], *bd = strstr(cmd, " board ");
+                int k = 0, pin, br, tr, tg, tb, target = -1, gen = -1, key = 0, val = 0;
+                if (bd) {
+                    if (sscanf(bd, " board %d gen %d", &target, &gen) != 2 || target < 0 ||
+                        target > TW_MAX_NODES || gen < 0 || gen > 255) {
+                        target = -2;
+                    }
+                    *bd = 0;                    /* the rest is the setting itself */
+                }
                 if (!strcmp(cmd, "TWSET led off")) {
-                    s_led_pin = 0;
-                    led_save();
-                    led_start();
-                    k = snprintf(msg, sizeof(msg), "TWOK led off\n");
-                } else if (!strcmp(cmd, "TWSET led on") ||
-                           (sscanf(cmd, "TWSET led on %d", &pin) == 1 && led_pin_ok(pin) && pin > 0)) {
-                    s_led_pin = (uint8_t)(strcmp(cmd, "TWSET led on") ? pin : LED_PIN_DEFAULT);
-                    led_save();
-                    led_start();
-                    k = snprintf(msg, sizeof(msg), "TWOK led on GPIO %u, brightness %u%s\n", s_led_pin,
-                                 s_led_bright, s_led_ch ? "" : " (could not start it)");
+                    key = TW_SETK_LED_PIN;
+                    val = 0;
+                } else if (!strcmp(cmd, "TWSET led on")) {
+                    key = TW_SETK_LED_PIN;
+                    val = LED_PIN_DEFAULT;
+                } else if (sscanf(cmd, "TWSET led on %d", &pin) == 1 && led_pin_ok(pin) && pin > 0) {
+                    key = TW_SETK_LED_PIN;
+                    val = pin;
                 } else if (sscanf(cmd, "TWSET led bright %d", &br) == 1 && br >= 1 && br <= 255) {
-                    s_led_bright = (uint8_t)br;
-                    led_save();
-                    s_led_shown[0] = s_led_shown[1] = s_led_shown[2] = 255;   /* redraw */
-                    k = snprintf(msg, sizeof(msg), "TWOK led brightness %u\n", s_led_bright);
-                } else if (sscanf(cmd, "TWSET led try %d %d %d", &tr, &tg, &tb) == 3 &&
+                    key = TW_SETK_LED_BRIGHT;
+                    val = br;
+                } else if (target == -1 && sscanf(cmd, "TWSET led try %d %d %d", &tr, &tg, &tb) == 3 &&
                            tr >= 0 && tr <= 255 && tg >= 0 && tg <= 255 && tb >= 0 && tb <= 255) {
                     /* 2.4.2: show a color as given (red, green, blue; not scaled by the brightness)
                        for 10 seconds, then back to what the LED shows: to choose colors by eye */
@@ -858,14 +908,31 @@ static void poll_commands(void)
                     s_led_test = 0;
                     k = snprintf(msg, sizeof(msg), s_led_ch ? "TWOK led try %d %d %d (10 s)\n" :
                                  "TWERR led is off: led on first\n", tr, tg, tb);
-                } else if (!strcmp(cmd, "TWSET led test")) {
+                } else if (target == -1 && !strcmp(cmd, "TWSET led test")) {
                     s_led_test = 7;
                     s_led_try = 0;
                     k = snprintf(msg, sizeof(msg), s_led_ch ? "TWOK led test: red, green, blue, three blues, "
                                  "off (7 s)\n" : "TWERR led is off: led on first\n");
-                } else {
-                    k = snprintf(msg, sizeof(msg), "TWERR led on [GPIO], led off, led bright 1..255, led test, "
-                                 "led try R G B (0..255; not GPIO 19, 20, 26-37)\n");
+                }
+                if (key && target == -1) {      /* this board, over its cable */
+                    tw_setting_local(&s_node, (uint8_t)key, (uint16_t)val);
+                    led_apply();
+                    if (s_led_pin) {
+                        k = snprintf(msg, sizeof(msg), "TWOK led on GPIO %u, brightness %u%s\n", s_led_pin,
+                                     s_led_bright, s_led_ch ? "" : " (could not start it)");
+                    } else {
+                        k = snprintf(msg, sizeof(msg), "TWOK led off (brightness %u)\n", s_led_bright);
+                    }
+                } else if (key && target >= 0) {   /* given to board N (0: all) by settings record */
+                    tw_setting_give(&s_node, (uint8_t)target, (uint8_t)key, (uint16_t)val, (uint8_t)gen);
+                    led_apply();                /* if it was for this board too */
+                    char who[12];
+                    snprintf(who, sizeof(who), target ? "board %d" : "all boards", target);
+                    k = snprintf(msg, sizeof(msg), "TWOK led %s %d given to %s, generation %d\n",
+                                 key == TW_SETK_LED_PIN ? "pin" : "brightness", val, who, gen);
+                } else if (!k) {
+                    k = snprintf(msg, sizeof(msg), "TWERR led on [GPIO], led off, led bright 1..255 [board N gen G], "
+                                 "led test, led try R G B (not GPIO 19, 20, 26-37)\n");
                 }
                 out_wait(msg, k);
                 hello();
@@ -986,6 +1053,7 @@ static void work_task(void *arg)
                     out(line, tw_format_record(a, line, sizeof(line)));
                 }
             }
+            led_apply();                        /* 2.5: settings that came by record */
             led_second();                       /* 2.4: the LED, from the scores just closed */
             poll_commands();
         }
@@ -1062,6 +1130,7 @@ void app_main(void)
     csi_init();
     apply_settings();                   /* the power kept from before a restart, if any */
     led_load();                         /* 2.4: the LED, if this board has one set */
+    info_update();                      /* 2.5: and say so in the TWV report */
     led_start();
     ESP_LOGW(TAG, "%s: board %u, address " MACSTR ", channel %d, frames up to %d bytes", FW_VERSION, s_id,
              MAC2STR(s_fake_mac), TW_CHANNEL, s_max_payload);

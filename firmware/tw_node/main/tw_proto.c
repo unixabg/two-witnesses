@@ -818,6 +818,127 @@ static tw_rec_t *queue_aux(tw_node_t *n, uint32_t now, uint8_t kind, const uint8
     return r;
 }
 
+/* ---------------- 2.5: settings by record ---------------- */
+static int gen_newer(uint8_t a, uint8_t b)
+{
+    return (int8_t)(uint8_t)(a - b) > 0;
+}
+
+static void setting_take(tw_node_t *n, uint8_t target, uint8_t key, uint16_t val, uint8_t gen)
+{
+    if (key == 0 || key >= TW_SETK_N || !(target == TW_SET_ALL || target == n->id)) {
+        return;
+    }
+    if (gen_newer(gen, n->set_gen[key])) {
+        n->set_gen[key] = gen;
+        if (n->set_val[key] != val) {
+            n->set_val[key] = val;
+        }
+        n->set_changed |= (uint8_t)(1u << key);   /* the generation changed: keep it, report it */
+    }
+}
+
+/* into the table of settings passed on: a newer generation replaces, the same keeps the longer
+   time left (each board counts it down, so it ends) */
+static void setting_keep(tw_node_t *n, uint8_t target, uint8_t key, uint16_t val, uint8_t gen, uint8_t ttl)
+{
+    int free_i = -1, low_i = 0;
+    for (int i = 0; i < TW_SET_TABLE; i++) {
+        if (n->set_tab[i].ttl && n->set_tab[i].target == target && n->set_tab[i].key == key) {
+            if (gen_newer(gen, n->set_tab[i].gen)) {
+                n->set_tab[i].gen = gen;
+                n->set_tab[i].val = val;
+                n->set_tab[i].ttl = ttl;
+            } else if (gen == n->set_tab[i].gen && ttl > n->set_tab[i].ttl) {
+                n->set_tab[i].ttl = ttl;
+            }
+            return;
+        }
+        if (!n->set_tab[i].ttl && free_i < 0) {
+            free_i = i;
+        }
+        if (n->set_tab[i].ttl < n->set_tab[low_i].ttl) {
+            low_i = i;
+        }
+    }
+    int i = free_i >= 0 ? free_i : low_i;       /* full: the one nearest its end makes room */
+    n->set_tab[i].target = target;
+    n->set_tab[i].key = key;
+    n->set_tab[i].gen = gen;
+    n->set_tab[i].val = val;
+    n->set_tab[i].ttl = ttl;
+}
+
+void tw_setting_init(tw_node_t *n, uint8_t key, uint16_t val, uint8_t gen)
+{
+    if (key && key < TW_SETK_N) {
+        n->set_val[key] = val;
+        n->set_gen[key] = gen;
+    }
+}
+
+void tw_setting_give(tw_node_t *n, uint8_t target, uint8_t key, uint16_t val, uint8_t gen)
+{
+    if (key == 0 || key >= TW_SETK_N || target > TW_MAX_NODES) {
+        return;
+    }
+    setting_take(n, target, key, val, gen);
+    if (target != n->id) {
+        setting_keep(n, target, key, val, gen, TW_SET_TTL_S);
+    }
+}
+
+void tw_setting_local(tw_node_t *n, uint8_t key, uint16_t val)
+{
+    if (key && key < TW_SETK_N) {
+        setting_take(n, n->id, key, val, (uint8_t)(n->set_gen[key] + 1));
+    }
+}
+
+void tw_setting_heard(tw_node_t *n, const tw_rec_t *r)
+{
+    if ((r->kind & TW_KIND_MASK) != TW_KIND_SET || r->rx == n->id) {
+        return;
+    }
+    for (int i = 0; i + TW_SET_ENTRY <= r->n; i += TW_SET_ENTRY) {
+        const uint8_t *e = r->q + i;
+        uint8_t target = e[0], key = e[1], gen = e[2], ttl = e[3];
+        uint16_t val = (uint16_t)(e[4] | (e[5] << 8));
+        if (key == 0 || key >= TW_SETK_N || target > TW_MAX_NODES || ttl == 0) {
+            continue;
+        }
+        setting_take(n, target, key, val, gen);
+        if (target != n->id) {
+            setting_keep(n, target, key, val, gen, ttl);
+        }
+    }
+}
+
+/* once a second: what is being passed on, as one record (each entry's time left counted down) */
+static tw_rec_t *setting_record(tw_node_t *n, uint32_t now)
+{
+    uint8_t q[TW_SET_TABLE * TW_SET_ENTRY];
+    int len = 0;
+    for (int i = 0; i < TW_SET_TABLE; i++) {
+        if (!n->set_tab[i].ttl) {
+            continue;
+        }
+        n->set_tab[i].ttl--;
+        if (!n->set_tab[i].ttl) {
+            continue;
+        }
+        uint8_t *e = q + len;
+        e[0] = n->set_tab[i].target;
+        e[1] = n->set_tab[i].key;
+        e[2] = n->set_tab[i].gen;
+        e[3] = n->set_tab[i].ttl;
+        e[4] = (uint8_t)(n->set_tab[i].val & 0xff);
+        e[5] = (uint8_t)(n->set_tab[i].val >> 8);
+        len += TW_SET_ENTRY;
+    }
+    return len ? queue_aux(n, now, TW_KIND_SET, q, len) : NULL;
+}
+
 /* one record into the score of board tx (a normal frame's measurement) */
 static void score_add(tw_node_t *n, uint8_t tx, const tw_rec_t *r)
 {
@@ -911,6 +1032,13 @@ const tw_rec_t *tw_aux_record(tw_node_t *n, uint32_t now)
         if (any) {
             tw_rec_t *r = queue_aux(n, now, TW_KIND_SCORE, sc, TW_MAX_NODES);
             r->txseq = sec;                     /* this board's uptime, s */
+            return r;
+        }
+    }
+    if (sec != n->set_sec) {                    /* 2.5: once a second, the settings passed on */
+        n->set_sec = sec;
+        tw_rec_t *r = setting_record(n, now);
+        if (r) {
             return r;
         }
     }
@@ -1072,6 +1200,20 @@ int tw_format_record(const tw_rec_t *r, char *out, int max)
         }
         text[n] = 0;
         return snprintf(out, (size_t)max, "TWV,%u,%u,%lu,%s\n", r->rx, r->boot, (unsigned long)r->recseq, text);
+    }
+    if ((r->kind & TW_KIND_MASK) == TW_KIND_SET) {
+        /* TWX,board,boot,record number,target:key:generation:seconds left:value,... */
+        int k = snprintf(out, (size_t)max, "TWX,%u,%u,%lu", r->rx, r->boot, (unsigned long)r->recseq);
+        for (int i = 0; i + TW_SET_ENTRY <= r->n && k > 0 && k < max - 24; i += TW_SET_ENTRY) {
+            const uint8_t *e = r->q + i;
+            k += snprintf(out + k, (size_t)(max - k), ",%u:%u:%u:%u:%u", e[0], e[1], e[2], e[3],
+                          (unsigned)(e[4] | (e[5] << 8)));
+        }
+        if (k > 0 && k < max - 1) {
+            out[k++] = '\n';
+            out[k] = 0;
+        }
+        return k;
     }
     if ((r->kind & TW_KIND_MASK) == TW_KIND_SCORE) {
         /* TWM,board,boot,record number,its uptime s,the timekeeper's clock,score of board 1..16 (x10) */

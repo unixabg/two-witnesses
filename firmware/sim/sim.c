@@ -198,6 +198,9 @@ static uint8_t cur_src;
 static void on_record(void *ctx, const tw_rec_t *r)
 {
     rctx_t *c = ctx;
+    if ((r->kind & TW_KIND_MASK) == TW_KIND_SET) {
+        tw_setting_heard(&c->self->st, r);          /* 2.5: as the firmware's relay_cb */
+    }
     if (!c->self->exit) {
         tw_relay_record(&c->self->st, local_us(c->self, c->t), cur_src, r);
         return;
@@ -210,6 +213,13 @@ static void on_record(void *ctx, const tw_rec_t *r)
     }
 }
 
+/* 2.5: --give T@TARGET:KEY:VAL:GEN,...: the exit gives a setting by record at T seconds; the
+   summary says when each board took it */
+#define MAXGIVE 8
+static struct { double t; int target, key, val, gen, done; } give[MAXGIVE];
+static int n_give;
+static double took_t[MAXN + 1][TW_SETK_N];
+
 static int parse_args(int argc, char **argv, char *kill_spec, char *exit_spec, unsigned *seed, char **outpath)
 {
     for (int i = 1; i < argc; i++) {
@@ -221,6 +231,15 @@ static int parse_args(int argc, char **argv, char *kill_spec, char *exit_spec, u
         else if (!strcmp(argv[i], "--kill") && i + 1 < argc) strncpy(kill_spec, argv[++i], 255);
         else if (!strcmp(argv[i], "--seed") && i + 1 < argc) *seed = (unsigned)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--realtime")) realtime = 1;
+        else if (!strcmp(argv[i], "--give") && i + 1 < argc) {
+            for (char *p = argv[++i]; *p && n_give < MAXGIVE;) {
+                if (sscanf(p, "%lf@%d:%d:%d:%d", &give[n_give].t, &give[n_give].target, &give[n_give].key,
+                           &give[n_give].val, &give[n_give].gen) == 5) n_give++;
+                else { fprintf(stderr, "--give T@TARGET:KEY:VAL:GEN\n"); return -1; }
+                while (*p && *p != ',') p++;
+                if (*p == ',') p++;
+            }
+        }
         else if (!strcmp(argv[i], "--late") && i + 1 < argc) {
             late = 1;                   /* "measured", or KEY=VALUE,... over the measured values */
             for (char *p = argv[++i]; *p;) {
@@ -365,6 +384,23 @@ int main(int argc, char **argv)
     clock_gettime(CLOCK_MONOTONIC, &wall0);
 
     while (t < end) {
+        /* 2.5: settings given at the exit, and which boards took them when */
+        for (int g = 0; g < n_give; g++) {
+            if (!give[g].done && t >= give[g].t * 1e6) {
+                give[g].done = 1;
+                int ex = first_exit();
+                tw_setting_give(&N_[ex].st, (uint8_t)give[g].target, (uint8_t)give[g].key,
+                                (uint16_t)give[g].val, (uint8_t)give[g].gen);
+            }
+        }
+        if (n_give) {
+            for (int id = 1; id <= n_nodes; id++) {
+                uint8_t ch = N_[id].st.set_changed;
+                N_[id].st.set_changed = 0;
+                for (int k = 1; k < TW_SETK_N; k++)
+                    if (ch & (1u << k)) took_t[id][k] = t / 1e6;
+            }
+        }
         /* next sender: a board's slot, or the extra frame it has pending */
         /* ev: 0 build the normal frame, 1 build the extra one, 2 (--late) a built frame asks for the air */
         int who = 0, is_extra = 0, ev = 0;
@@ -739,6 +775,16 @@ int main(int argc, char **argv)
                     LS(q->f_xradio), LS(q->f_xend), q->f_len.n ? q->f_len.sum / q->f_len.n : 0.0,
                     q->f_xlen.n ? q->f_xlen.sum / q->f_xlen.n : 0.0, (unsigned long)q->st.n_extra_late);
 #undef LS
+        }
+    }
+    if (n_give) {
+        fprintf(stderr, "}, \"given\": {");
+        for (int id = 1; id <= n_nodes; id++) {
+            fprintf(stderr, "%s\"%d\": [", id > 1 ? ", " : "", id);
+            for (int k = 1; k < TW_SETK_N; k++)
+                fprintf(stderr, "%s[%u, %u, %.2f]", k > 1 ? ", " : "", N_[id].st.set_val[k], N_[id].st.set_gen[k],
+                        took_t[id][k]);
+            fprintf(stderr, "]");
         }
     }
     fprintf(stderr, "}, \"extra\": {");

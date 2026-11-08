@@ -5,6 +5,20 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **Firmware (tw_node 2.5): settings by record, for one board or all.** A new
+  record kind (`TW_KIND_SET`, printed as TWX) carries entries "for board N (or
+  all): key = value, generation G". The board on the computer gives them
+  (`TWSET led on|off|bright ... board N gen G`); every board passes on what it
+  has heard once a second for 60 s, so a setting reaches boards that do not
+  hear the giver; a board takes an entry for it when its generation is newer
+  than its own (8 bits, wrapping), so a late stale copy changes nothing. The
+  first keys: the LED's pin and brightness. Each board's report (TWV) adds
+  its LED pin, brightness and their generations, for the computer to choose
+  the next generation and see the setting taken. The frame header and the
+  protocol version are unchanged. Simulator (`--give`): a board that cannot
+  hear the giver took it in 0.6 s through the others; a board off for 40 s
+  took it on return (off for 80 s: missed, as designed).
+
 - **tw_node 2.4.3: version and image.** Movement only (above) in
   `tw_node-s3-ch11.bin`; otherwise as 2.4.2. Program-only upgrade, the LED
   setting kept.
