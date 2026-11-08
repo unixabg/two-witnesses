@@ -24,6 +24,13 @@ so boards are reflashed as rarely as possible.
   followers are still 1.1-1.5 ms behind: a frame is stamped when built, about
   1 ms before the air, and the receive callback the clock uses comes about
   0.5 ms after the air.
+- **Protocol 3** (docs/PROTOCOL-3.md, design): one transport for settings and
+  commands (records with keys: board settings, standing network settings,
+  one-time actions; for board N or all; confirmed by each board's reports),
+  and a header that keeps only what each frame needs (5 bytes reserved for
+  the unknown). In steps: 2.5.1 the LED's actions over the air, 2.6 network
+  settings both ways, 2.7 reports both ways, 3.0 the header. Any new setting
+  or command is a key on the transport.
 - **Frame timing (tw_node 2.3)**: docs/TIMING-2.3.md. Simulator, fitted to
   the boards: no cost up to 6 boards; above 6, even in normal running, the
   last board's frames run into the timekeeper's slot (8 boards: 150

@@ -5,6 +5,14 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **Design: protocol 3 (docs/PROTOCOL-3.md), no firmware.** One transport for
+  settings and commands, built on 2.5's settings record: variable-length
+  entries, three classes of key (board, standing network, action), reports for
+  confirmation; the header keeps the per-frame fields, the network settings,
+  uptime and the second-frame diagnostic move out, the clock delay gets its
+  own byte, five bytes stay reserved. Four steps, each checked before the
+  next.
+
 - **tw_node 2.5: version and image.** Settings by record (above) in
   `tw_node-s3-ch11.bin`; otherwise as 2.4.3. Program-only upgrade, numbers and
   settings kept. A board on older firmware passes the records on but does not
