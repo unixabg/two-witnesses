@@ -2,10 +2,12 @@
  * SPDX-License-Identifier: Apache-2.0
  *
  * tw_led: what a board's RGB LED shows (tw_node 2.4): its own movement score (tw_proto.c,
- * 2.2) on the loudest link it measures, in the replay's colors (replay.py, dark theme):
+ * 2.2) on the loudest link it measures, in the replay's colors (replay.py, light theme):
  *   quiet (score under 1.15 x the quiet level, as the replay)      off
- *   change                                                          the blue ramp, dim blue to
- *                                                                   bright pale blue at 6 x quiet
+ *   change                                                          the blue ramp: faint pale blue
+ *                                                                   to full deep blue at 6 x quiet
+ *                                                                   (2.4.1; 2.4 ran the dark theme's
+ *                                                                   ramp, loud showing near-white)
  *   a lasting change (a link above quiet over 60 s, until the board's quiet level has
  *   relearned it: as the replay's orange mark)                      orange
  * A fresh change on another link shows over orange. Plain C, no ESP-IDF: main.c drives the LED;
@@ -34,8 +36,8 @@ void tw_led_step(tw_led_state_t *st, const uint8_t score[TW_LED_LINKS], uint8_t 
 /* the color in the replay's terms (sRGB, 0..255): off, the ramp, or orange */
 void tw_led_srgb(uint8_t score, int orange, uint8_t out[3]);
 
-/* what goes to the LED: that color made linear for the LED (gamma 2.2) and scaled so that full
-   white would be `bright` (1..255) on each of red, green and blue */
+/* what goes to the LED: that color's hue made linear for the LED (gamma 2.2), at a strength that
+   grows with the change (a quarter of `bright`, 1..255, at quiet; all of it at 6 x quiet) */
 void tw_led_color(uint8_t score, int orange, uint8_t bright, uint8_t out[3]);
 
 #endif
