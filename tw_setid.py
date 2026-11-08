@@ -17,7 +17,7 @@
     ~/scratch-esp/bin/python tw_setid.py PORT led on [GPIO]   THIS board's RGB LED on (GPIO 48 if not given; tw_node 2.4)
     ~/scratch-esp/bin/python tw_setid.py PORT led off         THIS board's LED off (the default)
     ~/scratch-esp/bin/python tw_setid.py PORT led bright N    its brightness, 1-255 (32 by default)
-    ~/scratch-esp/bin/python tw_setid.py PORT led test        red, green, blue, three blues, orange, off (8 s)
+    ~/scratch-esp/bin/python tw_setid.py PORT led test        red, green, blue, three blues, off (7 s)
     ~/scratch-esp/bin/python tw_setid.py PORT led try R G B   that color (0-255 each) for 10 s, to choose by eye (2.4.2)
     e.g. ~/scratch-esp/bin/python tw_setid.py /dev/ttyACM0 power 11
 
@@ -37,8 +37,8 @@ network settings too, kept in flash: after a test put them back
 
 The LED (tw_node 2.4) is not a network setting: it is set for the board on the
 cable only, and kept in its flash. It shows the board's own movement score in
-the replay's colors: off when quiet, blue to pale blue as it changes, orange for
-a lasting change. Boards without one keep it off. On boards like the ones in
+the replay's colors: off when quiet, faint pale blue to full deep blue as the
+movement grows. Boards without one keep it off. On boards like the ones in
 this setup the LED is on GPIO 48; on some, an "RGB" solder pad next to it must
 be bridged first (led test shows whether it lights).
 

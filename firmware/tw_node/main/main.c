@@ -634,7 +634,6 @@ static void handle(ev_t *ev)
 static uint8_t s_led_pin, s_led_bright = LED_BRIGHT_DEFAULT;     /* pin 0: no LED */
 static rmt_channel_handle_t s_led_ch;
 static rmt_encoder_handle_t s_led_enc;
-static tw_led_state_t s_led_st;
 static uint8_t s_led_test;                      /* seconds of the test sequence left */
 static uint8_t s_led_try, s_led_try_rgb[3];     /* 2.4.2: seconds of a color to try left, and it */
 static uint8_t s_led_shown[3];
@@ -738,29 +737,19 @@ static void led_second(void)
         s_led_try--;                    /* 2.4.2: exactly the numbers given, for 10 seconds */
         memcpy(c, s_led_try_rgb, 3);
     } else if (s_led_test) {
-        /* red, green, blue, then the ramp (1.5, 3, 6 x quiet) and orange, then off */
+        /* red, green, blue, then the ramp (1.5, 3, 6 x quiet), then off */
         static const uint8_t prim[3][3] = {{255, 0, 0}, {0, 255, 0}, {0, 0, 255}};
         static const uint8_t ramp[3] = {15, 30, 60};
-        int step = 8 - s_led_test--;
+        int step = 7 - s_led_test--;
         if (step < 3) {
             for (int k = 0; k < 3; k++) {
                 c[k] = (uint8_t)((prim[step][k] * s_led_bright) / 255);
             }
-        } else if (step < 6) {
-            tw_led_color(ramp[step - 3], 0, s_led_bright, c);
         } else {
-            tw_led_color(0, step == 6, s_led_bright, c);
+            tw_led_color(step < 6 ? ramp[step - 3] : 0, s_led_bright, c);
         }
     } else {
-        static uint8_t blink;
-        uint8_t show;
-        int orange;
-        tw_led_step(&s_led_st, s_node.score_last, &show, &orange);
-        tw_led_color(show, orange, s_led_bright, c);
-        blink = orange ? !blink : 0;
-        if (orange && !blink) {
-            memset(c, 0, 3);            /* 2.4.2: orange blinks, one second on, one off */
-        }
+        tw_led_color(tw_led_pick(s_node.score_last), s_led_bright, c);
     }
     if (memcmp(c, s_led_shown, 3)) {
         led_show(c);
@@ -870,10 +859,10 @@ static void poll_commands(void)
                     k = snprintf(msg, sizeof(msg), s_led_ch ? "TWOK led try %d %d %d (10 s)\n" :
                                  "TWERR led is off: led on first\n", tr, tg, tb);
                 } else if (!strcmp(cmd, "TWSET led test")) {
-                    s_led_test = 8;
+                    s_led_test = 7;
                     s_led_try = 0;
                     k = snprintf(msg, sizeof(msg), s_led_ch ? "TWOK led test: red, green, blue, three blues, "
-                                 "orange, off (8 s)\n" : "TWERR led is off: led on first\n");
+                                 "off (7 s)\n" : "TWERR led is off: led on first\n");
                 } else {
                     k = snprintf(msg, sizeof(msg), "TWERR led on [GPIO], led off, led bright 1..255, led test, "
                                  "led try R G B (0..255; not GPIO 19, 20, 26-37)\n");

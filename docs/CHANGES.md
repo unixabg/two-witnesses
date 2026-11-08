@@ -5,6 +5,13 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **Firmware (tw_node 2.4.3): the LED shows movement only; orange is gone.**
+  2.4's orange counted a minute of movement as a lasting change, which is not
+  what the replay's orange means (a link's shape standing apart from its usual,
+  with nothing moving): a different measurement, not made on the board. For
+  now the LED is off when quiet and on the blue ramp when something moves;
+  `led test` is red, green, blue, three blues, off (7 s).
+
 - **tw_node 2.4.2: version and image.** The orange and `led try` (above) in
   `tw_node-s3-ch11.bin`; otherwise as 2.4.1. Program-only upgrade.
 
