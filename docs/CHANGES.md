@@ -5,6 +5,11 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **tw_node 2.5: version and image.** Settings by record (above) in
+  `tw_node-s3-ch11.bin`; otherwise as 2.4.3. Program-only upgrade, numbers and
+  settings kept. A board on older firmware passes the records on but does not
+  take them: flash every board.
+
 - **Computer side: `tw_setid.py PORT led on|off|bright ... board N|all`**
   (tw_node 2.5): reads every board's LED setting and generation from their
   reports, gives the next generation, and waits until the board(s) report it
