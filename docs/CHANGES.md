@@ -5,6 +5,9 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **tw_node 2.4.2: version and image.** The orange and `led try` (above) in
+  `tw_node-s3-ch11.bin`; otherwise as 2.4.1. Program-only upgrade.
+
 - **Computer side: `tw_setid.py PORT led try R G B`** (tw_node 2.4.2).
 
 - **Firmware (tw_node 2.4.2): `TWSET led try R G B`** shows exactly that color
