@@ -5,6 +5,10 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **tw_node 2.5.1: version and image.** The transport (above) in
+  `tw_node-s3-ch11.bin`. Program-only upgrade, numbers and settings kept.
+  Flash every board: 2.5 boards pass the new records on but do not take them.
+
 - **Computer side: `tw_setid.py` reads the boards' reports (TWX, tw_node
   2.5.1)** to show every board's LED and to confirm a change; `led test` and
   `led try R G B` take `board N|all` too. Boards on 2.5 still answer through

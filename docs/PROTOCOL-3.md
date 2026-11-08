@@ -1,7 +1,8 @@
 # Protocol 3: a lean frame header, and one transport for settings and commands
 
-Status: design, 2026-11-08. No firmware yet; each step below is built and
-checked (simulator, then a real night) before the next.
+Status: design, 2026-11-08. Step 0 built (tw_node 2.5.1, simulator
+checked; real boards to come); each step is built and checked (simulator,
+then a real night) before the next.
 
 ## Why
 
