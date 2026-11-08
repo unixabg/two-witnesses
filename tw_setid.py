@@ -19,8 +19,9 @@
     ~/scratch-esp/bin/python tw_setid.py PORT led bright N    its brightness, 1-255 (32 by default)
     ~/scratch-esp/bin/python tw_setid.py PORT led test        red, green, blue, three blues, off (7 s)
     ~/scratch-esp/bin/python tw_setid.py PORT led try R G B   that color (0-255 each) for 10 s, to choose by eye (2.4.2)
-    ~/scratch-esp/bin/python tw_setid.py PORT led on|off|bright ... board N|all
-                                                          the same for board N, or every board, over the air (2.5)
+    ~/scratch-esp/bin/python tw_setid.py PORT led on|off|bright|test|try ... board N|all
+                                                          the same for board N, or every board, over the air
+                                                          (2.5; test and try 2.5.1)
     e.g. ~/scratch-esp/bin/python tw_setid.py /dev/ttyACM0 power 11
 
 Board number: the board stores it in its flash and restarts; erase-flash clears it.
@@ -56,6 +57,18 @@ import time
 import serial
 
 TRIES = 3
+K_PIN, K_BRIGHT, K_TEST, K_TRY = 1, 2, 3, 4      # keys (docs/PROTOCOL-3.md, tw_proto.h TW_K_*)
+
+
+def reports(f):
+    """a TWX line's report entries (2.5.1+: target:key:flags:generation:seconds:value hex, flag 1):
+    [(board, key, generation, value bytes)]"""
+    out = []
+    for e in f[4:]:
+        p = e.strip().split(":")
+        if len(p) == 6 and p[2].isdigit() and int(p[2]) & 1:
+            out.append((int(p[0]), int(p[1]), int(p[3]), bytes.fromhex(p[5])))
+    return out
 SECOND_OFF, SECOND_FORCE, MEASURE, CAP_SHIFT = 0x02, 0x04, 0x08, 4     # setting flags (tw_proto.h)
 
 
@@ -112,10 +125,14 @@ def status(p, seconds):
     """what every board reports: TWS for the board on the cable, TWN for each board it hears.
     -> {board: dict(set_seq, power_q, relay, heard, cable, fw)}. fw: what the board says it runs
     (tw_node 2.2+: TWV, every 5 s; None if it did not say in time)"""
-    seen, fw, led = {}, {}, {}
+    seen, fw, led, keys = {}, {}, {}, {}
     for line in p.lines(seconds):
         f = line.split(",")
         try:
+            if f[0] == "TWX":                       # 2.5.1+: report entries: a board's own keys
+                for b, k, g, v in reports(f):
+                    keys.setdefault(b, {})[k] = (g, v)
+                continue
             if f[0] == "TWV" and len(f) >= 6:
                 fw[int(f[1])] = f"{f[4]} (built {f[5]})"
                 if len(f) >= 10:                    # 2.5+: its LED pin, brightness, generations
@@ -133,7 +150,12 @@ def status(p, seconds):
                                        flags=int(f[13]) if len(f) >= 14 else None)     # 2.1+
         except (ValueError, IndexError):
             pass
+    for k, kv in keys.items():                      # the reports are the newer word on the LED
+        if K_PIN in kv and K_BRIGHT in kv:
+            led[k] = (kv[K_PIN][1][0] if kv[K_PIN][1] else 0, kv[K_BRIGHT][1][0] if kv[K_BRIGHT][1] else 32,
+                      kv[K_PIN][0], kv[K_BRIGHT][0])
     for k, b in seen.items():
+        b["keys"] = keys.get(k, {})
         b["led"] = led.get(k)
         b["fw"] = fw.get(k)
         b["fw_known"] = bool(fw)        # someone said: a board that did not is older (or missed)
@@ -208,7 +230,7 @@ def set_network(p, command, check, what):
 
 def main():
     a = sys.argv[1:]
-    if not a or len(a) > 6:
+    if not a or len(a) > 8:
         sys.exit(__doc__)
     p = Port(a[0])
 
@@ -274,7 +296,7 @@ def main():
             cmd = "TWSET led try " + " ".join(str(int(x)) for x in rest[1:])
         else:
             sys.exit("led on [GPIO] | led off | led bright 1-255 | led test | led try R G B (0-255), "
-                     "then board N|all for others (not test or try)")
+                     "then board N|all for others")
         if target is None:
             for attempt in range(1, TRIES + 1):
                 p.send(cmd)
@@ -286,18 +308,24 @@ def main():
                         return
                 print(f"  no answer yet (try {attempt} of {TRIES})")
             sys.exit("no answer: is it running tw_node 2.4 or newer, and is this its native USB port?")
-        if rest[0] in ("test", "try"):
-            sys.exit("led test and led try work on the board on the cable only")
-        pin_key = rest[0] in ("on", "off")
-        print("listening for each board's LED setting (its report comes every 5 s) ...")
-        leds = {k: b["led"] for k, b in status(p, 7).items() if b.get("led")}
-        targets = sorted(leds) if target == 0 else [target]
-        if target and target not in leds:
-            print(f"  board {target} did not report its LED in 7 s (not on tw_node 2.5, or not heard now); "
+        key = {"on": K_PIN, "off": K_PIN, "bright": K_BRIGHT, "test": K_TEST, "try": K_TRY}[rest[0]]
+        print("listening for each board's report (every 5 s) ...")
+        st = status(p, 7)
+        def gen_of(b):                              # 2.5.1 reports; 2.5's TWV for the LED settings
+            if key in st[b].get("keys", {}):
+                return st[b]["keys"][key][0]
+            if st[b].get("led") and key in (K_PIN, K_BRIGHT):
+                return st[b]["led"][2 if key == K_PIN else 3]
+            return None
+        known = {b: gen_of(b) for b in st if gen_of(b) is not None}
+        targets = sorted(known) if target == 0 else [target]
+        if target and target not in known:
+            print(f"  board {target} did not report this in 7 s (not on tw_node 2.5.1, or not heard now); "
                   "sending anyway")
-        gens = [leds[b][2 if pin_key else 3] for b in targets if b in leds]
+        gens = [known[b] for b in targets if b in known]
         gen = (max(gens, default=0) + 1) % 256
-        what = "LED pin" if pin_key else "LED brightness"
+        what = {K_PIN: "LED pin", K_BRIGHT: "LED brightness", K_TEST: "LED test", K_TRY: "LED try"}[key]
+        pin_key = key == K_PIN
         done = set()
         for attempt in range(1, TRIES + 1):
             p.send(f"{cmd} board {target} gen {gen}")
@@ -307,16 +335,21 @@ def main():
                     if line.startswith("TWERR"):
                         sys.exit(1)
                     break
-            # the board(s) say they took it in their next reports (every 5 s)
+            # the board(s) say they took it in their reports (2.5.1: within a second or two; through
+            # relays longer; 2.5: TWV every 5 s)
             for line in p.lines(15):
                 f = line.split(",")
-                if f[0] == "TWV" and len(f) >= 10 and f[1].isdigit() and int(f[1]) in targets:
-                    if int(f[8 if pin_key else 9]) == gen:
-                        done.add(int(f[1]))
+                if f[0] == "TWX":
+                    for b, k, g, v in reports(f):
+                        if b in targets and k == key and g == gen:
+                            done.add(b)
+                elif f[0] == "TWV" and len(f) >= 10 and f[1].isdigit() and int(f[1]) in targets and \
+                        key in (K_PIN, K_BRIGHT) and int(f[8 if pin_key else 9]) == gen:
+                    done.add(int(f[1]))
                 if done >= set(targets):
                     break
             if done >= set(targets):
-                print(f"done: {what} taken by board{'s' if len(done) > 1 else ''} "
+                print(f"done: {what} {'run' if key in (K_TEST, K_TRY) else 'taken'} by board{'s' if len(done) > 1 else ''} "
                       f"{', '.join(str(b) for b in sorted(done))} (generation {gen})")
                 return
             print(f"  taken so far by {sorted(done) or 'none'} (try {attempt} of {TRIES})")

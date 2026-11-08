@@ -5,6 +5,11 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **Computer side: `tw_setid.py` reads the boards' reports (TWX, tw_node
+  2.5.1)** to show every board's LED and to confirm a change; `led test` and
+  `led try R G B` take `board N|all` too. Boards on 2.5 still answer through
+  TWV.
+
 - **Firmware (tw_node 2.5.1): protocol 3's transport, step 0**
   (docs/PROTOCOL-3.md). A new record kind (`TW_KIND_CMD`, 5; printed as TWX)
   with variable-length entries: target, key, flags, generation, seconds left,
