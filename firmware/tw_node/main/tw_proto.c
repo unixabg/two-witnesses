@@ -818,36 +818,58 @@ static tw_rec_t *queue_aux(tw_node_t *n, uint32_t now, uint8_t kind, const uint8
     return r;
 }
 
-/* ---------------- 2.5: settings by record ---------------- */
+/* ---------------- 2.5+: settings and commands by record ---------------- */
+int tw_key_class(uint8_t key)
+{
+    switch (key) {
+    case TW_K_LED_PIN:
+    case TW_K_LED_BRIGHT:
+        return TW_KC_BOARD;
+    case TW_K_LED_TEST:
+    case TW_K_LED_TRY:
+        return TW_KC_ACTION;
+    default:
+        return 0;
+    }
+}
+
 static int gen_newer(uint8_t a, uint8_t b)
 {
     return (int8_t)(uint8_t)(a - b) > 0;
 }
 
-static void setting_take(tw_node_t *n, uint8_t target, uint8_t key, uint16_t val, uint8_t gen)
+static void setting_take(tw_node_t *n, uint8_t target, uint8_t key, const uint8_t *val, int len, uint8_t gen)
 {
-    if (key == 0 || key >= TW_SETK_N || !(target == TW_SET_ALL || target == n->id)) {
+    if (!tw_key_class(key) || key >= TW_K_N || len < 0 || len > TW_CMD_VAL ||
+        !(target == TW_SET_ALL || target == n->id)) {
         return;
     }
     if (gen_newer(gen, n->set_gen[key])) {
         n->set_gen[key] = gen;
-        if (n->set_val[key] != val) {
-            n->set_val[key] = val;
+        memset(n->set_val[key], 0, TW_CMD_VAL);
+        if (len) {
+            memcpy(n->set_val[key], val, (size_t)len);
         }
-        n->set_changed |= (uint8_t)(1u << key);   /* the generation changed: keep it, report it */
+        n->set_len[key] = (uint8_t)len;
+        n->set_changed |= 1u << key;        /* the caller keeps it, acts on it */
+        n->set_rep_sent = 0;                /* and it is reported within a second */
     }
 }
 
-/* into the table of settings passed on: a newer generation replaces, the same keeps the longer
-   time left (each board counts it down, so it ends) */
-static void setting_keep(tw_node_t *n, uint8_t target, uint8_t key, uint16_t val, uint8_t gen, uint8_t ttl)
+/* into the entries passed on: a newer generation replaces, the same keeps the longer time left
+   (each board counts it down, so it ends) */
+static void setting_keep(tw_node_t *n, uint8_t target, uint8_t key, const uint8_t *val, int len, uint8_t gen,
+                         uint8_t ttl)
 {
     int free_i = -1, low_i = 0;
     for (int i = 0; i < TW_SET_TABLE; i++) {
         if (n->set_tab[i].ttl && n->set_tab[i].target == target && n->set_tab[i].key == key) {
             if (gen_newer(gen, n->set_tab[i].gen)) {
                 n->set_tab[i].gen = gen;
-                n->set_tab[i].val = val;
+                n->set_tab[i].len = (uint8_t)len;
+                if (len) {
+                    memcpy(n->set_tab[i].val, val, (size_t)len);
+                }
                 n->set_tab[i].ttl = ttl;
             } else if (gen == n->set_tab[i].gen && ttl > n->set_tab[i].ttl) {
                 n->set_tab[i].ttl = ttl;
@@ -865,78 +887,126 @@ static void setting_keep(tw_node_t *n, uint8_t target, uint8_t key, uint16_t val
     n->set_tab[i].target = target;
     n->set_tab[i].key = key;
     n->set_tab[i].gen = gen;
-    n->set_tab[i].val = val;
+    n->set_tab[i].len = (uint8_t)len;
+    if (len) {
+        memcpy(n->set_tab[i].val, val, (size_t)len);
+    }
     n->set_tab[i].ttl = ttl;
 }
 
-void tw_setting_init(tw_node_t *n, uint8_t key, uint16_t val, uint8_t gen)
+void tw_setting_init(tw_node_t *n, uint8_t key, const uint8_t *val, int len, uint8_t gen)
 {
-    if (key && key < TW_SETK_N) {
-        n->set_val[key] = val;
+    if (key && key < TW_K_N && len >= 0 && len <= TW_CMD_VAL) {
+        memset(n->set_val[key], 0, TW_CMD_VAL);
+        if (len) {
+            memcpy(n->set_val[key], val, (size_t)len);
+        }
+        n->set_len[key] = (uint8_t)len;
         n->set_gen[key] = gen;
     }
 }
 
-void tw_setting_give(tw_node_t *n, uint8_t target, uint8_t key, uint16_t val, uint8_t gen)
+void tw_setting_give(tw_node_t *n, uint8_t target, uint8_t key, const uint8_t *val, int len, uint8_t gen)
 {
-    if (key == 0 || key >= TW_SETK_N || target > TW_MAX_NODES) {
+    if (!tw_key_class(key) || target > TW_MAX_NODES || len < 0 || len > TW_CMD_VAL) {
         return;
     }
-    setting_take(n, target, key, val, gen);
+    setting_take(n, target, key, val, len, gen);
     if (target != n->id) {
-        setting_keep(n, target, key, val, gen, TW_SET_TTL_S);
+        setting_keep(n, target, key, val, len, gen, TW_SET_TTL_S);
+    }
+    n->set_rep_sent = 0;                        /* report soon: the computer is waiting */
+}
+
+void tw_setting_local(tw_node_t *n, uint8_t key, const uint8_t *val, int len)
+{
+    if (key && key < TW_K_N) {
+        setting_take(n, n->id, key, val, len, (uint8_t)(n->set_gen[key] + 1));
+        n->set_rep_sent = 0;
     }
 }
 
-void tw_setting_local(tw_node_t *n, uint8_t key, uint16_t val)
+uint16_t tw_setting_u16(const tw_node_t *n, uint8_t key)
 {
-    if (key && key < TW_SETK_N) {
-        setting_take(n, n->id, key, val, (uint8_t)(n->set_gen[key] + 1));
+    return key < TW_K_N ? (uint16_t)(n->set_val[key][0] | (n->set_val[key][1] << 8)) : 0;
+}
+
+static void setting_entry(tw_node_t *n, uint8_t target, uint8_t key, uint8_t flags, uint8_t gen, uint8_t ttl,
+                          const uint8_t *val, int len)
+{
+    if ((flags & TW_CF_REPORT) || ttl == 0 || !tw_key_class(key) || target > TW_MAX_NODES) {
+        return;                                 /* a report, spent, or a key this firmware does not know */
+    }
+    setting_take(n, target, key, val, len, gen);
+    if (target != n->id) {
+        setting_keep(n, target, key, val, len, gen, ttl);
     }
 }
 
 void tw_setting_heard(tw_node_t *n, const tw_rec_t *r)
 {
-    if ((r->kind & TW_KIND_MASK) != TW_KIND_SET || r->rx == n->id) {
+    if (r->rx == n->id) {
         return;
     }
-    for (int i = 0; i + TW_SET_ENTRY <= r->n; i += TW_SET_ENTRY) {
-        const uint8_t *e = r->q + i;
-        uint8_t target = e[0], key = e[1], gen = e[2], ttl = e[3];
-        uint16_t val = (uint16_t)(e[4] | (e[5] << 8));
-        if (key == 0 || key >= TW_SETK_N || target > TW_MAX_NODES || ttl == 0) {
-            continue;
+    if ((r->kind & TW_KIND_MASK) == TW_KIND_CMD) {
+        for (int i = 0; i + TW_CMD_HDR <= r->n;) {
+            const uint8_t *e = r->q + i;
+            int len = e[5];
+            if (len > TW_CMD_VAL || i + TW_CMD_HDR + len > r->n) {
+                break;                          /* not a whole entry: stop here */
+            }
+            setting_entry(n, e[0], e[1], e[2], e[3], e[4], e + TW_CMD_HDR, len);
+            i += TW_CMD_HDR + len;
         }
-        setting_take(n, target, key, val, gen);
-        if (target != n->id) {
-            setting_keep(n, target, key, val, gen, ttl);
+    } else if ((r->kind & TW_KIND_MASK) == TW_KIND_SET) {   /* 2.5's: a 2-byte value; LED keys 1 byte */
+        for (int i = 0; i + TW_SET_ENTRY <= r->n; i += TW_SET_ENTRY) {
+            const uint8_t *e = r->q + i;
+            uint8_t v[2] = {e[4], e[5]};
+            setting_entry(n, e[0], e[1], 0, e[2], e[3], v, tw_key_class(e[1]) == TW_KC_BOARD ? 1 : 2);
         }
     }
 }
 
-/* once a second: what is being passed on, as one record (each entry's time left counted down) */
+static int put_entry(uint8_t *q, int len, uint8_t target, uint8_t key, uint8_t flags, uint8_t gen, uint8_t ttl,
+                     const uint8_t *val, int vlen)
+{
+    if (len + TW_CMD_HDR + vlen > TW_MAX_AMPS) {
+        return len;                             /* no room: the rest next second */
+    }
+    uint8_t *e = q + len;
+    e[0] = target; e[1] = key; e[2] = flags; e[3] = gen; e[4] = ttl; e[5] = (uint8_t)vlen;
+    if (vlen) {
+        memcpy(e + TW_CMD_HDR, val, (size_t)vlen);
+    }
+    return len + TW_CMD_HDR + vlen;
+}
+
+/* once a second: what is being passed on (each entry's time left counted down), and every
+   TW_REPORT_EVERY_US this board's own keys, as one record */
 static tw_rec_t *setting_record(tw_node_t *n, uint32_t now)
 {
-    uint8_t q[TW_SET_TABLE * TW_SET_ENTRY];
+    uint8_t q[TW_MAX_AMPS];
     int len = 0;
     for (int i = 0; i < TW_SET_TABLE; i++) {
-        if (!n->set_tab[i].ttl) {
+        if (!n->set_tab[i].ttl || !--n->set_tab[i].ttl) {
             continue;
         }
-        n->set_tab[i].ttl--;
-        if (!n->set_tab[i].ttl) {
-            continue;
-        }
-        uint8_t *e = q + len;
-        e[0] = n->set_tab[i].target;
-        e[1] = n->set_tab[i].key;
-        e[2] = n->set_tab[i].gen;
-        e[3] = n->set_tab[i].ttl;
-        e[4] = (uint8_t)(n->set_tab[i].val & 0xff);
-        e[5] = (uint8_t)(n->set_tab[i].val >> 8);
-        len += TW_SET_ENTRY;
+        len = put_entry(q, len, n->set_tab[i].target, n->set_tab[i].key, 0, n->set_tab[i].gen, n->set_tab[i].ttl,
+                        n->set_tab[i].val, n->set_tab[i].len);
     }
-    return len ? queue_aux(n, now, TW_KIND_SET, q, len) : NULL;
+    if (!n->set_rep_sent || (uint32_t)(now - n->set_rep_us) >= TW_REPORT_EVERY_US) {
+        n->set_rep_sent = 1;
+        n->set_rep_us = now;
+        for (uint8_t k = 1; k < TW_K_N; k++) {
+            int c = tw_key_class(k);
+            if (c == TW_KC_BOARD) {
+                len = put_entry(q, len, n->id, k, TW_CF_REPORT, n->set_gen[k], 0, n->set_val[k], n->set_len[k]);
+            } else if (c == TW_KC_ACTION) {     /* an action: which generation it last ran */
+                len = put_entry(q, len, n->id, k, TW_CF_REPORT, n->set_gen[k], 0, NULL, 0);
+            }
+        }
+    }
+    return len ? queue_aux(n, now, TW_KIND_CMD, q, len) : NULL;
 }
 
 /* one record into the score of board tx (a normal frame's measurement) */
@@ -1201,8 +1271,31 @@ int tw_format_record(const tw_rec_t *r, char *out, int max)
         text[n] = 0;
         return snprintf(out, (size_t)max, "TWV,%u,%u,%lu,%s\n", r->rx, r->boot, (unsigned long)r->recseq, text);
     }
+    if ((r->kind & TW_KIND_MASK) == TW_KIND_CMD) {
+        /* TWX,board,boot,record number,target:key:flags:generation:seconds left:value (hex),... */
+        int k = snprintf(out, (size_t)max, "TWX,%u,%u,%lu", r->rx, r->boot, (unsigned long)r->recseq);
+        for (int i = 0; i + TW_CMD_HDR <= r->n && k > 0 && k < max - 40;) {
+            const uint8_t *e = r->q + i;
+            int len = e[5];
+            if (len > TW_CMD_VAL || i + TW_CMD_HDR + len > r->n) {
+                break;
+            }
+            k += snprintf(out + k, (size_t)(max - k), ",%u:%u:%u:%u:%u:", e[0], e[1], e[2], e[3], e[4]);
+            for (int b = 0; b < len; b++) {
+                out[k++] = HEX[e[TW_CMD_HDR + b] >> 4];
+                out[k++] = HEX[e[TW_CMD_HDR + b] & 15];
+            }
+            out[k] = 0;
+            i += TW_CMD_HDR + len;
+        }
+        if (k > 0 && k < max - 1) {
+            out[k++] = '\n';
+            out[k] = 0;
+        }
+        return k;
+    }
     if ((r->kind & TW_KIND_MASK) == TW_KIND_SET) {
-        /* TWX,board,boot,record number,target:key:generation:seconds left:value,... */
+        /* 2.5's: TWX,board,boot,record number,target:key:generation:seconds left:value,... */
         int k = snprintf(out, (size_t)max, "TWX,%u,%u,%lu", r->rx, r->boot, (unsigned long)r->recseq);
         for (int i = 0; i + TW_SET_ENTRY <= r->n && k > 0 && k < max - 24; i += TW_SET_ENTRY) {
             const uint8_t *e = r->q + i;

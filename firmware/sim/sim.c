@@ -198,9 +198,7 @@ static uint8_t cur_src;
 static void on_record(void *ctx, const tw_rec_t *r)
 {
     rctx_t *c = ctx;
-    if ((r->kind & TW_KIND_MASK) == TW_KIND_SET) {
-        tw_setting_heard(&c->self->st, r);          /* 2.5: as the firmware's relay_cb */
-    }
+    tw_setting_heard(&c->self->st, r);              /* 2.5+: as the firmware's relay_cb */
     if (!c->self->exit) {
         tw_relay_record(&c->self->st, local_us(c->self, c->t), cur_src, r);
         return;
@@ -213,12 +211,13 @@ static void on_record(void *ctx, const tw_rec_t *r)
     }
 }
 
-/* 2.5: --give T@TARGET:KEY:VAL:GEN,...: the exit gives a setting by record at T seconds; the
-   summary says when each board took it */
+/* 2.5+: --give T@TARGET:KEY:VAL:GEN,...: the exit gives a setting or action by record at T
+   seconds (keys: tw_proto.h TW_K_*; try's VAL = R*65536 + G*256 + B); the summary says when each
+   board took it */
 #define MAXGIVE 8
 static struct { double t; int target, key, val, gen, done; } give[MAXGIVE];
 static int n_give;
-static double took_t[MAXN + 1][TW_SETK_N];
+static double took_t[MAXN + 1][TW_K_N];
 
 static int parse_args(int argc, char **argv, char *kill_spec, char *exit_spec, unsigned *seed, char **outpath)
 {
@@ -388,16 +387,20 @@ int main(int argc, char **argv)
         for (int g = 0; g < n_give; g++) {
             if (!give[g].done && t >= give[g].t * 1e6) {
                 give[g].done = 1;
-                int ex = first_exit();
-                tw_setting_give(&N_[ex].st, (uint8_t)give[g].target, (uint8_t)give[g].key,
-                                (uint16_t)give[g].val, (uint8_t)give[g].gen);
+                int ex = first_exit(), k = give[g].key, v = give[g].val;
+                /* the value as the key takes it: an LED key 1 byte, try 3 (VAL = R*65536 + G*256 + B),
+                   test none */
+                uint8_t vb[3] = {(uint8_t)v, 0, 0};
+                int vl = tw_key_class((uint8_t)k) == TW_KC_BOARD ? 1 : 0;
+                if (k == TW_K_LED_TRY) { vb[0] = (uint8_t)(v >> 16); vb[1] = (uint8_t)(v >> 8); vb[2] = (uint8_t)v; vl = 3; }
+                tw_setting_give(&N_[ex].st, (uint8_t)give[g].target, (uint8_t)k, vb, vl, (uint8_t)give[g].gen);
             }
         }
         if (n_give) {
             for (int id = 1; id <= n_nodes; id++) {
-                uint8_t ch = N_[id].st.set_changed;
+                uint32_t ch = N_[id].st.set_changed;
                 N_[id].st.set_changed = 0;
-                for (int k = 1; k < TW_SETK_N; k++)
+                for (int k = 1; k < TW_K_N; k++)
                     if (ch & (1u << k)) took_t[id][k] = t / 1e6;
             }
         }
@@ -781,9 +784,9 @@ int main(int argc, char **argv)
         fprintf(stderr, "}, \"given\": {");
         for (int id = 1; id <= n_nodes; id++) {
             fprintf(stderr, "%s\"%d\": [", id > 1 ? ", " : "", id);
-            for (int k = 1; k < TW_SETK_N; k++)
-                fprintf(stderr, "%s[%u, %u, %.2f]", k > 1 ? ", " : "", N_[id].st.set_val[k], N_[id].st.set_gen[k],
-                        took_t[id][k]);
+            for (int k = 1; k <= TW_K_LED_TRY; k++)
+                fprintf(stderr, "%s[%u, %u, %.2f]", k > 1 ? ", " : "", tw_setting_u16(&N_[id].st, (uint8_t)k),
+                        N_[id].st.set_gen[k], took_t[id][k]);
             fprintf(stderr, "]");
         }
     }

@@ -5,6 +5,17 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **Firmware (tw_node 2.5.1): protocol 3's transport, step 0**
+  (docs/PROTOCOL-3.md). A new record kind (`TW_KIND_CMD`, 5; printed as TWX)
+  with variable-length entries: target, key, flags, generation, seconds left,
+  value. Key classes: board settings (LED pin and brightness) and actions,
+  run once per new generation and not kept (LED test; LED try R G B); a board
+  skips keys it does not know by their length. Every 5 s each board sends
+  report entries (its keys' values and generations) for the computer to
+  confirm a change. 2.5's records are still read. Simulator: a board that
+  cannot hear the giver took a setting in 0.6 s and test/try to all within
+  0.6 s; a stale copy was ignored; reports home as in 2.5.
+
 - **Design: protocol 3 (docs/PROTOCOL-3.md), no firmware.** One transport for
   settings and commands, built on 2.5's settings record: variable-length
   entries, three classes of key (board, standing network, action), reports for

@@ -101,17 +101,31 @@
 #define TW_KIND_SCORE       3           /* 2.2+: not a measurement: once a second, this board's movement
                                            score for each board it heard (q[i]: board i+1, x10; 0 =
                                            none); printed as TWM */
-#define TW_KIND_SET         4           /* 2.5+: not a measurement: settings for boards, passed on by
-                                           every board (tw_setting_*); q[] holds TW_SET_ENTRY-byte
-                                           entries: target (0 = all), key, generation, seconds left to
-                                           pass it on, value (2 bytes); printed as TWX */
-#define TW_SET_ALL          0           /* an entry's target: every board */
-#define TW_SETK_LED_PIN     1           /* keys: the LED's GPIO (0 = no LED) */
-#define TW_SETK_LED_BRIGHT  2           /*       its brightness, 1..255 */
-#define TW_SETK_N           3           /* keys 1..TW_SETK_N-1 */
+#define TW_KIND_SET         4           /* 2.5: settings for boards, 6-byte entries: target (0 = all),
+                                           key, generation, seconds left, value (2 bytes). Read since
+                                           2.5.1 (from 2.5 boards), not sent; gone in 3.0 */
 #define TW_SET_ENTRY        6
-#define TW_SET_TABLE        8           /* settings a board passes on at once */
-#define TW_SET_TTL_S        60          /* seconds a setting is passed on after it was given */
+#define TW_KIND_CMD         5           /* 2.5.1+: settings and commands for boards (docs/PROTOCOL-3.md):
+                                           entries of TW_CMD_HDR bytes and a value: target (0 = all),
+                                           key, flags (TW_CF_REPORT), generation, seconds left to pass
+                                           it on, value length L (0..TW_CMD_VAL), value (L bytes, low
+                                           first); printed as TWX */
+#define TW_CMD_HDR          6
+#define TW_CMD_VAL          8
+#define TW_CF_REPORT        0x01        /* a board's own state (target = itself), not an instruction */
+#define TW_SET_ALL          0           /* an entry's target: every board */
+/* keys (docs/PROTOCOL-3.md, "Keys"); a board skips keys it does not know, by their length */
+#define TW_K_LED_PIN        1           /* board: the LED's GPIO, 1 byte (0 = no LED) */
+#define TW_K_LED_BRIGHT     2           /* board: its brightness, 1 byte (1..255) */
+#define TW_K_LED_TEST       3           /* action: the LED's test sequence, no value */
+#define TW_K_LED_TRY        4           /* action: show R, G, B (3 bytes) on the LED for 10 s */
+#define TW_K_N              32          /* keys 1..31 */
+#define TW_KC_BOARD         1           /* key classes: a setting of one board, kept in its flash */
+#define TW_KC_NETWORK       2           /*   one value for every board, said by every board (2.6+) */
+#define TW_KC_ACTION        3           /*   do it once per new generation; not kept */
+#define TW_SET_TABLE        8           /* entries a board passes on at once */
+#define TW_SET_TTL_S        60          /* seconds an entry is passed on after it was given */
+#define TW_REPORT_EVERY_US  5000000u    /* each board's report entries: its keys' values, generations */
 #define TW_SCORE_BAND       4           /* subcarriers per band (as replay.py, dash.py) */
 #define TW_SCORE_BANDS      (TW_MAX_AMPS / TW_SCORE_BAND)
 #define TW_SCORE_LEARN      50          /* records that decide which bins are live */
@@ -251,17 +265,19 @@ typedef struct {
     tw_score_t score[TW_MAX_NODES + 1];
     uint32_t score_sec;
     uint8_t  score_last[TW_MAX_NODES];      /* 2.4: the last second's scores (as TWM; 0 = none) */
-    /* 2.5: settings for boards, by record (tw_setting_*): those being passed on, and this board's
-       own value and generation for each key (a newer generation wins; 8 bits, wrapping) */
+    /* 2.5+: settings and commands by record (tw_setting_*): the entries being passed on, and this
+       board's own value and generation for each key (a newer generation wins; 8 bits, wrapping) */
     struct {
-        uint8_t  target, key, gen, ttl;     /* ttl 0: free */
-        uint16_t val;
+        uint8_t  target, key, gen, ttl, len;   /* ttl 0: free */
+        uint8_t  val[TW_CMD_VAL];
     } set_tab[TW_SET_TABLE];
-    uint16_t set_val[TW_SETK_N];
-    uint8_t  set_gen[TW_SETK_N];
-    uint8_t  set_changed;                   /* keys of this board's that changed (bit = key); the
-                                               caller clears it */
-    uint32_t set_sec;
+    uint8_t  set_val[TW_K_N][TW_CMD_VAL];
+    uint8_t  set_len[TW_K_N];
+    uint8_t  set_gen[TW_K_N];
+    uint32_t set_changed;                   /* keys of this board's taken since (bit = key): the
+                                               caller acts on them and clears it */
+    uint32_t set_sec, set_rep_us;
+    uint8_t  set_rep_sent;
     uint8_t  xend_q;                        /* when our last extra frame ended (tw_note_sent), 20 us steps */
     uint32_t xend_us;                       /* ... and when that was (2.2: said only for 1 s after) */
     /* about each board heard, since tw_clear_counts (the firmware: once a second, after TWN) */
@@ -315,19 +331,22 @@ int      tw_peek_header(const uint8_t *buf, int len, tw_hdr_t *h);
    line ends become spaces; at most TW_INFO_MAX bytes) */
 void     tw_set_info(tw_node_t *n, const char *text);
 
-/* 2.5: settings by record. A setting is (target board or TW_SET_ALL, key, generation, value): a
-   board takes it when it is for it and its generation is newer than the one it has (8 bits,
-   wrapping), and every board passes it on once a second for TW_SET_TTL_S seconds, so it reaches
-   boards the giver does not hear. The computer chooses the generation (one more than the boards
-   report) and watches for the board to report it. */
+/* 2.5+: settings and commands by record (docs/PROTOCOL-3.md). An entry is (target board or
+   TW_SET_ALL, key, generation, value): a board takes it when it is for it and its generation is
+   newer than the one it has (8 bits, wrapping), and every board passes it on once a second for
+   TW_SET_TTL_S seconds, so it reaches boards the giver does not hear. Every TW_REPORT_EVERY_US
+   each board also says its own keys' values and generations (report entries), so the computer
+   can choose the next generation and see it taken. */
+int      tw_key_class(uint8_t key);                 /* TW_KC_*, 0 for a key this firmware does not know */
 /* what this board starts with (from its flash) */
-void     tw_setting_init(tw_node_t *n, uint8_t key, uint16_t val, uint8_t gen);
-/* a setting given here (the board on the computer): taken here too if it is for this board, and
-   passed on */
-void     tw_setting_give(tw_node_t *n, uint8_t target, uint8_t key, uint16_t val, uint8_t gen);
-/* this board's own setting, changed here (over its cable): the next generation, not passed on */
-void     tw_setting_local(tw_node_t *n, uint8_t key, uint16_t val);
-/* a TW_KIND_SET record heard: take what is for this board, pass the rest on */
+void     tw_setting_init(tw_node_t *n, uint8_t key, const uint8_t *val, int len, uint8_t gen);
+/* given here (the board on the computer): taken here too if it is for this board, and passed on */
+void     tw_setting_give(tw_node_t *n, uint8_t target, uint8_t key, const uint8_t *val, int len, uint8_t gen);
+/* this board's own key, changed here (over its cable): the next generation, not passed on */
+void     tw_setting_local(tw_node_t *n, uint8_t key, const uint8_t *val, int len);
+/* this board's value of a key (its first two bytes, low first) */
+uint16_t tw_setting_u16(const tw_node_t *n, uint8_t key);
+/* a TW_KIND_CMD (or 2.5's TW_KIND_SET) record heard: take what is for this board, pass the rest on */
 void     tw_setting_heard(tw_node_t *n, const tw_rec_t *r);
 /* records that are not measurements, queued when due (2.2: the info record, every
    TW_INFO_EVERY_US): call about once a second; returns one record queued now (for an exit to

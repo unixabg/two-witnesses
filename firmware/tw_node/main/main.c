@@ -506,9 +506,7 @@ typedef struct {
 static void relay_cb(void *ctx, const tw_rec_t *r)
 {
     const rctx_t *c = ctx;
-    if ((r->kind & TW_KIND_MASK) == TW_KIND_SET) {
-        tw_setting_heard(&s_node, r);   /* 2.5: settings for this board, or to pass on */
-    }
+    tw_setting_heard(&s_node, r);       /* 2.5+: settings and commands (it picks the kinds it knows) */
     if (!s_node.is_exit) {
         tw_relay_record(&s_node, c->now, c->src, r);    /* carry it on, if this board is a relay for src */
         return;
@@ -719,8 +717,8 @@ static void led_load(void)
     if (!s_led_bright) {
         s_led_bright = LED_BRIGHT_DEFAULT;
     }
-    tw_setting_init(&s_node, TW_SETK_LED_PIN, s_led_pin, gp);
-    tw_setting_init(&s_node, TW_SETK_LED_BRIGHT, s_led_bright, gb);
+    tw_setting_init(&s_node, TW_K_LED_PIN, &s_led_pin, 1, gp);
+    tw_setting_init(&s_node, TW_K_LED_BRIGHT, &s_led_bright, 1, gb);
 }
 
 /* 2.5: what the board says about itself every 5 s (TWV): firmware, build, and its LED setting
@@ -729,22 +727,31 @@ static void info_update(void)
 {
     char t[TW_INFO_MAX + 1];
     snprintf(t, sizeof(t), "%s|%s %s|%u|%u|%u|%u", FW_VERSION, __DATE__, __TIME__, s_led_pin, s_led_bright,
-             s_node.set_gen[TW_SETK_LED_PIN], s_node.set_gen[TW_SETK_LED_BRIGHT]);
+             s_node.set_gen[TW_K_LED_PIN], s_node.set_gen[TW_K_LED_BRIGHT]);
     tw_set_info(&s_node, t);
 }
 
 static void led_save(void);
 static void led_start(void);
 
-/* the board's LED settings changed (over its cable, or by a settings record): take them */
+/* the board's LED keys changed (over its cable, or by record): take the settings, run the actions */
 static void led_apply(void)
 {
-    uint8_t ch = s_node.set_changed;
+    uint32_t ch = s_node.set_changed;
     s_node.set_changed = 0;
-    if (!(ch & ((1u << TW_SETK_LED_PIN) | (1u << TW_SETK_LED_BRIGHT)))) {
+    if ((ch & (1u << TW_K_LED_TEST)) && s_led_ch) {        /* 2.5.1: actions, once per generation */
+        s_led_test = 7;
+        s_led_try = 0;
+    }
+    if ((ch & (1u << TW_K_LED_TRY)) && s_led_ch) {
+        memcpy(s_led_try_rgb, s_node.set_val[TW_K_LED_TRY], 3);
+        s_led_try = 10;
+        s_led_test = 0;
+    }
+    if (!(ch & ((1u << TW_K_LED_PIN) | (1u << TW_K_LED_BRIGHT)))) {
         return;
     }
-    uint16_t pin = s_node.set_val[TW_SETK_LED_PIN], br = s_node.set_val[TW_SETK_LED_BRIGHT];
+    uint16_t pin = tw_setting_u16(&s_node, TW_K_LED_PIN), br = tw_setting_u16(&s_node, TW_K_LED_BRIGHT);
     uint8_t new_pin = (uint8_t)(pin <= 48 && led_pin_ok(pin) ? pin : 0);   /* a pin it must not drive: none */
     uint8_t new_br = (uint8_t)(br >= 1 && br <= 255 ? br : s_led_bright);
     int restart = new_pin != s_led_pin;
@@ -765,8 +772,8 @@ static void led_save(void)
     if (nvs_open("tw", NVS_READWRITE, &h) == ESP_OK) {
         nvs_set_u8(h, "led", s_led_pin);
         nvs_set_u8(h, "ledb", s_led_bright);
-        nvs_set_u8(h, "lgp", s_node.set_gen[TW_SETK_LED_PIN]);
-        nvs_set_u8(h, "lgb", s_node.set_gen[TW_SETK_LED_BRIGHT]);
+        nvs_set_u8(h, "lgp", s_node.set_gen[TW_K_LED_PIN]);
+        nvs_set_u8(h, "lgb", s_node.set_gen[TW_K_LED_BRIGHT]);
         nvs_commit(h);
         nvs_close(h);
     }
@@ -873,11 +880,12 @@ static void poll_commands(void)
                 }
                 out_wait(msg, k);
             } else if (n && !strncmp(cmd, "TWSET led ", 10)) {
-                /* 2.4: this board's LED (kept in its flash). 2.5: "... board N gen G" gives it to
-                   board N (0 = all) by settings record instead, generation G (the computer
-                   chooses it: one more than the board reports) */
+                /* 2.4: this board's LED (kept in its flash). 2.5+: "... board N gen G" gives it to
+                   board N (0 = all) by record instead, generation G (the computer chooses it: one
+                   more than the boards report). 2.5.1: test and try are actions, the same way */
                 char msg[128], *bd = strstr(cmd, " board ");
-                int k = 0, pin, br, tr, tg, tb, target = -1, gen = -1, key = 0, val = 0;
+                int k = 0, pin, br, tr, tg, tb, target = -1, gen = -1, key = 0, vlen = 0;
+                uint8_t val[3] = {0, 0, 0};
                 if (bd) {
                     if (sscanf(bd, " board %d gen %d", &target, &gen) != 2 || target < 0 ||
                         target > TW_MAX_NODES || gen < 0 || gen > 255) {
@@ -886,53 +894,59 @@ static void poll_commands(void)
                     *bd = 0;                    /* the rest is the setting itself */
                 }
                 if (!strcmp(cmd, "TWSET led off")) {
-                    key = TW_SETK_LED_PIN;
-                    val = 0;
+                    key = TW_K_LED_PIN;
+                    vlen = 1;
                 } else if (!strcmp(cmd, "TWSET led on")) {
-                    key = TW_SETK_LED_PIN;
-                    val = LED_PIN_DEFAULT;
+                    key = TW_K_LED_PIN;
+                    val[0] = LED_PIN_DEFAULT;
+                    vlen = 1;
                 } else if (sscanf(cmd, "TWSET led on %d", &pin) == 1 && led_pin_ok(pin) && pin > 0) {
-                    key = TW_SETK_LED_PIN;
-                    val = pin;
+                    key = TW_K_LED_PIN;
+                    val[0] = (uint8_t)pin;
+                    vlen = 1;
                 } else if (sscanf(cmd, "TWSET led bright %d", &br) == 1 && br >= 1 && br <= 255) {
-                    key = TW_SETK_LED_BRIGHT;
-                    val = br;
-                } else if (target == -1 && sscanf(cmd, "TWSET led try %d %d %d", &tr, &tg, &tb) == 3 &&
+                    key = TW_K_LED_BRIGHT;
+                    val[0] = (uint8_t)br;
+                    vlen = 1;
+                } else if (sscanf(cmd, "TWSET led try %d %d %d", &tr, &tg, &tb) == 3 &&
                            tr >= 0 && tr <= 255 && tg >= 0 && tg <= 255 && tb >= 0 && tb <= 255) {
-                    /* 2.4.2: show a color as given (red, green, blue; not scaled by the brightness)
-                       for 10 seconds, then back to what the LED shows: to choose colors by eye */
-                    s_led_try_rgb[0] = (uint8_t)tr;
-                    s_led_try_rgb[1] = (uint8_t)tg;
-                    s_led_try_rgb[2] = (uint8_t)tb;
-                    s_led_try = 10;
-                    s_led_test = 0;
-                    k = snprintf(msg, sizeof(msg), s_led_ch ? "TWOK led try %d %d %d (10 s)\n" :
-                                 "TWERR led is off: led on first\n", tr, tg, tb);
-                } else if (target == -1 && !strcmp(cmd, "TWSET led test")) {
-                    s_led_test = 7;
-                    s_led_try = 0;
-                    k = snprintf(msg, sizeof(msg), s_led_ch ? "TWOK led test: red, green, blue, three blues, "
-                                 "off (7 s)\n" : "TWERR led is off: led on first\n");
+                    /* 2.4.2: a color as given (red, green, blue; not scaled by the brightness) for
+                       10 seconds, then back to what the LED shows: to choose colors by eye */
+                    key = TW_K_LED_TRY;
+                    val[0] = (uint8_t)tr;
+                    val[1] = (uint8_t)tg;
+                    val[2] = (uint8_t)tb;
+                    vlen = 3;
+                } else if (!strcmp(cmd, "TWSET led test")) {
+                    key = TW_K_LED_TEST;
                 }
+                const char *what = key == TW_K_LED_PIN ? "pin" : key == TW_K_LED_BRIGHT ? "brightness" :
+                                   key == TW_K_LED_TEST ? "test" : "try";
                 if (key && target == -1) {      /* this board, over its cable */
-                    tw_setting_local(&s_node, (uint8_t)key, (uint16_t)val);
+                    int action = tw_key_class((uint8_t)key) == TW_KC_ACTION;
+                    tw_setting_local(&s_node, (uint8_t)key, val, vlen);
                     led_apply();
-                    if (s_led_pin) {
+                    if (action && !s_led_ch) {
+                        k = snprintf(msg, sizeof(msg), "TWERR led is off: led on first\n");
+                    } else if (key == TW_K_LED_TEST) {
+                        k = snprintf(msg, sizeof(msg), "TWOK led test: red, green, blue, three blues, off (7 s)\n");
+                    } else if (key == TW_K_LED_TRY) {
+                        k = snprintf(msg, sizeof(msg), "TWOK led try %u %u %u (10 s)\n", val[0], val[1], val[2]);
+                    } else if (s_led_pin) {
                         k = snprintf(msg, sizeof(msg), "TWOK led on GPIO %u, brightness %u%s\n", s_led_pin,
                                      s_led_bright, s_led_ch ? "" : " (could not start it)");
                     } else {
                         k = snprintf(msg, sizeof(msg), "TWOK led off (brightness %u)\n", s_led_bright);
                     }
-                } else if (key && target >= 0) {   /* given to board N (0: all) by settings record */
-                    tw_setting_give(&s_node, (uint8_t)target, (uint8_t)key, (uint16_t)val, (uint8_t)gen);
+                } else if (key && target >= 0) {   /* given to board N (0: all) by record */
+                    tw_setting_give(&s_node, (uint8_t)target, (uint8_t)key, val, vlen, (uint8_t)gen);
                     led_apply();                /* if it was for this board too */
                     char who[12];
                     snprintf(who, sizeof(who), target ? "board %d" : "all boards", target);
-                    k = snprintf(msg, sizeof(msg), "TWOK led %s %d given to %s, generation %d\n",
-                                 key == TW_SETK_LED_PIN ? "pin" : "brightness", val, who, gen);
-                } else if (!k) {
-                    k = snprintf(msg, sizeof(msg), "TWERR led on [GPIO], led off, led bright 1..255 [board N gen G], "
-                                 "led test, led try R G B (not GPIO 19, 20, 26-37)\n");
+                    k = snprintf(msg, sizeof(msg), "TWOK led %s given to %s, generation %d\n", what, who, gen);
+                } else {
+                    k = snprintf(msg, sizeof(msg), "TWERR led on [GPIO], led off, led bright 1..255, led test, "
+                                 "led try R G B [board N gen G] (not GPIO 19, 20, 26-37)\n");
                 }
                 out_wait(msg, k);
                 hello();
