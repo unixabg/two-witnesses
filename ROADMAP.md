@@ -24,7 +24,7 @@ so boards are reflashed as rarely as possible.
   followers are still 1.1-1.5 ms behind: a frame is stamped when built, about
   1 ms before the air, and the receive callback the clock uses comes about
   0.5 ms after the air.
-- **Protocol 3** (docs/PROTOCOL-3.md, design): one transport for settings and
+- **Protocol 3** (docs/PROTOCOL-3.md; tw_node 3.0 built): one transport for settings and
   commands (records with keys: board settings, standing network settings,
   one-time actions; for board N or all; confirmed by each board's reports),
   and a header that keeps only what each frame needs (5 bytes reserved for

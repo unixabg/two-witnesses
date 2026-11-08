@@ -7,9 +7,13 @@ cabled to a computer prints everything (its own measurements and those relayed
 to it), so the other boards need only a power bank.
 
 ```
-915dc3cfd8ad08758951d5f0041f49a72c0af9e22c393151d1260c86608251dc  tw_node-s3-ch11.bin
+6cd1ed650b8ceab86d5799d5e594857671996a3aabb39b58aacabc1b7f1c8dd2  tw_node-s3-ch11.bin
 ```
-Firmware tw_node 2.7: each board's second-frame end travels in its own record
+Firmware tw_node 3.0: protocol 3 (docs/PROTOCOL-3.md): a leaner frame header,
+and the network settings (power, relay, second frame, ...) travel only as
+settings by record, which every board says every 5 s. **3.0 boards do not hear
+2.x boards: flash every board to 3.0 together** (below; back to 2.7 the same
+way). 2.7: each board's second-frame end travels in its own record
 too (`net_check.py RUN` compares). 2.6: the network settings (power, relay,
 second frame, ...) travel both ways, in the header as before and on protocol 3's transport, and
 the boards count any disagreement (`net_check.py RUN`). 2.5.1: settings and
@@ -22,9 +26,9 @@ radio's own receive time, so they no longer run 1.1-1.5 ms behind the
 timekeeper's (below; docs/TW_NODE-2.3.md); every board reports its firmware,
 timing, load and memory, PSRAM is on, each board makes a movement score
 (2.2); the second frame and the radio's error flag (2.1), relaying (2.0) and
-the transmit power setting (1.1). 2.0 to 2.4 boards hear each other (the
+the transmit power setting (1.1). 2.0 to 2.7 boards hear each other (the
 frame format is the same), but **run every board on the same firmware**. 1.x boards do not
-hear 2.x boards. Built from Espressif's esp-csi examples (csi_send / csi_recv at commit
+hear 2.x boards, and 2.x boards do not hear 3.x boards. Built from Espressif's esp-csi examples (csi_send / csi_recv at commit
 8633d67, the same as the earlier images) with ESP-IDF v5.5.6: same channel
 (11, 40 MHz, secondary below), same ESP-NOW rate (HT40 MCS0), same CSI
 settings and gain compensation as the v2 receiver, so its measurements stay
@@ -95,7 +99,7 @@ Board on the native USB port, in download mode (hold BOOT, tap RST, release BOOT
 Tap RST. Then check who it is (it says hello every 10 s):
 ```
 ~/scratch-esp/bin/python tw_setid.py /dev/ttyACM0
-# -> board 16, factory address 30:30:f9:xx:xx:xx, firmware tw_node 2.7, PSRAM 8 MB, LED off
+# -> board 16, factory address 30:30:f9:xx:xx:xx, firmware tw_node 3.0, PSRAM 8 MB, LED off
 ```
 A new board says it is board 16 and needs a number:
 `~/scratch-esp/bin/python tw_setid.py /dev/ttyACM0 1` (then 2, 3, ... for the
@@ -106,18 +110,31 @@ board kept in flash: its number and its settings. Set the number again after
 every reflash; the settings come back by themselves from the other boards if they
 still have them (or set them again).
 
-**Upgrading a board that already runs tw_node 2.0 to 2.4, keeping its number
+**Upgrading a board that already runs tw_node 2.0 or later, keeping its number
 and settings:** write only the program part of the image (from 0x20000; the
-bootloader and partition table are the same as 2.0's to 2.4's):
+bootloader and partition table are the same as 2.0's to 2.7's):
 ```
 dd if=tw_node-s3-ch11.bin of=/tmp/tw_node-app.bin bs=4096 skip=32
 ~/scratch-esp/bin/esptool --chip esp32s3 --port /dev/ttyACM0 write-flash 0x20000 /tmp/tw_node-app.bin
 ```
 (no erase-flash). Tap RST; `tw_setid.py /dev/ttyACM0` should say
-`firmware tw_node 2.7` with the board's old number (and, once all are done,
+`firmware tw_node 3.0` with the board's old number (and, once all are done,
 every board's firmware). If it says board 16, write
 the whole image as above and set the number again. `tw_setid.py` tries up to three times and
 says "done" only when the board reports the new number.
+
+**2.x to 3.0: every board, one after the other, before a run.** A 3.0 board
+and a 2.x board ignore each other's frames, so until the last one is done the
+boards are two groups (each with its own timekeeper; the cabled board hears
+only its own group). Each keeps its number, power, relay and second-frame
+setting and LED through the program-only upgrade. When all are on 3.0,
+`tw_setid.py /dev/ttyACM0` should list every board with the same setting.
+Boards 4-6, new, with an empty flash: the whole image, a number, and they take
+the network's settings from the others within a few seconds (a new board
+never undoes them). **Back to 2.7** the same way, program part only, every
+board, with 2.7's image (`git show 2afee59:tw_node-s3-ch11.bin > tw_node-2.7.bin`
+in the kit's folder, then the `dd` above on that file); 2.7 reads the
+settings 3.0 kept.
 
 ## Transmit power and relaying
 
@@ -130,9 +147,11 @@ With every board running 1.1 and the cabled one on the computer (stop
 ~/scratch-esp/bin/python tw_setid.py /dev/ttyACM0 relay on        # back on (the default)
 ~/scratch-esp/bin/python tw_setid.py /dev/ttyACM0                 # who is it; every board's settings
 ```
-The setting travels in every frame; each board takes it within a second and
-keeps it across restarts. If two computers set different powers at the same
-moment, the lower-numbered board's setting wins. The dashboard shows each
+The setting travels by record (3.0; before, in every frame); each board takes
+it within a second or two and keeps it across restarts, and a board that was
+off takes it within a few seconds of coming back. If two computers set
+different powers at the same moment, the higher power wins on every board (2.x:
+the lower-numbered board's setting). The dashboard shows each
 board's power (`tx 11 dBm`), `relay OFF` when relaying is off, and `heard 25%`
 when the cabled board hears a board badly; each run's `links/summary.txt`
 records the settings, and how many records came home through a relay. Change

@@ -1,8 +1,9 @@
 # Protocol 3: a lean frame header, and one transport for settings and commands
 
-Status: design, 2026-11-08. Steps 0-2 built (tw_node 2.5.1, 2.6, 2.7;
-simulator checked; real boards to come); each step is checked (simulator,
-then real runs) before the next, and 3.0 waits for a full night of 2.7.
+Status: 2026-11-08. Steps 0-3 built (tw_node 2.5.1, 2.6, 2.7, 3.0). 0-2
+checked on the boards (short runs: 2.7's both ways agreed); 3.0 checked in the
+simulator, real boards to come (taken before a full night of 2.7, by choice:
+2.7 is the way back).
 
 ## Why
 

@@ -5,6 +5,11 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **tw_node 3.0: version and image.** Protocol 3 (below) in
+  `tw_node-s3-ch11.bin`. Program-only upgrade (its first 128 KB are 2.7's),
+  numbers and settings kept, but **every board together**: 3.0 and 2.x boards
+  ignore each other. Back to 2.7 the same way.
+
 - **Computer side (tw_node 3.0):** `tw_setid.py PORT` listens 11 s for every
   board (two report periods, and time for a relayed one: 6 s missed some),
   reads 3.0's standing entries, says "transport agrees" only for 2.6-2.7
