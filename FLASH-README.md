@@ -7,10 +7,11 @@ cabled to a computer prints everything (its own measurements and those relayed
 to it), so the other boards need only a power bank.
 
 ```
-c4045c86b7b414583a2498b2cf8beb36dae71a5671c03054388b2dd8a765f9a6  tw_node-s3-ch11.bin
+915dc3cfd8ad08758951d5f0041f49a72c0af9e22c393151d1260c86608251dc  tw_node-s3-ch11.bin
 ```
-Firmware tw_node 2.6: the network settings (power, relay, second frame, ...)
-travel both ways, in the header as before and on protocol 3's transport, and
+Firmware tw_node 2.7: each board's second-frame end travels in its own record
+too (`net_check.py RUN` compares). 2.6: the network settings (power, relay,
+second frame, ...) travel both ways, in the header as before and on protocol 3's transport, and
 the boards count any disagreement (`net_check.py RUN`). 2.5.1: settings and
 commands by record (protocol 3's transport, docs/PROTOCOL-3.md), so a board's LED can be set, tested or tried
 over the air, for one board or all (below; 2.5: settings by record). 2.4: a board's RGB LED can show its own movement score in the
@@ -94,7 +95,7 @@ Board on the native USB port, in download mode (hold BOOT, tap RST, release BOOT
 Tap RST. Then check who it is (it says hello every 10 s):
 ```
 ~/scratch-esp/bin/python tw_setid.py /dev/ttyACM0
-# -> board 16, factory address 30:30:f9:xx:xx:xx, firmware tw_node 2.6, PSRAM 8 MB, LED off
+# -> board 16, factory address 30:30:f9:xx:xx:xx, firmware tw_node 2.7, PSRAM 8 MB, LED off
 ```
 A new board says it is board 16 and needs a number:
 `~/scratch-esp/bin/python tw_setid.py /dev/ttyACM0 1` (then 2, 3, ... for the
@@ -113,7 +114,7 @@ dd if=tw_node-s3-ch11.bin of=/tmp/tw_node-app.bin bs=4096 skip=32
 ~/scratch-esp/bin/esptool --chip esp32s3 --port /dev/ttyACM0 write-flash 0x20000 /tmp/tw_node-app.bin
 ```
 (no erase-flash). Tap RST; `tw_setid.py /dev/ttyACM0` should say
-`firmware tw_node 2.6` with the board's old number (and, once all are done,
+`firmware tw_node 2.7` with the board's old number (and, once all are done,
 every board's firmware). If it says board 16, write
 the whole image as above and set the number again. `tw_setid.py` tries up to three times and
 says "done" only when the board reports the new number.

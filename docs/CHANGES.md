@@ -5,6 +5,9 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **tw_node 2.7: version and image.** Reports both ways (above) in
+  `tw_node-s3-ch11.bin`; includes 2.5.1 and 2.6. Program-only upgrade.
+
 - **Computer side (tw_node 2.7): `net_check.py` compares the reports both
   ways too** (uptime and the second frame's end, by record against header),
   and `second_check.py` takes each board's own end from its record when it has
