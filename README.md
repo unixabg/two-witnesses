@@ -118,8 +118,11 @@ Two kinds of loss are told apart: **path** (the measuring board did not hear
 the frame: something was in the way, which is sensing) and **delivery** (it
 heard it, but its report never reached the computer: plumbing).
 
-Remake the views of a run (for example after updating the kit):
-`~/tw-kit/after_run.sh ~/tw-data/runs/<run>`, or for a many-board run
+At the end of every many-board run the checks are made too (second_check,
+lag_check, net_check, score_check: each `<check>.txt` in the run's folder;
+one that does not apply to the run's firmware says so in `checks.out`).
+Remake the views and checks of a run (for example after updating the kit):
+`~/tw-kit/after_run.sh ~/tw-data/runs/<run>`, or the views only, for a many-board run
 `~/scratch-esp/bin/python ~/tw-kit/split_links.py ~/tw-data/runs/<run> --again --view`.
 
 Replay a many-board run on the board layout (every link, second by second,

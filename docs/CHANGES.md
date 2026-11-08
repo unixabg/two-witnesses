@@ -5,6 +5,13 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **`after_run.sh` makes the checks too.** After a many-board run's views
+  it runs `second_check`, `lag_check`, `net_check` and `score_check`, each
+  into its own `.txt` in the run's folder (their output in `checks.out`); one
+  that does not apply to the run says "nothing for this run" and the rest go
+  on, and the checks run even if the views failed. `run.sh` and `watch.sh`
+  call it at the end, so a night's checks are ready in the morning.
+
 - **Scripts: the shared settings in one place.** `TW_DATA`, `PORT`, `VENV`
   (and the Python it gives), `DASH_TAP` and the sleep settings are set in
   `tw_lib.sh` instead of in each of `run.sh`, `watch.sh`, `survey.sh` and
