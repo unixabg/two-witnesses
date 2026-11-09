@@ -5,6 +5,11 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **tw_node 3.2: version and image.** The channel (below) in
+  `tw_node-s3-ch11.bin` (the name stays: 11 is the channel of a board with
+  nothing in its flash). Program-only upgrade (its first 128 KB are 3.1's);
+  every board on 3.2 before a channel change.
+
 - **Computer side: `tw_setid.py PORT channel [N]`** (tw_node 3.2). Without N
   it shows every board's channel; with N (1-11, from one table of channels
   by band) it refuses unless every board says it runs 3.2, gives it, waits
