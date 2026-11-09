@@ -860,6 +860,7 @@ int tw_key_class(uint8_t key)
         return TW_KC_BOARD;
     case TW_K_LED_TEST:
     case TW_K_LED_TRY:
+    case TW_K_SURVEY:
         return TW_KC_ACTION;
     case TW_K_POWER:
     case TW_K_RELAY:
@@ -1181,12 +1182,33 @@ const tw_rec_t *tw_aux_record(tw_node_t *n, uint32_t now)
             return r;
         }
     }
+    if (n->survey_len && (uint32_t)(now - n->survey_us) < TW_SURVEY_SEND_US &&
+        (uint32_t)(now - n->survey_sent_us) >= TW_INFO_EVERY_US) {    /* 3.1: the survey, every 5 s */
+        n->survey_sent_us = now;
+        tw_rec_t *r = queue_aux(n, now, TW_KIND_SURVEY, n->survey, n->survey_len);
+        r->txseq = n->survey_gen;
+        return r;
+    }
     if (n->info[0] && (!n->info_sent || (uint32_t)(now - n->info_us) >= TW_INFO_EVERY_US)) {
         n->info_sent = 1;
         n->info_us = now;
         return queue_aux(n, now, TW_KIND_INFO, (const uint8_t *)n->info, (int)strlen(n->info));
     }
     return NULL;
+}
+
+void tw_survey_done(tw_node_t *n, uint32_t now, uint8_t gen, const uint8_t *entries, int count)
+{
+    if (count < 0 || count > TW_SURVEY_N) {
+        count = count < 0 ? 0 : TW_SURVEY_N;
+    }
+    n->survey[0] = TW_SURVEY_FIRST;
+    n->survey[1] = (uint8_t)count;
+    memcpy(n->survey + 2, entries, (size_t)count * TW_SURVEY_ENTRY);
+    n->survey_len = (uint8_t)(2 + count * TW_SURVEY_ENTRY);
+    n->survey_gen = gen;
+    n->survey_us = now;
+    n->survey_sent_us = now - TW_INFO_EVERY_US;     /* the first goes with the next record */
 }
 
 const tw_rec_t *tw_add_measurement(tw_node_t *n, uint32_t now, uint8_t tx, uint32_t txseq,
@@ -1356,6 +1378,29 @@ int tw_format_record(const tw_rec_t *r, char *out, int max)
             }
             out[k] = 0;
             i += TW_CMD_HDR + len;
+        }
+        if (k > 0 && k < max - 1) {
+            out[k++] = '\n';
+            out[k] = 0;
+        }
+        return k;
+    }
+    if ((r->kind & TW_KIND_MASK) == TW_KIND_SURVEY) {
+        /* 3.1: TWU,board,boot,record number,generation,then per channel
+           channel:busy %:foreign frames:loudest RSSI:mean RSSI:noise floor (the last three empty
+           with no frames) */
+        int k = snprintf(out, (size_t)max, "TWU,%u,%u,%lu,%lu", r->rx, r->boot, (unsigned long)r->recseq,
+                         (unsigned long)r->txseq);
+        int cnt = r->n >= 2 ? r->q[1] : 0;
+        for (int i = 0; i < cnt && 2 + (i + 1) * TW_SURVEY_ENTRY <= r->n && k > 0 && k < max - 40; i++) {
+            const uint8_t *e = r->q + 2 + i * TW_SURVEY_ENTRY;
+            unsigned fr = (unsigned)e[1] | ((unsigned)e[2] << 8);
+            if (fr) {
+                k += snprintf(out + k, (size_t)(max - k), ",%u:%u.%u:%u:%d:%d:%d", r->q[0] + i, e[0] / 2,
+                              (e[0] & 1) * 5, fr, (int8_t)e[3], (int8_t)e[4], (int8_t)e[5]);
+            } else {
+                k += snprintf(out + k, (size_t)(max - k), ",%u:%u.%u:0:::", r->q[0] + i, e[0] / 2, (e[0] & 1) * 5);
+            }
         }
         if (k > 0 && k < max - 1) {
             out[k++] = '\n';

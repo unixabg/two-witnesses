@@ -5,6 +5,22 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **Firmware (tw_node 3.1): the channel survey.** A new action (key 5, for
+  all boards): 5 s after taking it, every board at once leaves its channel and
+  listens 1 s on each of channels 1-11 (20 MHz, every frame the radio
+  decodes), then comes back: about 12 s. It counts the other traffic only (our
+  boards are silent then, and any that is not is left out by its address):
+  frames, their loudest and mean RSSI, the noise floor, and busy, the share of
+  the time their frames took (from each frame's length and rate). The result
+  is a new record (kind 6, printed as TWU), sent every 5 s for a minute.
+  Bluetooth or a microwave oven are not decoded: only the noise floor shows
+  them. Protocol 3 as before: 3.0 and 3.1 boards work together (a 3.0 board
+  just does not survey). Simulator: 3 and 6 boards, the network paused
+  11.6 s and back at full rate within a second; every board's result arrives
+  within a second of its return, with 15% loss, a board the cable board
+  cannot hear, and two surveys in a row; a board that was off when it was
+  given and back within the minute surveys on its own later (harmless).
+
 - **`after_run.sh` makes the checks too.** After a many-board run's views
   it runs `second_check`, `lag_check`, `net_check` and `score_check`, each
   into its own `.txt` in the run's folder (their output in `checks.out`); one

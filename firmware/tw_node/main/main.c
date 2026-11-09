@@ -761,6 +761,126 @@ static void net_save(void)
 }
 
 /* the board's keys changed (over its cable, or by record): take the settings, run the actions */
+/* ---------------- 3.1: the channel survey ----------------
+   Every board at once (TW_K_SURVEY, an action for all): TW_SURVEY_DELAY_US after taking it, a board
+   leaves its channel and listens TW_SURVEY_DWELL_MS on each of channels TW_SURVEY_FIRST.. (20 MHz,
+   every frame the radio can decode), then comes back. Our own boards are silent then (and any that
+   is not is left out by its address), so it counts the others' traffic: how many frames, how loud,
+   and how much of the time they took (busy: their air time, from each frame's length and rate). Not
+   seen: what the radio cannot decode (Bluetooth, a microwave oven, a weak distant network): only as
+   the noise floor. The network pauses for about 12 s and starts again as after any gap. */
+typedef struct {
+    uint32_t n;                         /* foreign frames */
+    uint32_t air_us;                    /* their air time */
+    int32_t  rssi_sum, noise_sum;
+    int8_t   rssi_max;
+} svy_t;
+static svy_t s_svy;                     /* written by the Wi-Fi task while s_svy_on, read after */
+static volatile uint8_t s_svy_on;
+static uint32_t s_survey_at;            /* local time to start (when s_survey_due) */
+static uint8_t s_survey_due, s_survey_gen;
+
+/* a frame's air time, us: legacy (11b DSSS/CCK, 11g OFDM) or 11n, from its length and rate */
+static uint32_t frame_air_us(const wifi_pkt_rx_ctrl_t *rx)
+{
+    uint32_t len = rx->sig_len, bits = 16u + 8u * len + 6u;
+    if (rx->sig_mode == 0) {
+        /* wifi_phy_rate_t codes 0..15: Mbps x 10 (code 4 is not used) */
+        static const uint16_t r10[16] = {10, 20, 55, 110, 10, 20, 55, 110, 480, 240, 120, 60, 540, 360, 180, 90};
+        unsigned code = rx->rate & 15u, r = r10[code];
+        if (code < 8) {                 /* DSSS/CCK: long (192 us) or short (96 us) preamble */
+            return (code < 4 ? 192u : 96u) + (80u * len + r - 1u) / r;
+        }
+        uint32_t bps = 4u * r / 10u;    /* bits per 4-us OFDM symbol */
+        return 20u + 4u * ((bits + bps - 1u) / bps);
+    }
+    static const uint16_t ht20[8] = {26, 52, 78, 104, 156, 208, 234, 260};
+    static const uint16_t ht40[8] = {54, 108, 162, 216, 324, 432, 486, 540};
+    uint32_t bps = rx->cwb ? ht40[rx->mcs & 7u] : ht20[rx->mcs & 7u];
+    return 36u + 4u * ((bits + bps - 1u) / bps);
+}
+
+static void survey_cb(void *buf, wifi_promiscuous_pkt_type_t type)
+{
+    if (!s_svy_on || !buf) {
+        return;
+    }
+    const wifi_promiscuous_pkt_t *p = buf;
+    const wifi_pkt_rx_ctrl_t *rx = &p->rx_ctrl;
+    if (type != WIFI_PKT_MISC && rx->sig_len >= 16 && !memcmp(p->payload + 10, s_fake_mac, 5)) {
+        return;                         /* one of our boards (its sender address): not counted */
+    }
+    s_svy.n++;
+    s_svy.air_us += frame_air_us(rx);
+    s_svy.rssi_sum += rx->rssi;
+    s_svy.noise_sum += rx->noise_floor;
+    if (rx->rssi > s_svy.rssi_max) {
+        s_svy.rssi_max = (int8_t)rx->rssi;
+    }
+}
+
+static int8_t clamp8(int32_t v)
+{
+    return (int8_t)(v < -128 ? -128 : v > 127 ? 127 : v);
+}
+
+/* the survey itself (the work task, about 12 s): the result goes to the protocol state, which sends
+   it; the board then starts its slot again as after a restart */
+static void survey_run(uint32_t *next_tx)
+{
+    uint8_t res[TW_SURVEY_N * TW_SURVEY_ENTRY];
+    wifi_promiscuous_filter_t keep = {0}, all = {.filter_mask = WIFI_PROMIS_FILTER_MASK_ALL};
+    static const uint8_t off[3] = {0, 0, 0};
+    if (s_led_ch) {
+        led_show(off);
+    }
+    ESP_LOGW(TAG, "channel survey %u: channels %d..%d, %d ms each", s_survey_gen, TW_SURVEY_FIRST,
+             TW_SURVEY_FIRST + TW_SURVEY_N - 1, TW_SURVEY_DWELL_MS);
+    esp_wifi_get_promiscuous_filter(&keep);
+    esp_wifi_set_promiscuous_filter(&all);
+    esp_wifi_set_promiscuous_rx_cb(survey_cb);
+    for (int i = 0; i < TW_SURVEY_N; i++) {
+        uint8_t *e = res + i * TW_SURVEY_ENTRY;
+        memset(e, 0, TW_SURVEY_ENTRY);
+        if (esp_wifi_set_channel((uint8_t)(TW_SURVEY_FIRST + i), WIFI_SECOND_CHAN_NONE) != ESP_OK) {
+            continue;
+        }
+        vTaskDelay(pdMS_TO_TICKS(20));  /* settle on the channel */
+        memset(&s_svy, 0, sizeof(s_svy));
+        s_svy.rssi_max = -128;
+        __atomic_thread_fence(__ATOMIC_SEQ_CST);
+        uint32_t t0 = (uint32_t)esp_timer_get_time();
+        s_svy_on = 1;
+        vTaskDelay(pdMS_TO_TICKS(TW_SURVEY_DWELL_MS));
+        s_svy_on = 0;
+        uint32_t dt = (uint32_t)esp_timer_get_time() - t0;
+        vTaskDelay(pdMS_TO_TICKS(5));   /* a callback under way finishes */
+        __atomic_thread_fence(__ATOMIC_SEQ_CST);
+        uint32_t busy = dt ? (uint32_t)((uint64_t)s_svy.air_us * 200u / dt) : 0;
+        e[0] = (uint8_t)(busy > 200u ? 200u : busy);
+        uint32_t n = s_svy.n > 0xffffu ? 0xffffu : s_svy.n;
+        e[1] = (uint8_t)n;
+        e[2] = (uint8_t)(n >> 8);
+        if (s_svy.n) {
+            e[3] = (uint8_t)s_svy.rssi_max;
+            e[4] = (uint8_t)clamp8(s_svy.rssi_sum / (int32_t)s_svy.n);
+            e[5] = (uint8_t)clamp8(s_svy.noise_sum / (int32_t)s_svy.n);
+        }
+    }
+    esp_wifi_set_promiscuous_rx_cb(NULL);
+    esp_wifi_set_promiscuous_filter(&keep);
+    if (esp_wifi_set_bandwidth(WIFI_IF_STA, WIFI_BW_HT40) != ESP_OK ||
+        esp_wifi_set_channel(TW_CHANNEL, WIFI_SECOND_CHAN_BELOW) != ESP_OK) {
+        ESP_LOGE(TAG, "could not come back to channel %d: restarting", TW_CHANNEL);
+        esp_restart();                  /* it starts on its own channel */
+    }
+    uint32_t now = (uint32_t)esp_timer_get_time();
+    tw_survey_done(&s_node, now, s_survey_gen, res, TW_SURVEY_N);
+    tw_update_roles(&s_node, now);      /* who is still there: nobody, for a moment */
+    *next_tx = now + 50000u + esp_random() % 50000u;    /* as at the start */
+    s_led_shown[0] = s_led_shown[1] = s_led_shown[2] = 255;     /* redraw */
+}
+
 static void led_apply(void)
 {
     uint32_t ch = s_node.set_changed;
@@ -771,6 +891,11 @@ static void led_apply(void)
     if ((ch & (1u << TW_K_LED_TEST)) && s_led_ch) {        /* 2.5.1: actions, once per generation */
         s_led_test = 7;
         s_led_try = 0;
+    }
+    if (ch & (1u << TW_K_SURVEY)) {     /* 3.1: the channel survey, in TW_SURVEY_DELAY_US */
+        s_survey_gen = s_node.set_gen[TW_K_SURVEY];
+        s_survey_at = (uint32_t)esp_timer_get_time() + TW_SURVEY_DELAY_US;
+        s_survey_due = 1;
     }
     if ((ch & (1u << TW_K_LED_TRY)) && s_led_ch) {
         memcpy(s_led_try_rgb, s_node.set_val[TW_K_LED_TRY], 3);
@@ -979,6 +1104,22 @@ static void poll_commands(void)
                 }
                 out_wait(msg, k);
                 hello();
+            } else if (n && !strncmp(cmd, "TWSET survey", 12)) {
+                /* 3.1: the channel survey, for every board at once (generation G: the computer chooses
+                   it, one more than the boards report) */
+                char msg[160];
+                int gen = -1, k;
+                if (sscanf(cmd, "TWSET survey gen %d", &gen) == 1 && gen >= 1 && gen <= 255) {
+                    tw_setting_give(&s_node, TW_SET_ALL, TW_K_SURVEY, NULL, 0, (uint8_t)gen);
+                    led_apply();
+                    k = snprintf(msg, sizeof(msg), "TWOK survey given to all boards, generation %d: in %u s, "
+                                 "channels %d..%d, about %d s away\n", gen, TW_SURVEY_DELAY_US / 1000000u,
+                                 TW_SURVEY_FIRST, TW_SURVEY_FIRST + TW_SURVEY_N - 1,
+                                 TW_SURVEY_N * (TW_SURVEY_DWELL_MS + 30) / 1000 + 1);
+                } else {
+                    k = snprintf(msg, sizeof(msg), "TWERR survey gen G (1..255)\n");
+                }
+                out_wait(msg, k);
             } else if (n && sscanf(cmd, "TWSET id %d", &id) == 1 && id >= 1 && id <= TW_MAX_NODES) {
                 save_id((uint8_t)id);
                 char msg[64];
@@ -1099,6 +1240,12 @@ static void work_task(void *arg)
             led_apply();                        /* 2.5: settings that came by record */
             led_second();                       /* 2.4: the LED, from the scores just closed */
             poll_commands();
+            if (s_survey_due && (int32_t)(now - s_survey_at) >= 0) {
+                s_survey_due = 0;
+                built = 0;
+                survey_run(&next_tx);           /* 3.1: about 12 s away from the channel */
+                continue;
+            }
         }
         if ((int32_t)(now - next_hello) >= 0) {
             next_hello = now + 10000000u;

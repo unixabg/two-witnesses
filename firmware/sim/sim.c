@@ -80,6 +80,8 @@ typedef struct {
     double next_tx;             /* true time of the next send */
     int alive, exit;
     double dead_from, dead_to;
+    double away_from, away_to;  /* 3.1: away surveying the channels (silent and deaf, keeps its state) */
+    int away_done;
     double last_status;
     double node_last[MAXN + 1];
     int8_t node_rssi[MAXN + 1];
@@ -351,6 +353,7 @@ int main(int argc, char **argv)
         s->alive = 1;
         s->exit = exits[id];
         s->dead_from = s->dead_to = -1;
+        s->away_from = s->away_to = -1;
         s->next_tx = urand() * 20000;
         s->extra_at = -1;
         s->air_t = -1;
@@ -403,6 +406,28 @@ int main(int argc, char **argv)
             N_[id].st.set_changed = 0;
             for (int k = 1; k < TW_K_N; k++)
                 if (ch & (1u << k)) took_t[id][k] = t / 1e6;
+            if (ch & (1u << TW_K_SURVEY)) {              /* 3.1: away in 5 s, for the survey's ~12 s */
+                N_[id].away_from = t + TW_SURVEY_DELAY_US;
+                N_[id].away_to = N_[id].away_from + TW_SURVEY_N * (TW_SURVEY_DWELL_MS + 25) * 1000.0 + 200000;
+                N_[id].away_done = 0;
+            }
+            simnode_t *a = &N_[id];
+            if (a->away_to >= 0 && !a->away_done && t >= a->away_to) {   /* back: its (made-up) result */
+                uint8_t res[TW_SURVEY_N * TW_SURVEY_ENTRY];
+                memset(res, 0, sizeof(res));
+                for (int c = 0; c < TW_SURVEY_N; c++) {
+                    int busy = c == 5 ? 80 : (c + id) % 4 * 3;          /* channel 6 busy, others a little */
+                    res[c * TW_SURVEY_ENTRY] = (uint8_t)busy;
+                    if (busy) {
+                        res[c * TW_SURVEY_ENTRY + 1] = (uint8_t)(busy * 3);
+                        res[c * TW_SURVEY_ENTRY + 3] = (uint8_t)(int8_t)(-60 - c);
+                        res[c * TW_SURVEY_ENTRY + 4] = (uint8_t)(int8_t)(-75 - c);
+                        res[c * TW_SURVEY_ENTRY + 5] = (uint8_t)(int8_t)-95;
+                    }
+                }
+                tw_survey_done(&a->st, local_us(a, t), a->st.set_gen[TW_K_SURVEY], res, TW_SURVEY_N);
+                a->away_done = 1;
+            }
         }
         /* next sender: a board's slot, or the extra frame it has pending */
         /* ev: 0 build the normal frame, 1 build the extra one, 2 (--late) a built frame asks for the air */
@@ -426,6 +451,7 @@ int main(int argc, char **argv)
             for (int id = 1; id <= n_nodes; id++) {
                 simnode_t *r = &N_[id];
                 int dead = r->dead_from >= 0 && busy_until >= r->dead_from && (r->dead_to < 0 || busy_until < r->dead_to);
+                dead |= r->away_from >= 0 && busy_until >= r->away_from && busy_until < r->away_to;
                 if (id == busy_src || dead || last_collided) continue;
                 if (urand() < p_loss) { lost_random++; continue; }
                 int blocked = 0;
@@ -484,6 +510,8 @@ int main(int argc, char **argv)
             if (tx_t > wall) usleep((useconds_t)(tx_t - wall));
         }
         int dead = s->dead_from >= 0 && tx_t >= s->dead_from && (s->dead_to < 0 || tx_t < s->dead_to);
+        int dead_real = dead;                        /* switched off: reboots when back */
+        dead |= s->away_from >= 0 && tx_t >= s->away_from && tx_t < s->away_to;   /* 3.1: surveying */
         uint32_t lnow = local_us(s, tx_t);
         /* the computer's power commands, and the firmware applying settings */
         for (int k = 0; k < n_sets; k++) {
@@ -693,7 +721,7 @@ int main(int argc, char **argv)
             t = tx_t;
             continue;
         }
-        if (dead && (s->st.n_rx_frames || s->st.n_tx)) {
+        if (dead_real && (s->st.n_rx_frames || s->st.n_tx)) {
             /* a dead board forgets everything: it reboots when it comes back */
             int was_exit = s->exit;
             tw_init(&s->st, (uint8_t)who, (uint8_t)was_exit, (unsigned)(t + who));
@@ -709,6 +737,7 @@ int main(int argc, char **argv)
         for (int id = 1; id <= n_nodes; id++) {
             simnode_t *r = &N_[id];
             int rdead = r->dead_from >= 0 && t >= r->dead_from && (r->dead_to < 0 || t < r->dead_to);
+            rdead |= r->away_from >= 0 && t >= r->away_from && t < r->away_to;
             if (!r->exit || rdead || t - r->last_status < 1e6) continue;
             r->last_status = t;
             char line[300];

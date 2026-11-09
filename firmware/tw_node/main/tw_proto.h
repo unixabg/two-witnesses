@@ -108,6 +108,18 @@
                                            steps); txseq its uptime, s; printed as TWM. 3.0: the only
                                            place of both (the header carried them before) */
                                         /* 4: 2.5's settings record (TW_KIND_SET), gone in 3.0 */
+#define TW_KIND_SURVEY      6           /* 3.1: not a measurement: this board's last channel survey;
+                                           txseq its generation (TW_K_SURVEY), q: the first channel, the
+                                           count, then TW_SURVEY_ENTRY bytes a channel: busy (0.5% steps,
+                                           0..200), foreign frames (2 bytes), their loudest and mean
+                                           RSSI, the noise floor (dBm; 0 with no frames). Printed as TWU */
+#define TW_SURVEY_FIRST     1           /* channels surveyed: 1..11 (2.4 GHz, US). A future band adds a
+                                           range here; a channel number names its band by itself */
+#define TW_SURVEY_N         11
+#define TW_SURVEY_ENTRY     6
+#define TW_SURVEY_DELAY_US  5000000u    /* from taking the action to leaving: time for it to reach all */
+#define TW_SURVEY_DWELL_MS  1000        /* listening on each channel */
+#define TW_SURVEY_SEND_US   60000000u   /* the result is sent every 5 s for this long after */
 #define TW_KIND_CMD         5           /* 2.5.1+: settings and commands for boards (docs/PROTOCOL-3.md):
                                            entries of TW_CMD_HDR bytes and a value: target (0 = all),
                                            key, flags (TW_CF_REPORT), generation, seconds left to pass
@@ -124,6 +136,8 @@
 #define TW_K_LED_BRIGHT     2           /* board: its brightness, 1 byte (1..255) */
 #define TW_K_LED_TEST       3           /* action: the LED's test sequence, no value */
 #define TW_K_LED_TRY        4           /* action: show R, G, B (3 bytes) on the LED for 10 s */
+#define TW_K_SURVEY         5           /* action (3.1): the channel survey, no value; for all boards at
+                                           once (TW_SURVEY_*) */
 #define TW_K_POWER          16          /* network (2.6): transmit power, 1 byte, quarter dBm (0: never set) */
 #define TW_K_RELAY          17          /* network: relaying, 1 byte (1 on, 0 off) */
 #define TW_K_SECOND         18          /* network: the second frame, 1 byte (0 on, 1 off, 2 force) */
@@ -307,6 +321,10 @@ typedef struct {
     uint8_t  peer_net[TW_MAX_NODES + 1][TW_K_NET_N];
     uint8_t  peer_gen[TW_MAX_NODES + 1][TW_K_NET_N];
     uint8_t  peer_has[TW_MAX_NODES + 1];    /* bit i: peer_net[.][i] heard */
+    /* 3.1: the last channel survey's result (a TW_KIND_SURVEY payload), and when it was made / sent */
+    uint8_t  survey[2 + TW_SURVEY_N * TW_SURVEY_ENTRY];
+    uint8_t  survey_len, survey_gen;
+    uint32_t survey_us, survey_sent_us;
 } tw_node_t;
 
 void     tw_init(tw_node_t *n, uint8_t id, uint8_t is_exit, uint32_t seed);
@@ -373,6 +391,10 @@ void     tw_setting_heard(tw_node_t *n, const tw_rec_t *r);
    Start (at boot) with the settings and the keys' generations kept in flash: set_power and
    set_flags filled in first, then this */
 void     tw_net_init(tw_node_t *n, const uint8_t gen[TW_K_NET_N]);
+/* 3.1: this board finished the channel survey (TW_K_SURVEY, generation gen): TW_SURVEY_N entries
+   of TW_SURVEY_ENTRY bytes, from channel TW_SURVEY_FIRST up; sent as a TW_KIND_SURVEY record
+   every 5 s for TW_SURVEY_SEND_US */
+void     tw_survey_done(tw_node_t *n, uint32_t now, uint8_t gen, const uint8_t *entries, int count);
 /* records that are not measurements, queued when due (2.2: the info record, every
    TW_INFO_EVERY_US): call about once a second; returns one record queued now (for an exit to
    print), or NULL. Call again until NULL. They take the board's ordinary record numbers, so the
