@@ -264,6 +264,34 @@ static uint8_t board_id(void)
     return TW_MAX_NODES;
 }
 
+/* 3.3: this board's group, kept in its flash (set over the cable, TWSET group N); none: the default */
+static uint8_t board_group(void)
+{
+    nvs_handle_t h;
+    uint8_t g = TW_GROUP_DEFAULT;
+    if (nvs_open("tw", NVS_READONLY, &h) == ESP_OK) {
+        nvs_get_u8(h, "grp", &g);
+        nvs_close(h);
+    }
+    return g;
+}
+
+/* a new group: kept, and the network keys' generations forgotten ("never given"): the board takes
+   its new group's settings instead of carrying its old group's on (newer, they would win there) */
+static void save_group(uint8_t g)
+{
+    static const char *NG[] = {"ngp", "ngr", "ngs", "ngm", "ngc", "ngh"};
+    nvs_handle_t h;
+    if (nvs_open("tw", NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_u8(h, "grp", g);
+        for (size_t i = 0; i < sizeof(NG) / sizeof(NG[0]); i++) {
+            nvs_set_u8(h, NG[i], 0);
+        }
+        nvs_commit(h);
+        nvs_close(h);
+    }
+}
+
 /* the network setting, kept across restarts */
 static void load_settings(void)
 {
@@ -356,6 +384,7 @@ static void wifi_init(void)
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
     ESP_ERROR_CHECK(esp_wifi_set_channel(s_node.set_channel, tw_chan_partner(s_node.set_channel) > 0 ?
                                          WIFI_SECOND_CHAN_ABOVE : WIFI_SECOND_CHAN_BELOW));    /* 3.2 */
+    s_fake_mac[4] = s_node.group;       /* 3.3: its group (0: as before) */
     s_fake_mac[5] = s_id;
     ESP_ERROR_CHECK(esp_wifi_set_mac(WIFI_IF_STA, s_fake_mac));
 }
@@ -447,7 +476,7 @@ static void csi_cb(void *ctx, wifi_csi_info_t *info)
     tw_hdr_t h;
     if (!info->payload || info->payload_len < ESPNOW_HDR_SKIP + TW_HDR_LEN ||
             tw_peek_header(info->payload + ESPNOW_HDR_SKIP, info->payload_len - ESPNOW_HDR_SKIP, &h) < 0 ||
-            h.src != info->mac[5]) {
+            h.src != info->mac[5] || h.group != s_node.group) {    /* 3.3: its own group only */
         return;
     }
     const wifi_pkt_rx_ctrl_t *rx = &info->rx_ctrl;
@@ -596,6 +625,9 @@ static void handle(ev_t *ev)
         if (tw_peek_header(ev->f.data, ev->f.len, &h) < 0) {
             s_node.n_bad_frames++;
             return;
+        }
+        if (!tw_frame_ours(&s_node, &h)) {
+            return;                         /* 3.3: another group's (counted) */
         }
         int kok;
         int32_t k = rxk_get(&kok);
@@ -1155,6 +1187,21 @@ static void poll_commands(void)
                     k = snprintf(msg, sizeof(msg), "TWERR survey gen G (1..255)\n");
                 }
                 out_wait(msg, k);
+            } else if (n && sscanf(cmd, "TWSET group %d", &id) == 1) {
+                /* 3.3: this board's group, over its cable only (over the air it would leave the
+                   group that carried the command): kept, and the board restarts in it */
+                char msg[96];
+                int k;
+                if (id >= 0 && id <= 255) {
+                    save_group((uint8_t)id);
+                    k = snprintf(msg, sizeof(msg), "TWOK group %d, restarting\n", id);
+                    out_wait(msg, k);
+                    usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(200));
+                    vTaskDelay(pdMS_TO_TICKS(200));
+                    esp_restart();
+                }
+                k = snprintf(msg, sizeof(msg), "TWERR group must be 0..255\n");
+                out_wait(msg, k);
             } else if (n && sscanf(cmd, "TWSET id %d", &id) == 1 && id >= 1 && id <= TW_MAX_NODES) {
                 save_id((uint8_t)id);
                 char msg[64];
@@ -1176,11 +1223,12 @@ static void hello(void)
     uint8_t mac[6];
     esp_efuse_mac_get_default(mac);
     char line[180];
-    /* ...,max payload, 2.2: PSRAM found (bytes; 0 = none), 2.4: the LED's pin (0 = none), brightness */
-    int k = snprintf(line, sizeof(line), "TWH,%u,%02x:%02x:%02x:%02x:%02x:%02x,%s,%s %s,%d,%lu,%u,%u\n", s_id,
+    /* ...,max payload, 2.2: PSRAM found (bytes; 0 = none), 2.4: the LED's pin (0 = none), brightness,
+       3.3: its group */
+    int k = snprintf(line, sizeof(line), "TWH,%u,%02x:%02x:%02x:%02x:%02x:%02x,%s,%s %s,%d,%lu,%u,%u,%u\n", s_id,
                      mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], FW_VERSION, __DATE__, __TIME__,
                      s_max_payload, (unsigned long)(esp_psram_is_initialized() ? esp_psram_get_size() : 0),
-                     s_led_pin, s_led_bright);
+                     s_led_pin, s_led_bright, s_node.group);
     out(line, k);
 }
 
@@ -1359,6 +1407,7 @@ void app_main(void)
     ESP_ERROR_CHECK(usb_serial_jtag_driver_install(&usb_cfg));
     s_id = board_id();
     tw_init(&s_node, s_id, 0, esp_random());
+    s_node.group = board_group();       /* 3.3: before the radio (its address carries it) */
     s_node.access_us = X_ACCESS_US;
     tw_set_info(&s_node, FW_VERSION "|" __DATE__ " " __TIME__);     /* sent to the computer every 5 s */
     load_settings();
@@ -1372,7 +1421,7 @@ void app_main(void)
     s_radio_ch = s_node.chan_home;
     led_load();                         /* 2.4: the LED, if this board has one set */
     led_start();
-    ESP_LOGW(TAG, "%s: board %u, address " MACSTR ", channel %u, frames up to %d bytes", FW_VERSION, s_id,
-             MAC2STR(s_fake_mac), s_node.chan_home, s_max_payload);
+    ESP_LOGW(TAG, "%s: board %u, group %u, address " MACSTR ", channel %u, frames up to %d bytes", FW_VERSION,
+             s_id, s_node.group, MAC2STR(s_fake_mac), s_node.chan_home, s_max_payload);
     xTaskCreatePinnedToCore(work_task, "tw_work", 8192, NULL, 5, NULL, 1);
 }

@@ -33,10 +33,13 @@ not a new header byte or a new mechanism.
 | 14-15 | boards heard | the same |
 | 16 | period, ms | the same |
 | 17 | records in the frame | the same |
-| 18-19 | the sender's uptime, s | **18: the sender's delay** (time stamp to send-done less the air, 20 us steps; 2.3's, now in its own place); **19: reserved** |
+| 18-19 | the sender's uptime, s | **18: the sender's delay** (time stamp to send-done less the air, 20 us steps; 2.3's, now in its own place); **19: reserved** (3.3: **the sender's group**; 0 from older boards, the default group) |
 | 20-22 | network settings: setting number, power, flags | **reserved** |
 | 23 | where its last second frame ended | **reserved** |
 | 24-39 | how well it hears boards 1-16 (its own place: the delay, 2.3+) | how well it hears boards 1-16 (its own place: 100 again) |
+
+3.3 took byte 19 for the group: harmless where it reads 0 (the default group,
+every board before 3.3), as the rule below asks. Bytes 20-23 stay reserved.
 
 Reserved bytes are sent as 0 and **ignored by a 3.0 receiver**, so a later
 use must be harmless where they read 0. They cost about 0.6 us of air each

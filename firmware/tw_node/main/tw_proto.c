@@ -265,6 +265,15 @@ uint8_t tw_chan_step(tw_node_t *n, uint32_t now, int *quiet)
             n->chan_home = n->chan_target = n->scan_ch;
             n->chan_wait = 0;
             n->chan_changed = 1;
+            if (n->set_gen[TW_K_CHANNEL] == 0) {
+                /* 3.3: its own channel was never given (a new board, or one moved to this group): the
+                   one it found is its channel. Else the network's never-given channel would not look
+                   newer than its own, and it would go back to that 20 s later, and again */
+                n->set_val[TW_K_CHANNEL][0] = n->scan_ch;
+                n->set_len[TW_K_CHANNEL] = 1;
+                n->set_channel = n->scan_ch;
+                n->set_changed |= 1u << TW_K_CHANNEL;   /* kept in flash */
+            }
             return n->chan_home;
         }
         if ((int32_t)(now - n->scan_step_us) >= (int32_t)(TW_CHAN_SCAN_MS * 1000u)) {
@@ -718,7 +727,8 @@ static void put_header(tw_node_t *n, uint32_t now, uint8_t *buf, uint32_t seq, u
         }
         buf[18] = (uint8_t)(d / 20u > 255u ? 255u : d / 20u < 1u ? 1u : d / 20u);
     }
-    memset(buf + 19, 0, 5);             /* 3.0: reserved, sent as 0, ignored */
+    buf[19] = n->group;                 /* 3.3: our group */
+    memset(buf + 20, 0, 4);             /* 3.0: reserved, sent as 0, ignored */
     for (int i = 1; i <= TW_MAX_NODES; i++) {
         buf[23 + i] = tw_hear_pct(n, now, (uint8_t)i);
     }
@@ -839,6 +849,7 @@ int tw_peek_header(const uint8_t *buf, int len, tw_hdr_t *h)
     h->period_ms = buf[16];
     h->n_records = buf[17];
     h->delay_us = (uint16_t)(buf[18] * 20u);
+    h->group = buf[19];                         /* 3.3 */
     memcpy(h->hear, buf + 24, TW_MAX_NODES);   /* bytes 19-23: reserved, ignored */
     h->len = (uint16_t)len;
     return valid_id(h->src) ? 0 : -1;
@@ -1295,6 +1306,16 @@ const tw_rec_t *tw_aux_record(tw_node_t *n, uint32_t now)
     return NULL;
 }
 
+int tw_frame_ours(tw_node_t *n, const tw_hdr_t *h)
+{
+    if (h->group == n->group) {
+        return 1;
+    }
+    n->n_other_group++;
+    n->other_group_last = h->group;
+    return 0;
+}
+
 void tw_survey_done(tw_node_t *n, uint32_t now, uint8_t gen, const uint8_t *entries, int count)
 {
     if (count < 0 || count > TW_SURVEY_N) {
@@ -1574,7 +1595,8 @@ int tw_format_status(const tw_node_t *n, uint32_t now, char *out, int max)
        2.1+: setting flags, extra frames sent, extra frames skipped (nothing fitted in time) */
     /* 3.2, at the end: the channel it works on, the network's (its key), 1 while looking for the
        others, switches and scans since start */
-    return snprintf(out, (size_t)max, "TWS,%u,%u,%u,%u,%04x,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%u,%d,%u,%u,%u,%u,%lu,%lu,%u,%lu,%lu,%u,%u,%u,%u,%u\n",
+    /* 3.3, after those: its group, frames of other groups heard, and the last such group */
+    return snprintf(out, (size_t)max, "TWS,%u,%u,%u,%u,%04x,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%u,%d,%u,%u,%u,%u,%lu,%lu,%u,%lu,%lu,%u,%u,%u,%u,%u,%u,%lu,%u\n",
                     n->id, TW_VERSION, n->leader, (unsigned)((n->synced ? TW_F_SYNCED : 0) |
                     (n->is_exit ? TW_F_EXIT : 0) | (n->leader == n->id ? TW_F_LEADER : 0)),
                     tw_active(n, now), (unsigned long)(p / 1000u), (unsigned long)(fits ? start : 0),
@@ -1584,5 +1606,5 @@ int tw_format_status(const tw_node_t *n, uint32_t now, char *out, int max)
                     n->tx_power_q, (n->set_flags & TW_SET_RELAY_OFF) ? 0u : 1u, (unsigned long)n->n_relayed_out,
                     (unsigned long)n->n_relay_full, n->set_flags, (unsigned long)n->n_extra_sent,
                     (unsigned long)n->n_extra_skipped, n->chan_home, n->set_channel, n->scan_on, n->chan_switches,
-                    n->chan_scans);
+                    n->chan_scans, n->group, (unsigned long)n->n_other_group, n->other_group_last);
 }

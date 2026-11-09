@@ -5,6 +5,25 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **Firmware (tw_node 3.3): groups.** Header byte 19 (reserved since 3.0)
+  says the sender's group; a board takes only its own group's frames, and
+  counts the others' (TWS: its group, other groups' frames, the last such
+  group). The group is in the board's flash ("grp"), set over its cable
+  (`TWSET group N`, 0-255; the board restarts), default 0 (TW_GROUP_DEFAULT:
+  the group of every board before 3.3, which send 0 there). It is also in the
+  board's radio address (byte 4; group 0: as before), so the radio measures
+  only its own group's boards, and the survey counts another group as other
+  traffic. A board moved to another group forgets its network settings'
+  generations, so it takes its new group's settings; a board that finds its
+  group by looking, with no channel ever given, takes the channel it found
+  (without it, a moved board would go back to its old channel every 20 s; the
+  simulator found that). Each group has its own board numbers. Two groups on
+  one channel share its air: give each its own channel. Simulator: two groups
+  of three on one channel stay apart (no records across, a timekeeper each,
+  each counting the other's frames); on two channels they do not hear each
+  other; a group-2 board back as a new board on the other group's channel
+  finds its group; with one group, the records are the same as 3.2's.
+
 - **tw_node 3.2: version and image.** The channel (below) in
   `tw_node-s3-ch11.bin` (the name stays: 11 is the channel of a board with
   nothing in its flash). Program-only upgrade (its first 128 KB are 3.1's);

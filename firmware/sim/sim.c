@@ -222,6 +222,8 @@ static struct { double t; int target, key, val, gen, done; } give[MAXGIVE];
 static int n_give;
 static double took_t[MAXN + 1][TW_K_N];
 
+static char group_spec[128];                /* 3.3: "FROM-TO:GROUP[:CHANNEL],...": boards in a group (on a channel) */
+
 static int parse_args(int argc, char **argv, char *kill_spec, char *exit_spec, unsigned *seed, char **outpath)
 {
     for (int i = 1; i < argc; i++) {
@@ -230,6 +232,7 @@ static int parse_args(int argc, char **argv, char *kill_spec, char *exit_spec, u
         else if (!strcmp(argv[i], "--loss") && i + 1 < argc) p_loss = atof(argv[++i]);
         else if (!strcmp(argv[i], "--rxerr") && i + 1 < argc) p_rxerr = atof(argv[++i]);
         else if (!strcmp(argv[i], "--exit") && i + 1 < argc) strncpy(exit_spec, argv[++i], 63);
+        else if (!strcmp(argv[i], "--group") && i + 1 < argc) strncpy(group_spec, argv[++i], 127);
         else if (!strcmp(argv[i], "--kill") && i + 1 < argc) strncpy(kill_spec, argv[++i], 255);
         else if (!strcmp(argv[i], "--seed") && i + 1 < argc) *seed = (unsigned)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--realtime")) realtime = 1;
@@ -364,6 +367,17 @@ int main(int argc, char **argv)
         tw_init(&s->st, (uint8_t)id, (uint8_t)s->exit, seed * 31u + (unsigned)id);
         tw_set_info(&s->st, "sim|board");
         s->st.set_channel = 11;                          /* 3.2: the firmware's default */
+        for (char *p = group_spec; *p;) {                /* 3.3: --group FROM-TO:GROUP[:CHANNEL] */
+            int a, b, g, c = 0;
+            int got = sscanf(p, "%d-%d:%d:%d", &a, &b, &g, &c);
+            if (got >= 3 && id >= a && id <= b) {
+                s->st.group = (uint8_t)g;
+                if (got == 4 && c >= 1 && c <= 11) s->st.set_channel = (uint8_t)c;
+            }
+            char *q = strchr(p, ',');
+            if (!q) break;
+            p = q + 1;
+        }
         tw_net_init(&s->st, NULL);                       /* the network keys (3.0: their only way) */
         tw_chan_init(&s->st, local_us(s, 0));
         s->radio = s->st.chan_home;
@@ -474,6 +488,7 @@ int main(int argc, char **argv)
                 uint32_t hw_l = late ? local_us(r, last_start) : now_l;
                 tw_hdr_t h;
                 if (tw_peek_header(last_frame, last_len, &h) < 0) { r->st.n_bad_frames++; continue; }
+                if (!tw_frame_ours(&r->st, &h)) continue;        /* 3.3: another group's */
                 /* --fix hwrx (tw_node 2.3): the clock from the frame's start by the radio's own receive
                    time, as the board knows it: the offset to its clock is learned from the CSI
                    callbacks, so it comes out late by their least delay */
@@ -734,7 +749,9 @@ int main(int argc, char **argv)
         if (dead_real && (s->st.n_rx_frames || s->st.n_tx)) {
             /* a dead board forgets everything: it reboots when it comes back */
             int was_exit = s->exit;
+            uint8_t grp = s->st.group;                   /* 3.3: its group is in its flash: kept */
             tw_init(&s->st, (uint8_t)who, (uint8_t)was_exit, (unsigned)(t + who));
+            s->st.group = grp;
             tw_set_info(&s->st, "sim|board");
             s->st.set_channel = 11;                      /* a board with an empty flash: channel 11 */
             tw_net_init(&s->st, NULL);
@@ -826,9 +843,11 @@ int main(int argc, char **argv)
     fprintf(stderr, "}, \"net\": {");              /* each board's settings, and its network keys */
     for (int id = 1; id <= n_nodes; id++) {
         simnode_t *q = &N_[id];
-        fprintf(stderr, "%s\"%d\": {\"hdr\": [%u, %u, %u], \"diff_s\": 0, \"chan\": [%u, %u, %u, %u, %u], \"keys\": [",
+        fprintf(stderr, "%s\"%d\": {\"hdr\": [%u, %u, %u], \"diff_s\": 0, \"chan\": [%u, %u, %u, %u, %u], "
+                "\"group\": [%u, %lu, %u], \"leader\": %u, \"keys\": [",
                 id > 1 ? ", " : "", id, q->st.set_seq, q->st.set_power, q->st.set_flags, q->st.chan_home,
-                q->st.set_channel, q->st.chan_switches, q->st.chan_scans, q->st.scan_found);
+                q->st.set_channel, q->st.chan_switches, q->st.chan_scans, q->st.scan_found, q->st.group,
+                (unsigned long)q->st.n_other_group, q->st.other_group_last, q->st.leader);
         for (int i = 0; i < TW_K_NET_N; i++) {
             int k = TW_K_NET_FIRST + i;
             fprintf(stderr, "%s[%u, %u, %.2f]", i ? ", " : "", q->st.set_val[k][0], q->st.set_gen[k], took_t[id][k]);

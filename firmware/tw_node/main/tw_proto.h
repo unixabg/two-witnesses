@@ -61,8 +61,16 @@
 #define TW_MAX_NODES        16          /* board numbers 1..16 */
 #define TW_MAX_AMPS         192         /* amplitudes in a full record (HT40: 64 L-LTF + 128 HT-LTF bins) */
 #define TW_COMPACT_AMPS     52          /* L-LTF only (as esp-radar uses) */
-#define TW_HDR_LEN          40          /* 24 bytes (19-23 reserved: sent 0, ignored), then how well the
-                                           sender hears boards 1..16 */
+#define TW_HDR_LEN          40          /* 24 bytes (19: the group, 3.3; 20-23 reserved: sent 0, ignored),
+                                           then how well the sender hears boards 1..16 */
+/* 3.3: groups. Arrays of boards near each other keep to themselves: each frame says its sender's
+   group (header byte 19); a board takes only its own group's frames, and counts the others'. Each
+   board's group is in its flash, set over its cable (like its number); a board with none is in
+   TW_GROUP_DEFAULT, the group of every board before 3.3 (which send 0 there). Two groups on one
+   channel share its air (their slots collide): give each group its own channel (tw_setid.py
+   survey, channel). The group is also in the board's radio address (byte 4), so the radio's
+   measurements are of its own group's boards only */
+#define TW_GROUP_DEFAULT    0
 #define TW_REC_HDR_LEN      28
 #define TW_MAX_PAYLOAD      1400        /* ESP-NOW v2 allows 1470 */
 #define TW_QUEUE_LEN        96          /* own records waiting to be carried */
@@ -197,6 +205,7 @@ typedef struct {
     uint16_t active;        /* bit (id-1): boards the sender counts as active */
     uint8_t  hear[TW_MAX_NODES];   /* how well the sender hears board i+1, % (0 = not heard) */
     uint16_t len;           /* the whole frame's length, bytes (from the receiver, not on the air) */
+    uint8_t  group;         /* byte 19 (3.3): the sender's group (0 from boards before 3.3) */
     uint16_t delay_us;      /* byte 18 (2.3's, its own byte since 3.0): the sender's delay, the least
                                over its last 16 frames of time stamp to send-done less the air, in
                                20 us steps; 0 if it does not know yet */
@@ -275,6 +284,9 @@ typedef struct {
     uint8_t  scan_on, scan_ch, scan_found;
     uint32_t chan_at, last_frame_us, scan_step_us, scan_next_us;
     uint16_t chan_switches, chan_scans;
+    /* 3.3: this board's group; frames of other groups: how many, and the last group heard */
+    uint8_t  group, other_group_last;
+    uint32_t n_other_group;
     uint8_t  set_pending;                   /* 1: a new setting to apply (the firmware applies it) */
     uint8_t  set_changes;                   /* how many times it changed since start */
     uint8_t  tx_power_q;                    /* the power the radio reports it uses (filled in by the firmware) */
@@ -423,6 +435,10 @@ int      tw_set_channel(tw_node_t *n, uint8_t ch);
 /* call often (every frame or so): the channel the radio should be on now; *quiet set while it is
    looking for the others (do not send then). A switch to home sets chan_changed (keep it in flash) */
 uint8_t  tw_chan_step(tw_node_t *n, uint32_t now, int *quiet);
+
+/* 3.3: is this frame (its header peeked) of this board's group? If not, it is counted (TWS) and
+   the caller drops it */
+int      tw_frame_ours(tw_node_t *n, const tw_hdr_t *h);
 
 /* 3.1: this board finished the channel survey (TW_K_SURVEY, generation gen): TW_SURVEY_N entries
    of TW_SURVEY_ENTRY bytes, from channel TW_SURVEY_FIRST up; sent as a TW_KIND_SURVEY record
