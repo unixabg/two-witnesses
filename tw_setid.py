@@ -22,6 +22,8 @@
     ~/scratch-esp/bin/python tw_setid.py PORT led on|off|bright|test|try ... board N|all
                                                           the same for board N, or every board, over the air
                                                           (2.5; test and try 2.5.1)
+    ~/scratch-esp/bin/python tw_setid.py PORT survey          every board listens on channels 1-11 for a
+                                                          second each: who else is on the air (tw_node 3.1)
     e.g. ~/scratch-esp/bin/python tw_setid.py /dev/ttyACM0 power 11
 
 Board number: the board stores it in its flash and restarts; erase-flash clears it.
@@ -47,17 +49,31 @@ movement grows. Boards without one keep it off. On boards like the ones in
 this setup the LED is on GPIO 48; on some, an "RGB" solder pad next to it must
 be bridged first (led test shows whether it lights).
 
+The channel survey (tw_node 3.1): every board at once leaves its channel 5 s
+after the command, listens about a second on each of channels 1-11 (2.4 GHz,
+US) and comes back: about 12 s with the network paused, so not during a run.
+Each reports how busy each channel was with OTHER traffic (our boards are
+silent then, and left out if not), how many foreign frames and how loud, and
+the noise floor. This prints a table, every board's busy share per channel,
+and ranks the 40 MHz channel pairs the boards could use by their worst board
+(all boards share one channel). It is saved in $TW_DATA/surveys/. Busy counts
+only traffic the radio can decode: Bluetooth or a microwave oven show only in
+the noise floor.
+
 The board's USB line can drop a command or an answer when it is busy, so this
 tries up to three times and only says "done" when the board itself reports the
 new number or setting.
 """
+import os
 import sys
 import time
 
 import serial
 
 TRIES = 3
-K_PIN, K_BRIGHT, K_TEST, K_TRY = 1, 2, 3, 4      # keys (docs/PROTOCOL-3.md, tw_proto.h TW_K_*)
+K_PIN, K_BRIGHT, K_TEST, K_TRY, K_SURVEY = 1, 2, 3, 4, 5  # keys (docs/PROTOCOL-3.md, tw_proto.h TW_K_*)
+SURVEY_CHANNELS = {"2.4 GHz": range(1, 12)}      # 3.1: what a survey covers (US); a band adds a row
+OUR_PAIR = (11, 7)                               # the firmware's channel: 11, its 40 MHz partner below
 
 
 def reports(f):
@@ -243,11 +259,143 @@ def set_network(p, command, check, what):
              "(tw_setid.py PORT shows the firmware), and is nothing else using the port?")
 
 
+def survey_parse(f):
+    """a TWU line (3.1): (board, generation, {channel: (busy %, frames, loudest, mean, noise)})"""
+    out = {}
+    for e in f[5:]:
+        q = e.strip().split(":")
+        if len(q) == 6:
+            num = lambda x: int(x) if x.lstrip("-").isdigit() else None
+            out[int(q[0])] = (float(q[1]), int(q[2]), num(q[3]), num(q[4]), num(q[5]))
+    return int(f[1]), int(f[4]), out
+
+
+def pairs_2g4():
+    """the 40 MHz channels in 2.4 GHz, US (1-11): a main channel and its partner 4 above or below,
+    as one block of two 20 MHz halves: (low, high)"""
+    return [(c, c + 4) for c in range(1, 8)]
+
+
+def block_busy(ch, lo, hi):
+    """how busy a 40 MHz block (channels lo and hi, 2.4 GHz: 5 MHz apart, 20 MHz wide) is for one
+    board: the busiest channel overlapping it, by the share of that channel's 20 MHz inside the block
+    (a network halfway in counts half). Not a sum: one network is heard on its neighbors too"""
+    worst = 0.0
+    for c, v in ch.items():
+        over = min(5 * c + 10, 5 * hi + 10) - max(5 * c - 10, 5 * lo - 10)
+        if over > 0 and v[0] is not None:
+            worst = max(worst, v[0] * min(over, 20) / 20)
+    return worst
+
+
+def survey_report(res, when):
+    """the survey's table, the pairs ranked by their worst board; -> text"""
+    boards = sorted(res)
+    chans = [c for band in SURVEY_CHANNELS.values() for c in band]
+    L = [f"channel survey {when}: busy % (other traffic's share of the air) per board, foreign frames in "
+         "brackets", "", "  channel " + "".join(f"   board {b:<6}" for b in boards)]
+    for c in chans:
+        row = f"  {c:>7} "
+        for b in boards:
+            busy, fr, _, _, _ = res[b].get(c, (None, 0, None, None, None))
+            row += f"   {busy:5.1f} ({fr:>4})" if busy is not None else "       -      "
+        L.append(row)
+    L += ["", "  loudest foreign signal / noise floor (dBm), per board:"]
+    for c in chans:
+        row = f"  {c:>7} "
+        for b in boards:
+            _, fr, mx, _, nf = res[b].get(c, (None, 0, None, None, None))
+            row += f"   {mx if mx is not None else '':>4} / {nf if nf is not None else '':<4}"
+        L.append(row)
+    ranked = []
+    for lo, hi in pairs_2g4():
+        per = {b: block_busy(res[b], lo, hi) for b in boards}
+        ours = {lo, hi} == set(OUR_PAIR)
+        ranked.append((round(max(per.values()), 1), round(sum(per.values()), 1), not ours, lo, hi, per))
+    ranked.sort(key=lambda x: x[:4])               # a tie: the channel we are on first (no change for nothing)
+    L += ["", "  40 MHz pairs (main channel and its partner), by the busiest board; a pair's busy: the busiest",
+          "  channel overlapping its 40 MHz, by how much of it overlaps (in 2.4 GHz every pair overlaps some):"]
+    for worst, tot, _, lo, hi, per in ranked:
+        ours = "   <- now" if {lo, hi} == set(OUR_PAIR) else ""
+        L.append(f"    {lo:>2} + {hi:<2}  worst {worst:5.1f}%   " + "  ".join(f"board {b} {per[b]:.1f}" for b in boards)
+                 + ours)
+    best = ranked[0]
+    head = "already on the cleanest" if not best[2] else "cleanest for every board"
+    L += ["", f"  {head}: {best[3]} + {best[4]} (worst board {best[0]:.1f}% busy). "
+          "All boards share one channel; changing it comes later (tw_node 3.2).",
+          "  busy = decodable Wi-Fi only: Bluetooth or a microwave oven show only as a higher noise floor."]
+    return "\n".join(L) + "\n"
+
+
+def survey(p):
+    """3.1: every board surveys the channels at once; wait for each board's result"""
+    st = status(p, 11)
+    if not st:
+        sys.exit("no boards heard: is tw_node running (and nothing else using the port)?")
+    old = sorted(b for b, v in st.items() if v.get("fw") and not v["fw"].startswith(("tw_node 3.1", "tw_node 3.2",
+                                                                                     "tw_node 3.3", "tw_node 4")))
+    if old:
+        print(f"  board{'s' if len(old) > 1 else ''} {', '.join(map(str, old))} run older firmware: "
+              "they keep sending and do not survey (their frames are left out of the others' counts)")
+    gens = [v["keys"][K_SURVEY][0] for v in st.values() if K_SURVEY in v.get("keys", {})]
+    gen = (max(gens, default=0) + 1) % 256 or 1
+    want = sorted(b for b in st if b not in old)
+    for attempt in range(1, TRIES + 1):
+        p.send(f"TWSET survey gen {gen}")
+        ok = False
+        for line in p.lines(3):
+            if line.startswith(("TWOK survey", "TWERR")):
+                print(line)
+                if line.startswith("TWERR"):
+                    sys.exit(1)
+                ok = True
+                break
+        if ok:
+            break
+        print(f"  no answer yet (try {attempt} of {TRIES})")
+    else:
+        sys.exit("the board did not take the command: is it tw_node 3.1?")
+    print("the boards leave the channel in 5 s for about 12 s, then report (up to 40 s) ...")
+    res, t_end = {}, time.time() + 40
+    for line in p.lines(40):
+        f = line.split(",")
+        if f[0] == "TWU" and len(f) >= 6:
+            try:
+                b, g, ch = survey_parse(f)
+            except (ValueError, IndexError):
+                continue
+            if g == gen and b not in res:
+                res[b] = ch
+                print(f"  board {b} reported")
+        if res and set(want) <= set(res):
+            break
+    if not res:
+        sys.exit("no board reported a survey (are they on tw_node 3.1?)")
+    missing = sorted(set(want) - set(res))
+    if missing:
+        print(f"  no result from board {', '.join(map(str, missing))} (out of reach, or older firmware)")
+    when = time.strftime("%Y-%m-%d %H:%M")
+    text = survey_report(res, when)
+    print("\n" + text)
+    folder = os.path.join(os.environ.get("TW_DATA", os.path.expanduser("~/tw-data")), "surveys")
+    try:
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, time.strftime("%Y-%m-%d_%H%M") + ".txt")
+        open(path, "w").write(text)
+        print(f"saved {path}")
+    except OSError as e:
+        print(f"(not saved: {e})")
+
+
 def main():
     a = sys.argv[1:]
     if not a or len(a) > 8:
         sys.exit(__doc__)
     p = Port(a[0])
+
+    if len(a) == 2 and a[1] == "survey":
+        survey(p)
+        return
 
     if len(a) >= 2 and a[1] == "power":
         if len(a) != 3:

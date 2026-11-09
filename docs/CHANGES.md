@@ -5,6 +5,14 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **Computer side: `tw_setid.py PORT survey`** (tw_node 3.1). Gives the
+  survey to every board, waits up to 40 s for each board's result, and prints
+  a table: per channel and board, busy % and foreign frames, the loudest
+  foreign signal and the noise floor; then the seven 40 MHz pairs in 1-11
+  ranked by their worst board (a pair's busy: the busiest channel overlapping
+  its 40 MHz, by how much of it overlaps; a tie keeps the pair in use). Saved
+  in `$TW_DATA/surveys/`. Boards on older firmware are named and skipped.
+
 - **Firmware (tw_node 3.1): the channel survey.** A new action (key 5, for
   all boards): 5 s after taking it, every board at once leaves its channel and
   listens 1 s on each of channels 1-11 (20 MHz, every frame the radio
