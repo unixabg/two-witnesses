@@ -24,6 +24,8 @@
                                                           (2.5; test and try 2.5.1)
     ~/scratch-esp/bin/python tw_setid.py PORT channel N       the radio channel for every board: 1-11 (2.4 GHz,
                                                           US; tw_node 3.2, every board); "channel" alone shows it
+    ~/scratch-esp/bin/python tw_setid.py PORT group N         the group of the board on the cable: 0-255 (0: the
+                                                          default; tw_node 3.3). Over the cable only; it restarts
     ~/scratch-esp/bin/python tw_setid.py PORT survey          every board listens on channels 1-11 for a
                                                           second each: who else is on the air (tw_node 3.1)
     e.g. ~/scratch-esp/bin/python tw_setid.py /dev/ttyACM0 power 11
@@ -59,6 +61,17 @@ where it finds them. A new channel changes every link's readings: a run (and
 the board's own quiet level) should start after it, and nights compare only
 on the same channel and power. Every board must run 3.2: an older one cannot
 follow and would be left behind, so this refuses.
+
+Groups (tw_node 3.3): arrays of boards near each other keep to themselves.
+Each board's group is set over its own cable, like its number (over the air a
+board would leave the group that carried the command); the board restarts in
+it and forgets the network settings' generations, so it takes its new group's
+settings within a few seconds, looking for them channel by channel if the
+group is on another channel. Group 0 is the default and the group of every
+board before 3.3; only 3.3 boards keep a group apart (older ones would join
+any). Two groups on one channel share its air: give each its own (survey, then
+channel N on each group's cable). Board numbers are per group (each group has
+its own board 1).
 
 The channel survey (tw_node 3.1): every board at once leaves its channel 5 s
 after the command, listens about a second on each of channels 1-11 (2.4 GHz,
@@ -178,7 +191,10 @@ def status(p, seconds):
                                        flags=int(f[23]) if len(f) >= 24 else None,     # 2.1+
                                        chan=int(f[26]) if len(f) >= 29 else None,      # 3.2: its radio's,
                                        chan_key=int(f[27]) if len(f) >= 29 else None,  # the network's,
-                                       looking=int(f[28]) if len(f) >= 29 else 0)      # looking for others
+                                       looking=int(f[28]) if len(f) >= 29 else 0,      # looking for others
+                                       group=int(f[31]) if len(f) >= 34 else None,     # 3.3: its group,
+                                       other=int(f[32]) if len(f) >= 34 else 0,        # other groups' frames
+                                       other_last=int(f[33]) if len(f) >= 34 else None)
             elif f[0] == "TWN" and len(f) >= 11:
                 seen[int(f[1])] = dict(cable=False, set_seq=int(f[9]), power_q=int(f[10]),
                                        relay=int(f[11]) if len(f) >= 12 else None,
@@ -226,6 +242,10 @@ def show(seen):
             names = ("power", "relay", "second", "measure-second", "cap")
             diff = [f"{n} {t} (header {h})" for n, t, h in zip(names, b["net"], hdr) if t != h]
             relay += ", transport agrees" if not diff else ", TRANSPORT DIFFERS: " + "; ".join(diff)
+        if b.get("group") is not None:              # 3.3 (the board on the cable; the others share it)
+            relay += f", group {b['group']}"
+            if b.get("other"):
+                relay += f" (heard {b['other']:,} frames of another group since it started, last group {b['other_last']})"
         if b.get("chan"):                           # 3.2
             relay += f", channel {b['chan']}"
             if b["cable"] and b.get("chan_key") and b["chan_key"] != b["chan"]:
@@ -606,6 +626,32 @@ def main():
         sys.exit(f"not confirmed by board {', '.join(str(b) for b in missing)}: off, out of reach, or not on "
                  "tw_node 2.5; it is passed on for 60 s, so try again when it is up")
 
+    if len(a) == 3 and a[1] == "group":
+        if not a[2].isdigit() or not 0 <= int(a[2]) <= 255:
+            sys.exit("group must be 0..255 (0: the default)")
+        g = int(a[2])
+        for attempt in range(1, TRIES + 1):
+            p.send(f"TWSET group {g}")
+            if attempt == 1:
+                print(f"asked the board on {p.path} to join group {g} (it restarts) ...")
+            for line in p.lines(12):
+                if line.startswith(("TWOK", "TWERR")):
+                    print(line)
+                    if line.startswith("TWERR"):
+                        sys.exit(1)
+                if line.startswith("TWH"):
+                    f = line.split(",")
+                    if len(f) >= 10 and f[9].strip() == str(g):
+                        print(line)
+                        print(f"done: board {f[1]} is in group {g} (firmware {f[3]}); it takes the group's "
+                              "settings within a few seconds, or looks for the group if it is on another channel")
+                        return
+                    if len(f) < 10:
+                        sys.exit(f"this board runs {f[3]}: groups need tw_node 3.3")
+                    break
+            print(f"  no confirmation yet (try {attempt} of {TRIES})")
+        sys.exit("no confirmation: is it running tw_node 3.3, and is this its native USB port?")
+
     if len(a) == 2:
         try:
             n = int(a[1])
@@ -643,7 +689,8 @@ def main():
             led = ""
             if len(f) >= 9 and f[7].strip().isdigit():          # 2.4+: the LED's pin (0 = off), brightness
                 led = f", LED on GPIO {f[7]} (brightness {f[8].strip()})" if int(f[7]) else ", LED off"
-            print(f"board {f[1]}, factory address {f[2]}, firmware {f[3]}{psram}{led}")
+            group = f", group {f[9].strip()}" if len(f) >= 10 and f[9].strip().isdigit() else ""    # 3.3+
+            print(f"board {f[1]}, factory address {f[2]}, firmware {f[3]}{psram}{led}{group}")
             print("every board:")
             show(status(p, 11))         # 11 s: every board says its firmware and reports every 5 s, and a
                                         # relayed one can come a few seconds later

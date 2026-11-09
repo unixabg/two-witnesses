@@ -5,6 +5,11 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **Computer side: `tw_setid.py PORT group N`** (tw_node 3.3), over the
+  board's own cable: it restarts in group N and says so (TWH). The status
+  shows the cabled board's group and the frames of other groups it has heard;
+  the run summary shows each hello's group.
+
 - **Firmware (tw_node 3.3): groups.** Header byte 19 (reserved since 3.0)
   says the sender's group; a board takes only its own group's frames, and
   counts the others' (TWS: its group, other groups' frames, the last such
