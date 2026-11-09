@@ -4,7 +4,7 @@
 """tw_setid.py - talk to the board on the computer's USB port (tw_node firmware).
 
     ~/scratch-esp/bin/python tw_setid.py PORT                 who is it; each board's power and relaying
-    ~/scratch-esp/bin/python tw_setid.py PORT N               give it board number N (1-16), once
+    ~/scratch-esp/bin/python tw_setid.py PORT board N         give it board number N (1-16), once
     ~/scratch-esp/bin/python tw_setid.py PORT power DBM       set the transmit power of EVERY board
     ~/scratch-esp/bin/python tw_setid.py PORT power default   back to full power (20 dBm)
     ~/scratch-esp/bin/python tw_setid.py PORT relay off       relaying off on every board (a comparison run)
@@ -493,6 +493,13 @@ def main():
     a = sys.argv[1:]
     if not a or len(a) > 8:
         sys.exit(__doc__)
+    words = ("survey", "channel", "power", "relay", "second", "measure-second", "cap", "led", "group", "board")
+    if len(a) > 1 and a[1] not in words:
+        sys.exit(__doc__)                   # e.g. the older "PORT N": the help shows "PORT board N"
+    if len(a) > 1 and a[1] == "board" and (len(a) != 3 or not a[2].isdigit()):
+        sys.exit(__doc__)
+    if len(a) == 3 and a[1] == "board" and not 1 <= int(a[2]) <= 16:
+        sys.exit("board number must be 1..16")
     p = Port(a[0])
 
     if len(a) == 2 and a[1] == "survey":
@@ -652,9 +659,9 @@ def main():
             print(f"  no confirmation yet (try {attempt} of {TRIES})")
         sys.exit("no confirmation: is it running tw_node 3.3, and is this its native USB port?")
 
-    if len(a) == 2:
+    if len(a) == 3 and a[1] == "board":     # the board number, like the other settings: board N
         try:
-            n = int(a[1])
+            n = int(a[2])
         except ValueError:
             sys.exit(__doc__)
         if not 1 <= n <= 16:
@@ -678,6 +685,8 @@ def main():
         sys.exit("no confirmation: is it running tw_node, and is this its native USB port? "
                  "(check with: tw_setid.py PORT)")
 
+    if len(a) > 1:                          # a known word with the wrong values: the help
+        sys.exit(__doc__)
     for line in p.lines(12):
         if line.startswith("TWH"):
             f = line.split(",")

@@ -17,7 +17,7 @@
  *   timekeeper  the lowest-numbered board heard in the last 2 s
  *
  * Board number: from the table below (by factory MAC), or set once with
- *   tw_setid.py /dev/ttyACM0 N     (stored in flash; survives reflashing the
+ *   tw_setid.py /dev/ttyACM0 board N   (stored in flash; survives reflashing the
  *   same image; erase-flash clears it)
  *
  * Transmit power: set at the board on the computer, for every board at once:

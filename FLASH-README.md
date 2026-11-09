@@ -118,7 +118,7 @@ Tap RST. Then check who it is (it says hello every 10 s):
 # -> board 16, factory address 30:30:f9:xx:xx:xx, firmware tw_node 3.3, PSRAM 8 MB, LED off, group 0
 ```
 A new board says it is board 16 and needs a number:
-`~/scratch-esp/bin/python tw_setid.py /dev/ttyACM0 1` (then 2, 3, ... for the
+`~/scratch-esp/bin/python tw_setid.py /dev/ttyACM0 board 1` (then 2, 3, ... for the
 others, one at a time on the cable). Every board needs its own.
 
 Flashing as above (erase-flash, or writing the whole image) clears what the

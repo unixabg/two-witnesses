@@ -5,6 +5,12 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **`tw_setid.py PORT board N`** sets the board number, in the same form as
+  the other settings (`power 11`, `channel 6`, `group 2`). The older
+  `tw_setid.py PORT N`, an unknown word, or `board` without a number shows
+  the help (which has the new form) before the port is opened; `board 17`
+  says the number must be 1..16. FLASH-README uses the new form.
+
 - **tw_node 3.3: version and image.** Groups (below) in `tw_node-s3-ch11.bin`.
   Program-only upgrade (its first 128 KB are 3.2's); every board stays in
   group 0 until given another over its cable.
