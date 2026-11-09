@@ -98,6 +98,11 @@ worked; 2.4.1 turns its blue ramp the replay's usual way round).
 
 ## Flash (each board, once)
 
+**The guided way:** `~/tw-kit/flash_board.sh` with the board on the cable
+walks through all of this, asking before each step: the flashing below (a new
+board gets the whole image, a tw_node board the program part), its group and
+number, its settings, its LED, and a health check. The steps by hand follow.
+
 One image for every board. (For the record: the earlier two-board firmware (one sender, one receiver) is kept in release
 v5.3: download it from the v5.3 tag, or in a clone
 `git checkout v5.3 -- csi_send-s3-ch11.bin csi_recv-s3-ch11-v2.bin`; its guide:

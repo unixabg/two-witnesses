@@ -5,6 +5,17 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **`flash_board.sh`: a board set up step by step.** With the board on the
+  cable it checks the kit (the image against SHA256SUMS, esptool, the port),
+  listens for a tw_node board, and flashes: a new board the whole image, a
+  tw_node board the program part (or the whole image, or nothing), with the
+  download-mode steps on screen and a retry. Then its group (0 the default),
+  its board number (with the reminder to write it down and label the board:
+  numbers must not repeat in a group), its group's settings (shown once taken;
+  for the first board of a new group, a survey and the group's channel), its
+  LED with a test blink, and the health check. It asks before every change.
+  Tried with stand-in boards and esptool: a new board joining boards 1 and 2,
+  and a tw_node board moved to a new group on channel 6.
 - **`tw_setid.py PORT check`**: 30 s of listening, then problems and notes.
   Two boards with one number (each board says a start tag every 5 s, kept
   until it restarts: two tags taking turns, each heard again, are two boards;
