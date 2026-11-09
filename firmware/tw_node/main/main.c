@@ -73,7 +73,7 @@
 
 #include "tw_proto.h"
 
-#define FW_VERSION              "tw_node 3.2"
+#define FW_VERSION              "tw_node 3.3"
 #define TW_CHANNEL              11      /* 3.2: the channel of a board with nothing in its flash */
 #define TW_PHYMODE              WIFI_PHY_MODE_HT40
 #define TW_RATE                 WIFI_PHY_RATE_MCS0_LGI

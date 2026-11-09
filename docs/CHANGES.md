@@ -5,6 +5,10 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **tw_node 3.3: version and image.** Groups (below) in `tw_node-s3-ch11.bin`.
+  Program-only upgrade (its first 128 KB are 3.2's); every board stays in
+  group 0 until given another over its cable.
+
 - **Computer side: `tw_setid.py PORT group N`** (tw_node 3.3), over the
   board's own cable: it restarts in group N and says so (TWH). The status
   shows the cabled board's group and the frames of other groups it has heard;
