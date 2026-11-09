@@ -22,6 +22,8 @@
     ~/scratch-esp/bin/python tw_setid.py PORT led on|off|bright|test|try ... board N|all
                                                           the same for board N, or every board, over the air
                                                           (2.5; test and try 2.5.1)
+    ~/scratch-esp/bin/python tw_setid.py PORT channel N       the radio channel for every board: 1-11 (2.4 GHz,
+                                                          US; tw_node 3.2, every board); "channel" alone shows it
     ~/scratch-esp/bin/python tw_setid.py PORT survey          every board listens on channels 1-11 for a
                                                           second each: who else is on the air (tw_node 3.1)
     e.g. ~/scratch-esp/bin/python tw_setid.py /dev/ttyACM0 power 11
@@ -49,6 +51,15 @@ movement grows. Boards without one keep it off. On boards like the ones in
 this setup the LED is on GPIO 48; on some, an "RGB" solder pad next to it must
 be bridged first (led test shows whether it lights).
 
+The channel (tw_node 3.2): every board takes the new channel within a second
+or two and moves 20 s later, all together; this waits and names any board not
+heard on the new channel. A board that missed it (off, or out of reach) looks
+for the others after 30 s of hearing nobody, channel by channel, and stays
+where it finds them. A new channel changes every link's readings: a run (and
+the board's own quiet level) should start after it, and nights compare only
+on the same channel and power. Every board must run 3.2: an older one cannot
+follow and would be left behind, so this refuses.
+
 The channel survey (tw_node 3.1): every board at once leaves its channel 5 s
 after the command, listens about a second on each of channels 1-11 (2.4 GHz,
 US) and comes back: about 12 s with the network paused, so not during a run.
@@ -74,6 +85,7 @@ TRIES = 3
 K_PIN, K_BRIGHT, K_TEST, K_TRY, K_SURVEY = 1, 2, 3, 4, 5  # keys (docs/PROTOCOL-3.md, tw_proto.h TW_K_*)
 SURVEY_CHANNELS = {"2.4 GHz": range(1, 12)}      # 3.1: what a survey covers (US); a band adds a row
 OUR_PAIR = (11, 7)                               # the firmware's channel: 11, its 40 MHz partner below
+CHANNELS = {"2.4 GHz (US)": range(1, 12)}        # 3.2: what "channel N" accepts; a band adds a row
 
 
 def reports(f):
@@ -163,12 +175,16 @@ def status(p, seconds):
                 seen[int(f[1])] = dict(cable=True, set_seq=int(f[17]), power_q=int(f[18]), radio_q=int(f[19]),
                                        relay=int(f[20]) if len(f) >= 21 else None, heard=None,
                                        relayed=int(f[21]) if len(f) >= 22 else None,
-                                       flags=int(f[23]) if len(f) >= 24 else None)     # 2.1+
+                                       flags=int(f[23]) if len(f) >= 24 else None,     # 2.1+
+                                       chan=int(f[26]) if len(f) >= 29 else None,      # 3.2: its radio's,
+                                       chan_key=int(f[27]) if len(f) >= 29 else None,  # the network's,
+                                       looking=int(f[28]) if len(f) >= 29 else 0)      # looking for others
             elif f[0] == "TWN" and len(f) >= 11:
                 seen[int(f[1])] = dict(cable=False, set_seq=int(f[9]), power_q=int(f[10]),
                                        relay=int(f[11]) if len(f) >= 12 else None,
                                        heard=int(f[12]) if len(f) >= 13 else None,
-                                       flags=int(f[13]) if len(f) >= 14 else None)     # 2.1+
+                                       flags=int(f[13]) if len(f) >= 14 else None,     # 2.1+
+                                       chan=int(f[21]) if len(f) >= 22 and int(f[21]) else None)   # 3.2
         except (ValueError, IndexError):
             pass
     for k, kv in keys.items():                      # the reports are the newer word on the LED
@@ -210,6 +226,12 @@ def show(seen):
             names = ("power", "relay", "second", "measure-second", "cap")
             diff = [f"{n} {t} (header {h})" for n, t, h in zip(names, b["net"], hdr) if t != h]
             relay += ", transport agrees" if not diff else ", TRANSPORT DIFFERS: " + "; ".join(diff)
+        if b.get("chan"):                           # 3.2
+            relay += f", channel {b['chan']}"
+            if b["cable"] and b.get("chan_key") and b["chan_key"] != b["chan"]:
+                relay += f" (moving to {b['chan_key']})"
+            if b.get("looking"):
+                relay += " (LOOKING FOR THE OTHERS)"
         if b.get("led"):
             pin, br = b["led"][:2]
             relay += f", LED on GPIO {pin} (brightness {br})" if pin else ", LED off"
@@ -257,6 +279,66 @@ def set_network(p, command, check, what):
         print(f"  no confirmation yet (try {attempt} of {TRIES})")
     sys.exit("the board did not take the setting: is it running tw_node 1.1 or later "
              "(tw_setid.py PORT shows the firmware), and is nothing else using the port?")
+
+
+def fw_version(fw):
+    """'tw_node 3.2 (built ...)' -> (3, 2); None if not said"""
+    try:
+        return tuple(int(x) for x in fw.split()[1].split(".")[:2])
+    except (AttributeError, IndexError, ValueError):
+        return None
+
+
+def channel(p, arg):
+    """3.2: show the channel, or set it for every board and check they all moved"""
+    valid = [c for band in CHANNELS.values() for c in band]
+    st = status(p, 11)
+    if not st:
+        sys.exit("no boards heard: is tw_node running (and nothing else using the port)?")
+    if arg is None:
+        show(st)
+        return
+    if not arg.isdigit() or int(arg) not in valid:
+        sys.exit(f"channel must be one of {valid[0]}-{valid[-1]} (2.4 GHz, US)")
+    ch = int(arg)
+    old = sorted(b for b, v in st.items() if (fw_version(v.get("fw")) or (0, 0)) < (3, 2))
+    if old:
+        sys.exit(f"{'boards' if len(old) > 1 else 'board'} {', '.join(map(str, old))} "
+                 f"{'do' if len(old) > 1 else 'does'} not run tw_node 3.2 (or did not say): an older board cannot "
+                 "follow a new channel and would be left behind. Update every board first.")
+    cable = [b for b in st.values() if b["cable"]]
+    if cable and cable[0].get("chan") == ch and cable[0].get("chan_key") == ch:
+        print(f"already on channel {ch}")
+        show(st)
+        return
+    for attempt in range(1, TRIES + 1):
+        p.send(f"TWSET channel {ch}")
+        ok = False
+        for line in p.lines(3):
+            if line.startswith("TWERR"):
+                sys.exit(line)
+            if line.startswith("TWOK channel"):
+                print(line)
+                ok = True
+                break
+        if ok:
+            break
+        print(f"  no answer yet (try {attempt} of {TRIES})")
+    else:
+        sys.exit("the board did not take the command: is it tw_node 3.2?")
+    print("every board takes it within a second or two, and they move together in 20 s; waiting ...")
+    for line in p.lines(26):
+        pass
+    now = status(p, 11)
+    show(now)
+    here = sorted(b for b, v in now.items() if v.get("chan") == ch or (not v["cable"] and v.get("chan") == ch))
+    missing = sorted(set(st) - set(here))
+    if not missing:
+        print(f"done: every board ({', '.join(map(str, here))}) is on channel {ch}")
+    else:
+        print(f"not heard on channel {ch} yet: board{'s' if len(missing) > 1 else ''} {', '.join(map(str, missing))}. "
+              "A board that missed it looks for the others after 30 s of hearing nobody (channel by channel); "
+              "check again in a minute with: tw_setid.py PORT channel")
 
 
 def survey_parse(f):
@@ -395,6 +477,10 @@ def main():
 
     if len(a) == 2 and a[1] == "survey":
         survey(p)
+        return
+
+    if len(a) in (2, 3) and a[1] == "channel":
+        channel(p, a[2] if len(a) == 3 else None)
         return
 
     if len(a) >= 2 and a[1] == "power":

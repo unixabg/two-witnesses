@@ -286,26 +286,27 @@ class Splitter:
             self.tws.append(row)
         self.tws_last = row
 
-    def note_power(self, host_ns, board, q, relay=None):
-        """transmit power each board reports (quarter dBm; 0 = never set: full power), and
-        whether relaying is on (tw_node 2.0+; None before)"""
+    def note_power(self, host_ns, board, q, relay=None, chan=None):
+        """transmit power each board reports (quarter dBm; 0 = never set: full power), whether
+        relaying is on (tw_node 2.0+; None before), and its channel (3.2+; None before)"""
         pw = self.__dict__.setdefault("power", {})
         hist = pw.setdefault(board, [])
-        if not hist or hist[-1][1:] != (q, relay):
-            hist.append((host_ns / 1e9, q, relay))
+        if not hist or hist[-1][1:] != (q, relay, chan):
+            hist.append((host_ns / 1e9, q, relay, chan))
 
     def power_lines(self):
         pw = getattr(self, "power", {})
         if not pw:
             return []
-        def dbm(q, relay):
+        def dbm(q, relay, chan):
             return ("full power (never set)" if q == 0 else f"{q / 4:g} dBm") + \
-                   ("" if relay is None else f", relaying {'on' if relay else 'off'}")
+                   ("" if relay is None else f", relaying {'on' if relay else 'off'}") + \
+                   ("" if chan is None else f", channel {chan}")
         out = []
         for b, hist in sorted(pw.items()):
             txt = f"board {b}: transmit power {dbm(*hist[0][1:])}"
-            for t, q, relay in hist[1:]:
-                txt += f", then {dbm(q, relay)} from {dt.datetime.fromtimestamp(t).strftime('%H:%M:%S')}"
+            for t, q, relay, chan in hist[1:]:
+                txt += f", then {dbm(q, relay, chan)} from {dt.datetime.fromtimestamp(t).strftime('%H:%M:%S')}"
             out.append(txt)
         return out + [""]
 
@@ -464,7 +465,8 @@ def main():
                         sp.note_tws(int(f[0]), f[1:])
                         if len(f) >= 21:        # tw_node 1.1+: ...,set_seq,set_power,radio's power
                             sp.note_power(int(f[0]), int(f[2]), int(f[19]),
-                                          int(f[21]) if len(f) >= 22 else None)    # 2.0+: relay on/off
+                                          int(f[21]) if len(f) >= 22 else None,    # 2.0+: relay on/off
+                                          int(f[28]) if len(f) >= 30 else None)    # 3.2+: its channel key
                     except ValueError:
                         pass
                     continue
@@ -472,7 +474,9 @@ def main():
                     try:
                         if len(f) >= 12:        # tw_node 1.1+: ...,set_seq,set_power
                             sp.note_power(int(f[0]), int(f[2]), int(f[11]),
-                                          int(f[12]) if len(f) >= 13 else None)    # 2.0+: relay on/off
+                                          int(f[12]) if len(f) >= 13 else None,    # 2.0+: relay on/off
+                                          int(f[22]) if len(f) >= 23 and f[22].strip() not in ("", "0")
+                                          else None)                               # 3.2+: its channel key
                     except ValueError:
                         pass
                     continue

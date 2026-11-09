@@ -5,6 +5,14 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **Computer side: `tw_setid.py PORT channel [N]`** (tw_node 3.2). Without N
+  it shows every board's channel; with N (1-11, from one table of channels
+  by band) it refuses unless every board says it runs 3.2, gives it, waits
+  for the move, and names any board not heard on the new channel. The status
+  shows each board's channel, and "moving to" or "LOOKING FOR THE OTHERS"
+  when so. The run summary (`links/summary.txt`) shows each board's channel
+  with its power, and when it changed.
+
 - **Firmware (tw_node 3.2): the channel.** A new network key (21): the radio
   channel, 1-11 (2.4 GHz, US; 40 MHz with its partner 4 above for 1-4, 4
   below for 5-11, as 11's 7 so far), kept in flash ("chan", "ngh") and said
