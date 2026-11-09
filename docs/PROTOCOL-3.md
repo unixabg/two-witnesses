@@ -123,6 +123,7 @@ LED fields in TWV are dropped in 3.0 (kept until then).
 | 18 | network | second frame, 1 byte (on/off/force) | `second on\|off\|force` |
 | 19 | network | measure-second, 1 byte | `measure-second on\|off` |
 | 20 | network | cap, 1 byte (0 = off) | `cap N\|off` |
+| 21 | network | channel (3.2), 1 byte: 1-11 (2.4 GHz, US); every board moves 20 s after taking it | `channel N` |
 
 Without `board ...`, a board key or action is for the board on the cable (as
 now); network keys are always for every board. A future feature adds a key

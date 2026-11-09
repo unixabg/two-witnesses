@@ -127,8 +127,9 @@ void tw_update_roles(tw_node_t *n, uint32_t now)
 }
 
 /* the network settings as the transport's keys (TW_K_POWER..TW_K_CAP) */
-static void net_values(uint8_t power, uint8_t f, uint8_t v[TW_K_NET_N])
+static void net_values(uint8_t power, uint8_t f, uint8_t chan, uint8_t v[TW_K_NET_N])
 {
+    v[5] = chan;                                    /* 3.2 */
     v[0] = power;
     v[1] = (f & TW_SET_RELAY_OFF) ? 0 : 1;
     v[2] = (f & TW_SET_SECOND_FORCE) ? 2 : (f & TW_SET_SECOND_OFF) ? 1 : 0;
@@ -164,6 +165,9 @@ static void net_apply(tw_node_t *n)
     uint8_t power = (v[0] >= TW_POWER_MIN_Q && v[0] <= TW_POWER_MAX_Q) ? v[0] : n->set_power;
     uint8_t flags = net_flags(v);
     n->set_seq = net_seq(g);
+    if (tw_chan_valid(v[5])) {
+        n->set_channel = v[5];                      /* 3.2: tw_chan_step moves the radio, later */
+    }
     if (power != n->set_power || flags != n->set_flags) {
         n->set_power = power;
         n->set_flags = flags;
@@ -180,10 +184,10 @@ static uint8_t gen_next(uint8_t g)
 }
 
 /* a setting given here: each key that changes, its next generation, for every board */
-static void net_give(tw_node_t *n, uint8_t power, uint8_t flags)
+static void net_give(tw_node_t *n, uint8_t power, uint8_t flags, uint8_t chan)
 {
     uint8_t v[TW_K_NET_N];
-    net_values(power, flags, v);
+    net_values(power, flags, chan, v);
     for (int i = 0; i < TW_K_NET_N; i++) {
         uint8_t k = (uint8_t)(TW_K_NET_FIRST + i);
         if (!n->set_len[k] || n->set_val[k][0] != v[i]) {
@@ -195,7 +199,7 @@ static void net_give(tw_node_t *n, uint8_t power, uint8_t flags)
 void tw_net_init(tw_node_t *n, const uint8_t gen[TW_K_NET_N])
 {
     uint8_t v[TW_K_NET_N];
-    net_values(n->set_power, n->set_flags, v);
+    net_values(n->set_power, n->set_flags, n->set_channel, v);
     for (int i = 0; i < TW_K_NET_N; i++) {
         tw_setting_init(n, (uint8_t)(TW_K_NET_FIRST + i), &v[i], 1, gen ? gen[i] : 0);
     }
@@ -207,14 +211,106 @@ int tw_set_power(tw_node_t *n, uint8_t power_q)
     if (power_q < TW_POWER_MIN_Q || power_q > TW_POWER_MAX_Q) {
         return -1;
     }
-    net_give(n, power_q, n->set_flags);
+    net_give(n, power_q, n->set_flags, n->set_channel);
     return 0;
 }
 
 void tw_set_flags(tw_node_t *n, uint8_t mask, uint8_t value)
 {
     /* a setting always carries a power: full, as before, if none was ever set */
-    net_give(n, n->set_power ? n->set_power : TW_POWER_MAX_Q, (uint8_t)((n->set_flags & ~mask) | (value & mask)));
+    net_give(n, n->set_power ? n->set_power : TW_POWER_MAX_Q, (uint8_t)((n->set_flags & ~mask) | (value & mask)),
+             n->set_channel);
+}
+
+/* ---- 3.2: the channel ---- */
+int tw_chan_valid(uint8_t ch)
+{
+    return ch >= TW_CHAN_FIRST && ch <= TW_CHAN_LAST;
+}
+
+int tw_chan_partner(uint8_t ch)
+{
+    return ch <= 4 ? 1 : -1;                        /* 1-4: 4 above; 5-11: 4 below (11's: 7, as before) */
+}
+
+void tw_chan_init(tw_node_t *n, uint32_t now)
+{
+    n->chan_home = n->chan_target = n->set_channel;
+    n->chan_wait = n->scan_on = 0;
+    n->last_frame_us = now;                         /* alone for TW_CHAN_LOST_US before it looks */
+    n->scan_next_us = now;
+}
+
+int tw_set_channel(tw_node_t *n, uint8_t ch)
+{
+    if (!tw_chan_valid(ch)) {
+        return -1;
+    }
+    net_give(n, n->set_power ? n->set_power : TW_POWER_MAX_Q, n->set_flags, ch);
+    return 0;
+}
+
+uint8_t tw_chan_step(tw_node_t *n, uint32_t now, int *quiet)
+{
+    *quiet = 0;
+    if (!tw_chan_valid(n->chan_home)) {             /* not started (tw_chan_init): stay where it is */
+        return n->set_channel;
+    }
+    if (n->scan_on) {
+        if ((int32_t)(n->last_frame_us - n->scan_step_us) >= 0) {
+            /* heard a board here: this is where the network is. Stay; its settings come within 5 s
+               (and if this board's are newer, the network takes them and moves) */
+            n->scan_on = 0;
+            n->scan_found++;
+            n->chan_home = n->chan_target = n->scan_ch;
+            n->chan_wait = 0;
+            n->chan_changed = 1;
+            return n->chan_home;
+        }
+        if ((int32_t)(now - n->scan_step_us) >= (int32_t)(TW_CHAN_SCAN_MS * 1000u)) {
+            uint8_t c = n->scan_ch;
+            do {
+                c++;
+            } while (c == n->chan_home);
+            if (c > TW_CHAN_LAST) {                 /* all tried: home a while, then again */
+                n->scan_on = 0;
+                n->scan_next_us = now + TW_CHAN_HOME_US;
+                return n->chan_home;
+            }
+            n->scan_ch = c;
+            n->scan_step_us = now;
+        }
+        *quiet = 1;
+        return n->scan_ch;
+    }
+    /* a new channel taken: move to it TW_CHAN_SWITCH_US later (a newer one starts the wait again) */
+    if (n->set_channel != n->chan_home) {
+        if (!n->chan_wait || n->chan_target != n->set_channel) {
+            n->chan_wait = 1;
+            n->chan_target = n->set_channel;
+            n->chan_at = now + TW_CHAN_SWITCH_US;
+        } else if ((int32_t)(now - n->chan_at) >= 0) {
+            n->chan_home = n->chan_target;
+            n->chan_wait = 0;
+            n->chan_changed = 1;
+            n->chan_switches++;
+            n->last_frame_us = now;                 /* the others come within a second; if not, look */
+        }
+    } else {
+        n->chan_wait = 0;
+    }
+    /* nobody heard for a while: look for them */
+    /* signed: a frame noted this turn can be stamped a moment after now (not "71 minutes ago") */
+    if ((int32_t)(now - n->last_frame_us) >= (int32_t)TW_CHAN_LOST_US && (int32_t)(now - n->scan_next_us) >= 0 &&
+        !n->chan_wait) {
+        n->scan_on = 1;
+        n->chan_scans++;
+        n->scan_ch = TW_CHAN_FIRST == n->chan_home ? TW_CHAN_FIRST + 1 : TW_CHAN_FIRST;
+        n->scan_step_us = now;
+        *quiet = 1;
+        return n->scan_ch;
+    }
+    return n->chan_home;
 }
 
 void tw_set_relay(tw_node_t *n, int on)
@@ -228,6 +324,7 @@ void tw_note_frame(tw_node_t *n, const tw_hdr_t *h, uint32_t rx_local, uint32_t 
         return;
     }
     n->n_rx_frames++;
+    n->last_frame_us = rx_local;                    /* 3.2: someone is here (tw_chan_step) */
     uint8_t s = h->src;
     if (h->flags & TW_F_EXTRA) {
         /* an extra frame: its records are used (by the caller), nothing else here. Counted when it
@@ -867,6 +964,7 @@ int tw_key_class(uint8_t key)
     case TW_K_SECOND:
     case TW_K_MEASURE:
     case TW_K_CAP:
+    case TW_K_CHANNEL:
         return TW_KC_NETWORK;
     default:
         return 0;
@@ -1453,13 +1551,14 @@ int tw_format_node(const tw_node_t *n, const tw_hdr_t *h, int8_t rssi, uint8_t h
     /* 3.0: its uptime, settings and second frame's end as its records said them (TWM, its standing
        network keys), not its header; the same fields as before (0 until said) */
     uint8_t s = h->src <= TW_MAX_NODES ? h->src : 0;
-    uint8_t all = (uint8_t)((1u << TW_K_NET_N) - 1), has = n->peer_has[s] == all;
+    uint8_t all = (uint8_t)((1u << TW_K_NET_FLAGS_N) - 1), has = (n->peer_has[s] & all) == all;
     uint8_t power = has ? n->peer_net[s][0] : 0, flags = has ? net_flags(n->peer_net[s]) : 0;
-    return snprintf(out, (size_t)max, "TWN,%u,%lu,%u,%u,%04x,%u,%u,%d,%u,%u,%u,%u,%u,%u,%u,%u,%u,%d,%u,%u\n", h->src,
+    uint8_t chan = (n->peer_has[s] & (1u << (TW_K_CHANNEL - TW_K_NET_FIRST))) ? n->peer_net[s][TW_K_CHANNEL - TW_K_NET_FIRST] : 0;
+    return snprintf(out, (size_t)max, "TWN,%u,%lu,%u,%u,%04x,%u,%u,%d,%u,%u,%u,%u,%u,%u,%u,%u,%u,%d,%u,%u,%u\n", h->src,
                     (unsigned long)h->seq, h->leader, h->flags, h->active, h->period_ms, n->peer_up[s], rssi,
                     has ? net_seq(n->peer_gen[s]) : 0u, power, (flags & TW_SET_RELAY_OFF) ? 0u : 1u, heard_pct,
                     flags, n->c_frames[s], n->c_xnext[s], n->c_xheard[s], n->c_xcsi[s],
-                    n->c_xgap[s], 20u * n->c_xend_q[s], n->c_rxerr[s]);
+                    n->c_xgap[s], 20u * n->c_xend_q[s], n->c_rxerr[s], chan);     /* 3.2: its channel key */
 }
 
 int tw_format_status(const tw_node_t *n, uint32_t now, char *out, int max)
@@ -1473,7 +1572,9 @@ int tw_format_status(const tw_node_t *n, uint32_t now, char *out, int max)
     /* ...,queue_used,setting number,setting power,power the radio reports (quarter dBm),
        relaying on/off, records this board relayed, relayed records it had no room for,
        2.1+: setting flags, extra frames sent, extra frames skipped (nothing fitted in time) */
-    return snprintf(out, (size_t)max, "TWS,%u,%u,%u,%u,%04x,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%u,%d,%u,%u,%u,%u,%lu,%lu,%u,%lu,%lu\n",
+    /* 3.2, at the end: the channel it works on, the network's (its key), 1 while looking for the
+       others, switches and scans since start */
+    return snprintf(out, (size_t)max, "TWS,%u,%u,%u,%u,%04x,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%u,%d,%u,%u,%u,%u,%lu,%lu,%u,%lu,%lu,%u,%u,%u,%u,%u\n",
                     n->id, TW_VERSION, n->leader, (unsigned)((n->synced ? TW_F_SYNCED : 0) |
                     (n->is_exit ? TW_F_EXIT : 0) | (n->leader == n->id ? TW_F_LEADER : 0)),
                     tw_active(n, now), (unsigned long)(p / 1000u), (unsigned long)(fits ? start : 0),
@@ -1482,5 +1583,6 @@ int tw_format_status(const tw_node_t *n, uint32_t now, char *out, int max)
                     (unsigned long)n->n_dropped, n->leader_changes, used, n->set_seq, n->set_power,
                     n->tx_power_q, (n->set_flags & TW_SET_RELAY_OFF) ? 0u : 1u, (unsigned long)n->n_relayed_out,
                     (unsigned long)n->n_relay_full, n->set_flags, (unsigned long)n->n_extra_sent,
-                    (unsigned long)n->n_extra_skipped);
+                    (unsigned long)n->n_extra_skipped, n->chan_home, n->set_channel, n->scan_on, n->chan_switches,
+                    n->chan_scans);
 }

@@ -81,6 +81,7 @@ typedef struct {
     int alive, exit;
     double dead_from, dead_to;
     double away_from, away_to;  /* 3.1: away surveying the channels (silent and deaf, keeps its state) */
+    uint8_t radio;              /* 3.2: the channel its radio is on (boards on others do not hear it) */
     int away_done;
     double last_status;
     double node_last[MAXN + 1];
@@ -362,7 +363,10 @@ int main(int argc, char **argv)
         s->last_status = -1e9;
         tw_init(&s->st, (uint8_t)id, (uint8_t)s->exit, seed * 31u + (unsigned)id);
         tw_set_info(&s->st, "sim|board");
+        s->st.set_channel = 11;                          /* 3.2: the firmware's default */
         tw_net_init(&s->st, NULL);                       /* the network keys (3.0: their only way) */
+        tw_chan_init(&s->st, local_us(s, 0));
+        s->radio = s->st.chan_home;
     }
     /* kills: "id@from-to,id@from-to" in seconds */
     for (char *p = kill_spec; *p;) {
@@ -396,7 +400,7 @@ int main(int argc, char **argv)
                 /* the value as the key takes it: an LED key 1 byte, try 3 (VAL = R*65536 + G*256 + B),
                    test none */
                 uint8_t vb[3] = {(uint8_t)v, 0, 0};
-                int vl = tw_key_class((uint8_t)k) == TW_KC_BOARD ? 1 : 0;
+                int vl = tw_key_class((uint8_t)k) == TW_KC_BOARD || tw_key_class((uint8_t)k) == TW_KC_NETWORK ? 1 : 0;
                 if (k == TW_K_LED_TRY) { vb[0] = (uint8_t)(v >> 16); vb[1] = (uint8_t)(v >> 8); vb[2] = (uint8_t)v; vl = 3; }
                 tw_setting_give(&N_[ex].st, (uint8_t)give[g].target, (uint8_t)k, vb, vl, (uint8_t)give[g].gen);
             }
@@ -453,6 +457,7 @@ int main(int argc, char **argv)
                 int dead = r->dead_from >= 0 && busy_until >= r->dead_from && (r->dead_to < 0 || busy_until < r->dead_to);
                 dead |= r->away_from >= 0 && busy_until >= r->away_from && busy_until < r->away_to;
                 if (id == busy_src || dead || last_collided) continue;
+                if (r->radio != N_[busy_src].radio) continue;    /* 3.2: another channel */
                 if (urand() < p_loss) { lost_random++; continue; }
                 int blocked = 0;
                 for (int k = 0; k < n_blks; k++)
@@ -513,6 +518,11 @@ int main(int argc, char **argv)
         int dead_real = dead;                        /* switched off: reboots when back */
         dead |= s->away_from >= 0 && tx_t >= s->away_from && tx_t < s->away_to;   /* 3.1: surveying */
         uint32_t lnow = local_us(s, tx_t);
+        if (!dead_real) {                            /* 3.2: its channel; silent while looking */
+            int quiet;
+            s->radio = tw_chan_step(&s->st, lnow, &quiet);
+            dead |= quiet;
+        }
         /* the computer's power commands, and the firmware applying settings */
         for (int k = 0; k < n_sets; k++) {
             if (!sets[k].fired && tx_t >= sets[k].t) {
@@ -726,7 +736,10 @@ int main(int argc, char **argv)
             int was_exit = s->exit;
             tw_init(&s->st, (uint8_t)who, (uint8_t)was_exit, (unsigned)(t + who));
             tw_set_info(&s->st, "sim|board");
+            s->st.set_channel = 11;                      /* a board with an empty flash: channel 11 */
             tw_net_init(&s->st, NULL);
+            tw_chan_init(&s->st, lnow);
+            s->radio = s->st.chan_home;
         }
         (void)last_start;
         if (dead) s->extra_at = -1;
@@ -813,8 +826,9 @@ int main(int argc, char **argv)
     fprintf(stderr, "}, \"net\": {");              /* each board's settings, and its network keys */
     for (int id = 1; id <= n_nodes; id++) {
         simnode_t *q = &N_[id];
-        fprintf(stderr, "%s\"%d\": {\"hdr\": [%u, %u, %u], \"diff_s\": 0, \"keys\": [", id > 1 ? ", " : "", id,
-                q->st.set_seq, q->st.set_power, q->st.set_flags);
+        fprintf(stderr, "%s\"%d\": {\"hdr\": [%u, %u, %u], \"diff_s\": 0, \"chan\": [%u, %u, %u, %u, %u], \"keys\": [",
+                id > 1 ? ", " : "", id, q->st.set_seq, q->st.set_power, q->st.set_flags, q->st.chan_home,
+                q->st.set_channel, q->st.chan_switches, q->st.chan_scans, q->st.scan_found);
         for (int i = 0; i < TW_K_NET_N; i++) {
             int k = TW_K_NET_FIRST + i;
             fprintf(stderr, "%s[%u, %u, %.2f]", i ? ", " : "", q->st.set_val[k][0], q->st.set_gen[k], took_t[id][k]);

@@ -5,6 +5,27 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **Firmware (tw_node 3.2): the channel.** A new network key (21): the radio
+  channel, 1-11 (2.4 GHz, US; 40 MHz with its partner 4 above for 1-4, 4
+  below for 5-11, as 11's 7 so far), kept in flash ("chan", "ngh") and said
+  every 5 s like the others. A board that takes a new one moves 20 s later,
+  by which time every board has it, so they move together. A board that hears
+  no other for 30 s looks for them: 0.3 s on each other channel, then 10 s
+  back home, and again; where it hears one it stays and takes the network's
+  settings (a board off during a change, a new board on the default 11). The
+  channel survey comes back to the board's channel. TWS ends with the channel
+  it works on, the network's, 1 while looking, switches and scans; TWN with
+  each board's channel key. 3.1 and 3.2 boards work together, but only 3.2
+  boards follow a change. Simulator: 3 and 6 boards move together with a dip
+  of half a second; boards that missed the change (off and back as new
+  boards, deaf for its time, out of the cabled board's reach, a new board 60 s
+  later, the far end of the scan) are back within about a second of hearing
+  again; two changes 5 s apart end on the second; channel 13 is refused; and
+  with no change, 3.2 is 3.1 (the timing cases differ by 4 us in the second
+  frame's end, from the longer settings record). It caught a fault before the
+  boards did: a frame noted a moment after "now" looked 71 minutes old, and
+  every board went looking (fixed: a signed comparison).
+
 - **tw_node 3.1: version and image.** The channel survey (below) in
   `tw_node-s3-ch11.bin`. Program-only upgrade (its first 128 KB are 3.0's),
   numbers and settings kept; 3.0 and 3.1 boards work together, so one at a

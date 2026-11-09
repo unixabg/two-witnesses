@@ -9,13 +9,16 @@ so boards are reflashed as rarely as possible.
   `tw_setid.py` still overrides.
 - **USB output only while a computer is reading**, with a hello when a reader
   appears and once a minute.
-- **The channel** (designed 2026-11-09; tw_node 3.1 built the first step):
+- **The channel** (designed 2026-11-09; tw_node 3.1 and 3.2 built):
   3.1, the channel survey: `tw_setid.py PORT survey`, every board at once
   listens on channels 1-11 and reports who else is on the air; the table
-  ranks the 40 MHz pairs by their worst board. Next, 3.2: set the channel
+  ranks the 40 MHz pairs by their worst board. 3.2: set the channel
   (`channel N`, 1-11, US) as a network key, every board switching 20 s after
   it takes it, and a board that hears nobody for 30 s scanning for the
-  others (a board that was off, or a new one). Then 3.3: groups (a group
+  others (a board that was off, or a new one). To weigh: 20 MHz instead of
+  40 (the first survey: 40 MHz in 2.4 GHz always overlaps a neighbor; 20 MHz
+  on 11 was 5.5% busy at worst, against 19% for 7 + 11), for fewer
+  subcarriers. Next, 3.3: groups (a group
   number in header byte 19, a default in the firmware, set over the cable),
   so two arrays near each other keep to themselves, each on its own channel.
 - **Survey mode (FTM)**: on request, the boards pause sensing and measure

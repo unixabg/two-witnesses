@@ -74,7 +74,7 @@
 #include "tw_proto.h"
 
 #define FW_VERSION              "tw_node 3.1"
-#define TW_CHANNEL              11
+#define TW_CHANNEL              11      /* 3.2: the channel of a board with nothing in its flash */
 #define TW_PHYMODE              WIFI_PHY_MODE_HT40
 #define TW_RATE                 WIFI_PHY_RATE_MCS0_LGI
 #define CSI_MAX                 384         /* HT40 non-STBC buffer; longer ones are cut */
@@ -268,13 +268,15 @@ static uint8_t board_id(void)
 static void load_settings(void)
 {
     nvs_handle_t h;
-    uint8_t seq = 0, pwr = 0, flg = 0;
+    uint8_t seq = 0, pwr = 0, flg = 0, chan = 0;
     if (nvs_open("tw", NVS_READONLY, &h) == ESP_OK) {
         nvs_get_u8(h, "pseq", &seq);
         nvs_get_u8(h, "pwr", &pwr);
         nvs_get_u8(h, "rflg", &flg);
+        nvs_get_u8(h, "chan", &chan);   /* 3.2 */
         nvs_close(h);
     }
+    s_node.set_channel = tw_chan_valid(chan) ? chan : TW_CHANNEL;
     if (pwr >= TW_POWER_MIN_Q && pwr <= TW_POWER_MAX_Q) {
         s_node.set_seq = seq;
         s_node.set_power = pwr;
@@ -352,7 +354,8 @@ static void wifi_init(void)
     ESP_ERROR_CHECK(esp_wifi_set_bandwidth(WIFI_IF_STA, WIFI_BW_HT40));
     ESP_ERROR_CHECK(esp_wifi_start());
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
-    ESP_ERROR_CHECK(esp_wifi_set_channel(TW_CHANNEL, WIFI_SECOND_CHAN_BELOW));
+    ESP_ERROR_CHECK(esp_wifi_set_channel(s_node.set_channel, tw_chan_partner(s_node.set_channel) > 0 ?
+                                         WIFI_SECOND_CHAN_ABOVE : WIFI_SECOND_CHAN_BELOW));    /* 3.2 */
     s_fake_mac[5] = s_id;
     ESP_ERROR_CHECK(esp_wifi_set_mac(WIFI_IF_STA, s_fake_mac));
 }
@@ -416,7 +419,7 @@ static void espnow_init(void)
     ESP_ERROR_CHECK(esp_now_init());
     ESP_ERROR_CHECK(esp_now_set_pmk((uint8_t *)"pmk1234567890123"));
     esp_now_peer_info_t peer = {
-        .channel = TW_CHANNEL,
+        .channel = s_node.set_channel,
         .ifidx = WIFI_IF_STA,
         .encrypt = false,
         .peer_addr = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff},
@@ -733,7 +736,7 @@ static void led_save(void);
 static void led_start(void);
 
 /* 2.6: the network keys' generations, kept in flash (their values as the settings, "pwr" and "rflg") */
-static const char *NET_NVS[TW_K_NET_N] = {"ngp", "ngr", "ngs", "ngm", "ngc"};
+static const char *NET_NVS[TW_K_NET_N] = {"ngp", "ngr", "ngs", "ngm", "ngc", "ngh"};   /* 3.2: "ngh" */
 
 static void net_load(void)
 {
@@ -755,12 +758,29 @@ static void net_save(void)
         for (int i = 0; i < TW_K_NET_N; i++) {
             nvs_set_u8(h, NET_NVS[i], s_node.set_gen[TW_K_NET_FIRST + i]);
         }
+        nvs_set_u8(h, "chan", s_node.set_channel);     /* 3.2: the channel key's value (where it starts) */
         nvs_commit(h);
         nvs_close(h);
     }
 }
 
-/* the board's keys changed (over its cable, or by record): take the settings, run the actions */
+/* ---------------- 3.2: the radio's channel ---------------- */
+static uint8_t s_radio_ch;                  /* where the radio is now */
+
+static void radio_channel(uint8_t ch)
+{
+    if (esp_wifi_set_channel(ch, tw_chan_partner(ch) > 0 ? WIFI_SECOND_CHAN_ABOVE : WIFI_SECOND_CHAN_BELOW) != ESP_OK) {
+        ESP_LOGW(TAG, "could not go to channel %u", ch);
+        return;
+    }
+    esp_now_peer_info_t p;
+    if (esp_now_get_peer(BCAST, &p) == ESP_OK) {
+        p.channel = ch;
+        esp_now_mod_peer(&p);
+    }
+    s_radio_ch = ch;
+}
+
 /* ---------------- 3.1: the channel survey ----------------
    Every board at once (TW_K_SURVEY, an action for all): TW_SURVEY_DELAY_US after taking it, a board
    leaves its channel and listens TW_SURVEY_DWELL_MS on each of channels TW_SURVEY_FIRST.. (20 MHz,
@@ -869,11 +889,13 @@ static void survey_run(uint32_t *next_tx)
     }
     esp_wifi_set_promiscuous_rx_cb(NULL);
     esp_wifi_set_promiscuous_filter(&keep);
+    uint8_t home = s_node.chan_home;    /* 3.2: its channel (3.1: always 11) */
     if (esp_wifi_set_bandwidth(WIFI_IF_STA, WIFI_BW_HT40) != ESP_OK ||
-        esp_wifi_set_channel(TW_CHANNEL, WIFI_SECOND_CHAN_BELOW) != ESP_OK) {
-        ESP_LOGE(TAG, "could not come back to channel %d: restarting", TW_CHANNEL);
+        esp_wifi_set_channel(home, tw_chan_partner(home) > 0 ? WIFI_SECOND_CHAN_ABOVE : WIFI_SECOND_CHAN_BELOW) != ESP_OK) {
+        ESP_LOGE(TAG, "could not come back to channel %u: restarting", home);
         esp_restart();                  /* it starts on its own channel */
     }
+    s_radio_ch = home;
     uint32_t now = (uint32_t)esp_timer_get_time();
     tw_survey_done(&s_node, now, s_survey_gen, res, TW_SURVEY_N);
     tw_update_roles(&s_node, now);      /* who is still there: nobody, for a moment */
@@ -881,6 +903,7 @@ static void survey_run(uint32_t *next_tx)
     s_led_shown[0] = s_led_shown[1] = s_led_shown[2] = 255;     /* redraw */
 }
 
+/* the board's keys changed (over its cable, or by record): take the settings, run the actions */
 static void led_apply(void)
 {
     uint32_t ch = s_node.set_changed;
@@ -1104,6 +1127,18 @@ static void poll_commands(void)
                 }
                 out_wait(msg, k);
                 hello();
+            } else if (n && sscanf(cmd, "TWSET channel %d", &id) == 1) {
+                /* 3.2: the channel, for every board: each moves TW_CHAN_SWITCH_US after taking it */
+                char msg[128];
+                int k;
+                if (id >= 0 && id <= 255 && tw_set_channel(&s_node, (uint8_t)id) == 0) {
+                    led_apply();
+                    k = snprintf(msg, sizeof(msg), "TWOK channel %d given to every board, setting %u: they move "
+                                 "in %u s\n", id, s_node.set_seq, TW_CHAN_SWITCH_US / 1000000u);
+                } else {
+                    k = snprintf(msg, sizeof(msg), "TWERR channel must be %d..%d\n", TW_CHAN_FIRST, TW_CHAN_LAST);
+                }
+                out_wait(msg, k);
             } else if (n && !strncmp(cmd, "TWSET survey", 12)) {
                 /* 3.1: the channel survey, for every board at once (generation G: the computer chooses
                    it, one more than the boards report) */
@@ -1162,6 +1197,19 @@ static void work_task(void *arg)
     int len = 0, built = 0;
     for (;;) {
         now = (uint32_t)esp_timer_get_time();
+        int quiet;                          /* 3.2: where the radio should be; silent while looking */
+        uint8_t want = tw_chan_step(&s_node, now, &quiet);
+        if (want != s_radio_ch) {
+            radio_channel(want);
+        }
+        if (s_node.chan_changed) {
+            s_node.chan_changed = 0;
+            ESP_LOGW(TAG, "now on channel %u (the network's: %u)", s_node.chan_home, s_node.set_channel);
+        }
+        if (quiet && (int32_t)(next_tx - now) <= (int32_t)BUILD_AHEAD_US) {
+            built = 0;
+            next_tx = now + 20000u;         /* no frames while on another channel */
+        }
         int32_t wait = (int32_t)(next_tx - now);
         if (!built && wait <= (int32_t)BUILD_AHEAD_US) {
             /* 2.3: build the frame ahead, for its slot time (its time stamp and its place in the
@@ -1320,9 +1368,11 @@ void app_main(void)
     csi_init();
     apply_settings();                   /* the power kept from before a restart, if any */
     net_load();                         /* the settings as network keys (3.0: their only way) */
+    tw_chan_init(&s_node, (uint32_t)esp_timer_get_time());     /* 3.2: on its channel */
+    s_radio_ch = s_node.chan_home;
     led_load();                         /* 2.4: the LED, if this board has one set */
     led_start();
-    ESP_LOGW(TAG, "%s: board %u, address " MACSTR ", channel %d, frames up to %d bytes", FW_VERSION, s_id,
-             MAC2STR(s_fake_mac), TW_CHANNEL, s_max_payload);
+    ESP_LOGW(TAG, "%s: board %u, address " MACSTR ", channel %u, frames up to %d bytes", FW_VERSION, s_id,
+             MAC2STR(s_fake_mac), s_node.chan_home, s_max_payload);
     xTaskCreatePinnedToCore(work_task, "tw_work", 8192, NULL, 5, NULL, 1);
 }

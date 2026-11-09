@@ -143,8 +143,24 @@
 #define TW_K_SECOND         18          /* network: the second frame, 1 byte (0 on, 1 off, 2 force) */
 #define TW_K_MEASURE        19          /* network: measure-second, 1 byte (0 off, 1 on) */
 #define TW_K_CAP            20          /* network: at most N records a frame, 1 byte (0: no cap) */
+#define TW_K_CHANNEL        21          /* network (3.2): the radio channel, 1 byte (TW_CHAN_*) */
 #define TW_K_NET_FIRST      TW_K_POWER
-#define TW_K_NET_N          5
+#define TW_K_NET_N          6           /* 3.2: 6 (the channel); 3.0-3.1 boards know the first 5 */
+#define TW_K_NET_FLAGS_N    5           /* power and the setting flags: what TWN's settings need */
+
+/* 3.2: the channel. Every board of a network shares one; the channel key spreads like any network
+   key, and a board that takes a new one switches TW_CHAN_SWITCH_US later (all boards have it by
+   then, so they move together). A board that hears no other for TW_CHAN_LOST_US looks for them:
+   TW_CHAN_SCAN_MS on each other channel, then TW_CHAN_HOME_US back on its own, and again; where it
+   hears one it stays, and takes the network's settings (a board that was off during a change, or a
+   new one). Valid channels: 2.4 GHz, US, 1-11, 40 MHz wide with a partner 4 above (1-4) or below
+   (5-11). A future band adds channels to tw_chan_valid (a channel number names its band) */
+#define TW_CHAN_FIRST       1
+#define TW_CHAN_LAST        11
+#define TW_CHAN_SWITCH_US   20000000u
+#define TW_CHAN_LOST_US     30000000u
+#define TW_CHAN_SCAN_MS     300
+#define TW_CHAN_HOME_US     10000000u
 #define TW_K_N              32          /* keys 1..31 */
 #define TW_KC_BOARD         1           /* key classes: a setting of one board, kept in its flash */
 #define TW_KC_NETWORK       2           /*   one value for every board, said by every board (2.6+) */
@@ -253,6 +269,12 @@ typedef struct {
                                                every board that has the same settings) */
     uint8_t  set_power;                     /* quarter dBm, 0 = never set (full power) */
     uint8_t  set_flags;                     /* TW_SET_* */
+    uint8_t  set_channel;                   /* 3.2: the channel key's value (the network's channel) */
+    /* 3.2: the radio's channel (tw_chan_step): home, the one it works on; a switch waiting; a scan */
+    uint8_t  chan_home, chan_target, chan_wait, chan_changed;
+    uint8_t  scan_on, scan_ch, scan_found;
+    uint32_t chan_at, last_frame_us, scan_step_us, scan_next_us;
+    uint16_t chan_switches, chan_scans;
     uint8_t  set_pending;                   /* 1: a new setting to apply (the firmware applies it) */
     uint8_t  set_changes;                   /* how many times it changed since start */
     uint8_t  tx_power_q;                    /* the power the radio reports it uses (filled in by the firmware) */
@@ -391,6 +413,17 @@ void     tw_setting_heard(tw_node_t *n, const tw_rec_t *r);
    Start (at boot) with the settings and the keys' generations kept in flash: set_power and
    set_flags filled in first, then this */
 void     tw_net_init(tw_node_t *n, const uint8_t gen[TW_K_NET_N]);
+/* 3.2: the channel. Valid for setting (1..11, US); its 40 MHz partner: +1 above, -1 below */
+int      tw_chan_valid(uint8_t ch);
+int      tw_chan_partner(uint8_t ch);
+/* at boot, after set_channel is loaded (and before tw_net_init): the radio starts there */
+void     tw_chan_init(tw_node_t *n, uint32_t now);
+/* given at this board (the computer asked): every board, its next generation. 0, or -1 if not valid */
+int      tw_set_channel(tw_node_t *n, uint8_t ch);
+/* call often (every frame or so): the channel the radio should be on now; *quiet set while it is
+   looking for the others (do not send then). A switch to home sets chan_changed (keep it in flash) */
+uint8_t  tw_chan_step(tw_node_t *n, uint32_t now, int *quiet);
+
 /* 3.1: this board finished the channel survey (TW_K_SURVEY, generation gen): TW_SURVEY_N entries
    of TW_SURVEY_ENTRY bytes, from channel TW_SURVEY_FIRST up; sent as a TW_KIND_SURVEY record
    every 5 s for TW_SURVEY_SEND_US */
