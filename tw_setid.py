@@ -4,6 +4,9 @@
 """tw_setid.py - talk to the board on the computer's USB port (tw_node firmware).
 
     ~/scratch-esp/bin/python tw_setid.py PORT                 who is it; each board's power and relaying
+    ~/scratch-esp/bin/python tw_setid.py PORT check           listen 30 s and report problems: two boards with one
+                                                          number, different firmware or settings, a board
+                                                          looking for its group, weak links, another group
     ~/scratch-esp/bin/python tw_setid.py PORT board N         give it board number N (1-16), once
     ~/scratch-esp/bin/python tw_setid.py PORT power DBM       set the transmit power of EVERY board
     ~/scratch-esp/bin/python tw_setid.py PORT power default   back to full power (20 dBm)
@@ -88,6 +91,7 @@ The board's USB line can drop a command or an answer when it is busy, so this
 tries up to three times and only says "done" when the board itself reports the
 new number or setting.
 """
+import collections
 import os
 import sys
 import time
@@ -361,6 +365,76 @@ def channel(p, arg):
               "check again in a minute with: tw_setid.py PORT channel")
 
 
+class Heard:
+    """lines already read, offered again as a port's (for status())"""
+
+    def __init__(self, lines):
+        self._lines = lines
+
+    def lines(self, seconds):
+        yield from self._lines
+
+
+def check(p, seconds=30):
+    """listen and report what looks wrong; -> number of problems"""
+    print(f"listening {seconds} s to every board ...")
+    got = list(p.lines(seconds))
+    st = status(Heard(got), 0)
+    boots = {}                                  # board -> {boot tag: times said} (TWV, every 5 s)
+    for line in got:
+        f = line.split(",")
+        if f[0] == "TWV" and len(f) >= 3 and f[1].isdigit() and f[2].isdigit():
+            boots.setdefault(int(f[1]), collections.Counter())[int(f[2])] += 1
+    problems, notes = [], []
+    if not st:
+        print("no boards heard: is tw_node running, and is nothing else using the port?")
+        return 1
+    # two boards answering to one number: two start tags taking turns (a restart changes it once)
+    for b, c in sorted(boots.items()):
+        twice = [t for t, k in c.items() if k >= 2]
+        if len(twice) >= 2:
+            problems.append(f"board {b}: TWO BOARDS answer to this number (start tags {', '.join(map(str, twice))} "
+                            "both heard again and again). Give one of them another number over its cable "
+                            "(tw_setid.py PORT board N), and label it")
+        elif len(c) >= 2:
+            notes.append(f"board {b} restarted during the check (its start tag changed)")
+    if 16 in st:
+        problems.append("board 16 heard: a board without a number. Give it one (tw_setid.py PORT board N)")
+    fws = {b: v["fw"].split(" (")[0] for b, v in st.items() if v.get("fw")}
+    if len(set(fws.values())) > 1:
+        problems.append("firmware differs: " + ", ".join(f"board {b} {fw}" for b, fw in sorted(fws.items())))
+    for b in sorted(set(st) - set(fws)):
+        notes.append(f"board {b} did not say its firmware in {seconds} s")
+    seqs = {b: v["set_seq"] for b, v in st.items()}
+    if len(set(seqs.values())) > 1:
+        problems.append("settings differ (setting numbers " + ", ".join(f"board {b}: {q}" for b, q in sorted(seqs.items()))
+                        + "): right after a change that is the change spreading; check again in a minute")
+    chans = {b: v["chan"] for b, v in st.items() if v.get("chan")}
+    if len(set(chans.values())) > 1:
+        problems.append("channels differ: " + ", ".join(f"board {b} {c}" for b, c in sorted(chans.items())))
+    for b, v in sorted(st.items()):
+        if v["cable"] and v.get("looking"):
+            problems.append(f"board {b} (on the cable) is LOOKING FOR ITS GROUP: it hears no other board of it")
+        if v["cable"] and v.get("chan") and v.get("chan_key") and v["chan"] != v["chan_key"]:
+            notes.append(f"board {b} is moving to channel {v['chan_key']}")
+        if not v["cable"] and v.get("heard") is not None and v["heard"] < 90:
+            problems.append(f"board {b}: the board on the cable hears only {v['heard']}% of its frames "
+                            "(far, blocked, or interference: tw_setid.py PORT survey)")
+        if v["cable"] and v.get("other"):
+            notes.append(f"another group is near: board {b} has heard {v['other']:,} of its frames since it started "
+                         f"(last group {v['other_last']}); on another channel it would not share the air")
+    if len(st) == 1:
+        notes.append("only the board on the cable is heard: the others are off, out of reach, or in another "
+                     "group or on another channel")
+    print("boards heard: " + ", ".join(str(b) for b in sorted(st)))
+    for n in notes:
+        print(f"  note: {n}")
+    for q in problems:
+        print(f"  PROBLEM: {q}")
+    print("all healthy" if not problems else f"{len(problems)} problem{'s' if len(problems) > 1 else ''} to fix")
+    return len(problems)
+
+
 def survey_parse(f):
     """a TWU line (3.1): (board, generation, {channel: (busy %, frames, loudest, mean, noise)})"""
     out = {}
@@ -493,7 +567,7 @@ def main():
     a = sys.argv[1:]
     if not a or len(a) > 8:
         sys.exit(__doc__)
-    words = ("survey", "channel", "power", "relay", "second", "measure-second", "cap", "led", "group", "board")
+    words = ("check", "survey", "channel", "power", "relay", "second", "measure-second", "cap", "led", "group", "board")
     if len(a) > 1 and a[1] not in words:
         sys.exit(__doc__)                   # e.g. the older "PORT N": the help shows "PORT board N"
     if len(a) > 1 and a[1] == "board" and (len(a) != 3 or not a[2].isdigit()):
@@ -505,6 +579,9 @@ def main():
     if len(a) == 2 and a[1] == "survey":
         survey(p)
         return
+
+    if len(a) == 2 and a[1] == "check":
+        sys.exit(1 if check(p) else 0)
 
     if len(a) in (2, 3) and a[1] == "channel":
         channel(p, a[2] if len(a) == 3 else None)

@@ -5,6 +5,16 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **`tw_setid.py PORT check`**: 30 s of listening, then problems and notes.
+  Two boards with one number (each board says a start tag every 5 s, kept
+  until it restarts: two tags taking turns, each heard again, are two boards;
+  a restart changes it once and is only noted), a board without a number
+  (16), firmware or settings or channels that differ, a board looking for its
+  group, a board heard under 90% of the time, another group nearby. It ends
+  "all healthy" or the count of problems (and exits 1). With no third board
+  to relay, two boards sharing the cabled board's own number may not show:
+  the radio may drop frames from its own address.
+
 - **`tw_setid.py PORT board N`** sets the board number, in the same form as
   the other settings (`power 11`, `channel 6`, `group 2`). The older
   `tw_setid.py PORT N`, an unknown word, or `board` without a number shows

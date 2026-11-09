@@ -54,6 +54,7 @@ without sudo). Then flash the boards: [FLASH-README.md](FLASH-README.md).
 | watch a run that is going | `~/tw-kit/dash.sh` (`g` map, `q` closes the view, the run goes on) |
 | test where to put a board | `~/tw-kit/survey.sh` (it first shows the layout and asks if it is still right, then checks it against the radio in 2 quiet minutes; then walk a board around, `m` marks a spot and asks if a board was moved there and to which x y; `survey.sh stop` offers to write the moves into the layout) |
 | stop a run early | `~/tw-kit/run.sh stop` (or `watch.sh stop`, `survey.sh stop`) |
+| is everything right? two boards with one number, firmware, settings, weak links (30 s) | `~/scratch-esp/bin/python ~/tw-kit/tw_setid.py /dev/ttyACM0 check` |
 | the group of the board on the cable (tw_node 3.3; 0 = the default; it restarts) | `~/scratch-esp/bin/python ~/tw-kit/tw_setid.py /dev/ttyACM0 group 2` (over its own cable, one board at a time) |
 | the radio channel of every board: show it, or move them all (tw_node 3.2, every board; 1-11) | `~/scratch-esp/bin/python ~/tw-kit/tw_setid.py /dev/ttyACM0 channel` or `... channel 6` (not during a run) |
 | who else is on the air, per channel and board (tw_node 3.1; the network pauses about 12 s) | `~/scratch-esp/bin/python ~/tw-kit/tw_setid.py /dev/ttyACM0 survey` (saved in `~/tw-data/surveys/`; not during a run) |
