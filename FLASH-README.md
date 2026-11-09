@@ -7,9 +7,13 @@ cabled to a computer prints everything (its own measurements and those relayed
 to it), so the other boards need only a power bank.
 
 ```
-6cd1ed650b8ceab86d5799d5e594857671996a3aabb39b58aacabc1b7f1c8dd2  tw_node-s3-ch11.bin
+7ccbc4e86519cb0867a32712635bd1db6874567bc5e492dbe3134424429cfa53  tw_node-s3-ch11.bin
 ```
-Firmware tw_node 3.0: protocol 3 (docs/PROTOCOL-3.md): a leaner frame header,
+Firmware tw_node 3.1: the channel survey (`tw_setid.py PORT survey`: who else
+is on the air, per channel and board). 3.0 and 3.1 boards work together (the
+same protocol), but only 3.1 boards survey: update them all, program part
+only, one at a time, as below.
+3.0: protocol 3 (docs/PROTOCOL-3.md): a leaner frame header,
 and the network settings (power, relay, second frame, ...) travel only as
 settings by record, which every board says every 5 s. **3.0 boards do not hear
 2.x boards: flash every board to 3.0 together** (below; back to 2.7 the same
@@ -99,7 +103,7 @@ Board on the native USB port, in download mode (hold BOOT, tap RST, release BOOT
 Tap RST. Then check who it is (it says hello every 10 s):
 ```
 ~/scratch-esp/bin/python tw_setid.py /dev/ttyACM0
-# -> board 16, factory address 30:30:f9:xx:xx:xx, firmware tw_node 3.0, PSRAM 8 MB, LED off
+# -> board 16, factory address 30:30:f9:xx:xx:xx, firmware tw_node 3.1, PSRAM 8 MB, LED off
 ```
 A new board says it is board 16 and needs a number:
 `~/scratch-esp/bin/python tw_setid.py /dev/ttyACM0 1` (then 2, 3, ... for the
@@ -118,7 +122,7 @@ dd if=tw_node-s3-ch11.bin of=/tmp/tw_node-app.bin bs=4096 skip=32
 ~/scratch-esp/bin/esptool --chip esp32s3 --port /dev/ttyACM0 write-flash 0x20000 /tmp/tw_node-app.bin
 ```
 (no erase-flash). Tap RST; `tw_setid.py /dev/ttyACM0` should say
-`firmware tw_node 3.0` with the board's old number (and, once all are done,
+`firmware tw_node 3.1` with the board's old number (and, once all are done,
 every board's firmware). If it says board 16, write
 the whole image as above and set the number again. `tw_setid.py` tries up to three times and
 says "done" only when the board reports the new number.

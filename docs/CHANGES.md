@@ -5,6 +5,11 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.5-next (work in progress, on the next branch)
 
+- **tw_node 3.1: version and image.** The channel survey (below) in
+  `tw_node-s3-ch11.bin`. Program-only upgrade (its first 128 KB are 3.0's),
+  numbers and settings kept; 3.0 and 3.1 boards work together, so one at a
+  time is fine.
+
 - **Computer side: `tw_setid.py PORT survey`** (tw_node 3.1). Gives the
   survey to every board, waits up to 40 s for each board's result, and prints
   a table: per channel and board, busy % and foreign frames, the loudest
