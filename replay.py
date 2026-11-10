@@ -61,14 +61,16 @@ with the label and note you give them) are marked on the timeline as "watch:"
 and listed with the lasting changes, events the camera kept frames for are tagged "camera", and a camera
 panel shows the frame of the second under the cursor (the camera keeps one a
 second, around its events). The frames are linked, not copied: the page shows
-them while it sits in its watch folder. To look at it from another computer,
-serve the folder:
-    cd ~/tw-data/watch/<run> && python3 -m http.server 8000
-and open http://localhost:8000/replay.html on the Chromebook; for other
-computers at home add --bind 0.0.0.0, let ChromeOS forward the port (Settings,
-Linux development environment, Port forwarding: 8000), and open
-http://<the Chromebook's address>:8000/replay.html. Anyone on the network can
-then read the whole folder (recordings and frames) until Ctrl-C stops it.
+them while it sits in its watch folder. To look at it from another computer
+or a phone at home: --serve (below).
+--serve [--port 8000] [--hours 2]: after writing the page, serve it (and the
+camera's frames, nothing else of the folder) to the computers at home, at an
+address with a random part, so only someone given the link opens it; until
+Ctrl-C, or for --hours. On a Chromebook, let ChromeOS forward the port once
+(Settings, Linux development environment, Port forwarding: 8000) and open the
+address it prints with the Chromebook's own address (its network settings).
+The page shows the layout and when things happened: give the link only to
+whom you would show the page.
 Stretches: an event of 2 minutes or more (a link that stays restless, as after
 a car has left) is listed as a stretch, with the peaks inside it as events of
 their own (E48a, E48b, ...): moments when at least two directions rise to 1.8x
@@ -706,6 +708,10 @@ def main():
                     help="minutes after which a new state counts as usual (the orange mark clears); default 15")
     ap.add_argument("--view", choices=("waves", "lines"), default="waves",
                     help="how the page opens: waves (each board a beacon, a fan per path) or lines (one line per direction)")
+    ap.add_argument("--serve", action="store_true",
+                    help="serve the page (and its camera frames) to the computers at home, at a link with a random part")
+    ap.add_argument("--port", type=int, default=8000, help="the port for --serve (default 8000)")
+    ap.add_argument("--hours", type=float, default=2, help="--serve stops after this long (default 2)")
     a = ap.parse_args()
     folder = os.path.abspath(os.path.expanduser(a.folder))
     title = a.title
@@ -828,6 +834,80 @@ def main():
         f.write(page)
 
     print(f"\n{dest}  ({os.path.getsize(dest) // 1024} KB)  layout: {layout}")
+    if a.serve:
+        serve(dest, folder, a.port, a.hours)
+
+
+def serve(page, folder, port, hours):
+    """serve the page and the camera's frames (detect/events/<event>/<frame>.jpg, beside it in
+    the run folder), nothing else, under /<random part>/, to the computers at home"""
+    import http.server
+    import secrets
+    import socket
+    import threading
+    if os.path.dirname(os.path.abspath(page)) != folder:
+        print("note: the page is not in the run folder (--out): served without the camera's frames", file=sys.stderr)
+    key = secrets.token_urlsafe(6)
+    name = os.path.basename(page)
+    frames = os.path.realpath(os.path.join(folder, "detect", "events"))
+
+    class Page(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            path = self.path.split("?")[0]
+            pre = f"/{key}/"
+            if not path.startswith(pre):
+                return self.send_error(404)
+            rel = path[len(pre):] or name
+            if rel == name:
+                f, kind = page, "text/html; charset=utf-8"
+            else:
+                f = os.path.realpath(os.path.join(folder, rel))
+                if not (rel.startswith("detect/events/") and f.startswith(frames + os.sep) and f.endswith(".jpg")
+                        and os.path.isfile(f)):
+                    return self.send_error(404)
+                kind = "image/jpeg"
+            try:
+                body = open(f, "rb").read()
+            except OSError:
+                return self.send_error(404)
+            self.send_response(200)
+            self.send_header("Content-Type", kind)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):        # quiet: who opened it is not printed
+            pass
+
+    try:
+        srv = http.server.ThreadingHTTPServer(("0.0.0.0", port), Page)
+    except OSError as e:
+        sys.exit(f"cannot serve on port {port} ({e.strerror}): another server there? try --port 8001")
+    try:                                    # the address this Linux goes out from (no packet is sent)
+        u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        u.connect(("10.255.255.255", 1))
+        here = u.getsockname()[0]
+        u.close()
+    except OSError:
+        here = "unknown"
+    print(f"\nserving the page (and its camera frames, nothing else) for {hours:g} h, until Ctrl-C:")
+    print(f"  on this computer:        http://localhost:{port}/{key}/{name}")
+    print(f"  from other devices:      http://<this computer's address>:{port}/{key}/{name}")
+    print(f"  (this Linux sees itself as {here}; on a Chromebook use the Chromebook's own address, from its")
+    print(f"   network settings, after letting it forward port {port}: Settings, Linux development environment,")
+    print("   Port forwarding)")
+    print("Give the link only to whom you would show the page (it shows the layout and when things happened).")
+    timer = threading.Timer(hours * 3600, srv.shutdown)
+    timer.daemon = True
+    timer.start()
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        srv.server_close()
+    print("stopped serving")
     print(f"{total:,} records ({dup:,} second copies skipped); {len(names)} directions; "
           f"{len(epoch) // 3600} h {len(epoch) % 3600 // 60} min in {len(segs)} part(s)")
     print("thresholds: " + "  ".join(f"{n} {t:.2f}" for n, t in zip(names, thr)))

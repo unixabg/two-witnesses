@@ -5,7 +5,17 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.6-next (work in progress, on the next branch)
 
-- Nothing yet: v5.5 is the release on main.
+- **`replay.py --serve`**: after writing the page, it serves it to a phone
+  or another computer at home, with a watch run's camera frames, and nothing
+  else of the run folder (not the recordings, not the layout file), under an
+  address with a random part (only someone given the link opens it), for 2
+  hours (`--hours`) or until Ctrl-C, on port 8000 (`--port`). It prints the
+  link and how to let a Chromebook forward the port. Checked: the page and a
+  frame are served; the recording, the layout file, the page without the
+  random part and two ways of climbing out of the folder are not found. At
+  phone width the page needs nothing more: one column, no sideways scroll.
+  The old advice (`python3 -m http.server` in the folder) served the whole
+  folder to anyone at home; it is gone from the help.
 
 ## What changed in v5.5 (2026-11-10): protocol 3, the clock, the channel and groups (one reflash for every board)
 

@@ -136,8 +136,11 @@ a browser: `~/scratch-esp/bin/python ~/tw-kit/replay.py ~/tw-data/runs/<run>`
 writes `replay.html` into the run folder. It asks for a title (or give
 `--title "..."`); `--from 05:00 --to 07:00` keeps part of the run, and
 `--note "07:15 door opened"` adds your own marks (on a watch run the camera's
-events and frames show too: see `replay.py --help` for sharing it through a
-small web server), and `--view lines` opens it with
+events and frames show too), `--serve` shows it on a phone or another
+computer at home (the page and its camera frames only, at a link with a random
+part, for 2 hours or until Ctrl-C; on a Chromebook allow the port once under
+Settings, Linux development environment, Port forwarding: 8000), and
+`--view lines` opens it with
 one line per direction instead of the beacons (a switch on the page flips
 between them). The page holds the board layout:
 keep it as private as the run.
