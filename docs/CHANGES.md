@@ -3,7 +3,7 @@
 Newest first. Each entry keeps the reasoning and the desk tests behind the change;
 the README has only what you need to run the kit.
 
-## What changed in v5.5-next (work in progress, on the next branch)
+## What changed in v5.5 (2026-11-10): protocol 3, the clock, the channel and groups (one reflash for every board)
 
 - **`flash_board.sh`: a board set up step by step.** With the board on the
   cable it checks the kit (the image against SHA256SUMS, esptool, the port),
