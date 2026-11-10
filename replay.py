@@ -66,7 +66,7 @@ or a phone at home: --serve (below).
 --serve [--port 8000] [--hours 2]: after writing the page, serve it (and the
 camera's frames, nothing else of the folder) to the computers at home, at an
 address with a random part, so only someone given the link opens it; until
-Ctrl-C, or for --hours. On a Chromebook, let ChromeOS forward the port once
+Ctrl-C, or for --hours; each request is shown as it comes. On a Chromebook, let ChromeOS forward the port once
 (Settings, Linux development environment, Port forwarding: 8000) and open the
 address it prints with the Chromebook's own address (its network settings).
 The page shows the layout and when things happened: give the link only to
@@ -877,11 +877,35 @@ def serve(page, folder, port, hours):
             self.end_headers()
             self.wfile.write(body)
 
-        def log_message(self, *args):        # quiet: who opened it is not printed
+        def handle(self):
+            # a browser that tries an encrypted connection first (https; Chrome's "Always use secure
+            # connections") sends a TLS hello, which this plain server cannot answer: say so, once
+            try:
+                first = self.connection.recv(1, socket.MSG_PEEK)
+            except OSError:
+                return
+            if first == b"\x16":
+                print(f"  {time.strftime('%H:%M:%S')}  from {self.client_address[0]}  an ENCRYPTED (https) attempt: "
+                      "this server speaks plain http. Open the link as http://..., or turn off the browser's "
+                      "\"Always use secure connections\"", flush=True)
+                return
+            super().handle()
+
+        def log_error(self, *args):          # log_request says it (one line a request)
             pass
 
+        def log_request(self, code="-", size="-"):
+            """one line a request: when, from where (through a Chromebook's forwarding: its own inner
+            address, not the device's), what (the link's random part shown as <link>), the answer"""
+            what = (self.requestline or "").replace(key, "<link>")
+            print(f"  {time.strftime('%H:%M:%S')}  from {self.client_address[0]}  {what}  -> {code}", flush=True)
+
+    class Server(http.server.ThreadingHTTPServer):
+        def handle_error(self, request, client_address):     # a dropped connection: one line, not a trace
+            print(f"  {time.strftime('%H:%M:%S')}  from {client_address[0]}  the connection was dropped", flush=True)
+
     try:
-        srv = http.server.ThreadingHTTPServer(("0.0.0.0", port), Page)
+        srv = Server(("0.0.0.0", port), Page)
     except OSError as e:
         sys.exit(f"cannot serve on port {port} ({e.strerror}): another server there? try --port 8001")
     try:                                    # the address this Linux goes out from (no packet is sent)
@@ -898,6 +922,7 @@ def serve(page, folder, port, hours):
     print(f"   network settings, after letting it forward port {port}: Settings, Linux development environment,")
     print("   Port forwarding)")
     print("Give the link only to whom you would show the page (it shows the layout and when things happened).")
+    print("Each request is shown below as it comes (the link's random part as <link>):")
     timer = threading.Timer(hours * 3600, srv.shutdown)
     timer.daemon = True
     timer.start()

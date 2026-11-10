@@ -5,6 +5,14 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.6-next (work in progress, on the next branch)
 
+- **`replay.py --serve` shows each request**, one line as it comes: when,
+  from where (through a Chromebook's port forwarding, ChromeOS's inner
+  address, not the device's), what (the link's random part as `<link>`) and
+  the answer. A browser that first tries an encrypted connection (Chrome's
+  "Always use secure connections") is named as such, with what to do, instead
+  of a page of Python errors; a dropped connection is one line. (It was
+  silent, which left a phone that could not open the page unexplained.)
+
 - **`replay.py --serve`**: after writing the page, it serves it to a phone
   or another computer at home, with a watch run's camera frames, and nothing
   else of the run folder (not the recordings, not the layout file), under an
