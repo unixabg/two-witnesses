@@ -32,8 +32,9 @@ checked against a stand-in board. Real boards are next (the steps are below).
    - The program is the kit's image from 0x20000, or FILE. It is signed on the
      computer. The manifest is the program's SHA-256 and the signature over it.
    - It goes over USB into the cabled board's PSRAM, about 1.7 KB a line,
-     several lines in flight at once. The cabled board checks it with its own
-     key.
+     two lines in flight at once (one after any retry: the board's USB driver
+     drops what comes beyond the 4 KB it has not read). The cabled board
+     checks it with its own key.
    - The cabled board sends it by radio to its group in short bursts:
      - **Frames:** the update frames are its own frames, marked `TU`. Older
        firmware and other groups drop them.

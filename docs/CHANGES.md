@@ -5,6 +5,17 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.6-next (work in progress, on the next branch)
 
+- **`tw_setid.py PORT update`: two chunks at a time over USB, not eight.**
+  On the first real board the upload stopped at chunk 2 ("no answer after 5
+  tries"). The board's USB driver keeps at most 4 KB it has not read yet, and
+  drops what comes beyond it without a word (esp_driver_usb_serial_jtag: the
+  packet is lost when its ring buffer is full). Eight lines of about 1.72 KB
+  each overflowed it. The stand-in board used in the desk test read as fast
+  as they came, so it never showed this. Now two lines are in flight (3.4
+  KB), and one after any retry. If a chunk is still not taken after 5 tries,
+  the error gives the board's last answer. No firmware change: boards on 4.0
+  as flashed take it.
+
 - **tw_node 4.0: version and image.** Updates over the air (below) in
   `tw_node-s3-ch11.bin`. This time the first 128 KB change: a bootloader with
   rollback, the two-slot partition table, and an empty program-slot record at

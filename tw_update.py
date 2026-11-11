@@ -155,22 +155,27 @@ def upload(p, data, man):
         sys.exit(f"the board on the cable: {line}")
     n = (len(data) + CHUNK - 1) // CHUNK
     t0, shown, nxt, done = time.time(), 0, 0, 0
-    pending, tries, buf = {}, {}, b""        # a few chunks on the way at once; each answered by number
+    # chunks on the way at once: the board's USB driver keeps 4 KB it has not read yet and drops what
+    # comes beyond (esp_driver_usb_serial_jtag), and a chunk's line is about 1.72 KB: so 2, then 1
+    # after any retry
+    pending, tries, buf, window, last = {}, {}, b"", 2, None
 
     def put(i):
         p.send(f"TWUP d {i} {base64.b64encode(data[i * CHUNK:(i + 1) * CHUNK]).decode()}")
         pending[i] = time.time()
         tries[i] = tries.get(i, 0) + 1
         if tries[i] > 5:
-            sys.exit(f"chunk {i} of {n}: no answer after 5 tries")
+            sys.exit(f"chunk {i} of {n}: not taken after 5 tries (the board's last answer: {last or 'none'})")
     while done < n:
-        while nxt < n and len(pending) < 8:
+        while nxt < n and len(pending) < window:
             put(nxt)
             nxt += 1
         buf += p.s.read(p.s.in_waiting or 1)
         while b"\n" in buf:
             raw, buf = buf.split(b"\n", 1)
             line = raw.decode(errors="replace").strip()
+            if line.startswith("TWUP"):
+                last = line
             m = re.match(r"TWUP (ok|err chunk) (\d+)$", line)
             if m and int(m[2]) in pending:
                 i = int(m[2])
@@ -178,11 +183,13 @@ def upload(p, data, man):
                 if m[1] == "ok":
                     done += 1
                 else:
+                    window = 1
                     put(i)
             elif line.startswith("TWUP err"):
                 sys.exit(f"the board on the cable: {line}")
         for i, t in list(pending.items()):
             if time.time() - t > 3:
+                window = 1
                 put(i)
         pct = done * 100 // n
         if pct >= shown + 20:
