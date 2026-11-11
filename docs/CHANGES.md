@@ -5,6 +5,13 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.6-next (work in progress, on the next branch)
 
+- **tw_node 4.0: version and image.** Updates over the air (below) in
+  `tw_node-s3-ch11.bin`. This time the first 128 KB change: a bootloader with
+  rollback, the two-slot partition table, and an empty program-slot record at
+  0x11000. So each board needs one flash of all but its settings
+  (`flash_board.sh`, p), not the program part alone. The settings area is
+  left as it was, and the boards keep their numbers and settings.
+
 - **`flash_board.sh`: "all but its settings", and the update key.** The
   flashing choice that kept a board's number and settings wrote only the
   program (from 0x20000). Now it writes everything except the settings area

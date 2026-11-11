@@ -7,9 +7,17 @@ cabled to a computer prints everything (its own measurements and those relayed
 to it), so the other boards need only a power bank.
 
 ```
-14274f7c61394fee5d4148bf84e6dd35c7e144d697b98aca2d2e7783789d8bdb  tw_node-s3-ch11.bin
+e0162819c3219e011765e9b4fee61b2de223ed63ef7b3a96f155a794bb5b6c9f  tw_node-s3-ch11.bin
 ```
-Firmware tw_node 3.5: steadier than quiet. A link at or below its board's low
+Firmware tw_node 4.0: updates over the air (`tw_setid.py PORT update board
+all`; docs/TW_NODE-4.0.md). **One last flash by cable for each board**:
+`flash_board.sh`, answer **p** ("all but its settings": it keeps its number
+and settings) and give it your update key; the first board makes the key
+(`private/update-key.pem`: **keep a copy somewhere safe**). 4.0's first 128
+KB differ from 3.x's (two program slots, rollback): the program part alone is
+not enough this once. 4.0 works with 3.x boards for measuring; only 4.0 boards
+take updates.
+3.5: steadier than quiet. A link at or below its board's low
 threshold (0.5x its quiet level unless set) for 10 s: something that is usually
 moving has stopped; the LED shows green while it lasts (`tw_setid.py PORT
 detect low X|off [board N|all]`, 0.1-0.9). Works with 3.0-3.4 boards; program
@@ -115,8 +123,10 @@ worked; 2.4.1 turns its blue ramp the replay's usual way round).
 
 **The guided way:** `~/tw-kit/flash_board.sh` with the board on the cable
 walks through all of this, asking before each step: the flashing below (a new
-board gets the whole image, a tw_node board the program part), its group and
-number, its settings, its LED, and a health check. The steps by hand follow.
+board gets the whole image, a tw_node board all but its settings), its group
+and number, its settings, its LED, its update key (4.0), and a health check.
+The steps by hand follow. After 4.0, updates go over the air:
+`tw_setid.py PORT update board all`.
 
 One image for every board. (For the record: the earlier two-board firmware (one sender, one receiver) is kept in release
 v5.3: download it from the v5.3 tag, or in a clone
@@ -135,7 +145,7 @@ Board on the native USB port, in download mode (hold BOOT, tap RST, release BOOT
 Tap RST. Then check who it is (it says hello every 10 s):
 ```
 ~/scratch-esp/bin/python tw_setid.py /dev/ttyACM0
-# -> board 16, factory address 30:30:f9:xx:xx:xx, firmware tw_node 3.5, PSRAM 8 MB, LED off, group 0
+# -> board 16, factory address 30:30:f9:xx:xx:xx, firmware tw_node 4.0, PSRAM 8 MB, LED off, group 0, program slot ota_0, no update key
 ```
 A new board says it is board 16 and needs a number:
 `~/scratch-esp/bin/python tw_setid.py /dev/ttyACM0 board 1` (then 2, 3, ... for the
@@ -147,15 +157,22 @@ every reflash; the settings come back by themselves from the other boards if the
 still have them (or set them again).
 
 **Upgrading a board that already runs tw_node 2.0 or later, keeping its number
-and settings:** write only the program part of the image (from 0x20000; the
-bootloader and partition table are the same as 2.0's to 2.7's):
+and settings:** write all of the image but the settings area (0xb000-0x11000):
+the bootloader and partition table, the program-slot record, the program.
+From 3.x to 4.0 this moves the board to the two program slots; on a 4.0 board
+it also puts it back on slot 0 with this program:
 ```
+dd if=tw_node-s3-ch11.bin of=/tmp/tw-boot.bin bs=4096 count=11
+dd if=tw_node-s3-ch11.bin of=/tmp/tw-slots.bin bs=4096 skip=17 count=15
 dd if=tw_node-s3-ch11.bin of=/tmp/tw_node-app.bin bs=4096 skip=32
-~/scratch-esp/bin/esptool --chip esp32s3 --port /dev/ttyACM0 write-flash 0x20000 /tmp/tw_node-app.bin
+~/scratch-esp/bin/esptool --chip esp32s3 --port /dev/ttyACM0 write-flash 0x0 /tmp/tw-boot.bin 0x11000 /tmp/tw-slots.bin 0x20000 /tmp/tw_node-app.bin
 ```
-(no erase-flash). Tap RST; `tw_setid.py /dev/ttyACM0` should say
-`firmware tw_node 3.5` with the board's old number (and, once all are done,
-every board's firmware). If it says board 16, write
+(no erase-flash; flash_board.sh does the same). Back to 3.5 the same way,
+with 3.5's image (in a clone: ``git show $(git log -1 --format=%h --grep='tw_node 3.5: version and
+image'):tw_node-s3-ch11.bin > tw_node-3.5.bin``). Tap RST; `tw_setid.py /dev/ttyACM0` should say
+`firmware tw_node 4.0` with the board's old number (and, once all are done,
+every board's firmware). Then give it your update key:
+`tw_setid.py /dev/ttyACM0 update-key`. If it says board 16, write
 the whole image as above and set the number again. `tw_setid.py` tries up to three times and
 says "done" only when the board reports the new number.
 
