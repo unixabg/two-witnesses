@@ -5,6 +5,17 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.6-next (work in progress, on the next branch)
 
+- **`flash_board.sh`: "all but its settings", and the update key.** The
+  flashing choice that kept a board's number and settings wrote only the
+  program (from 0x20000). Now it writes everything except the settings area
+  (0xb000-0x11000): the bootloader and partition table, the program-slot
+  record and the program. That is the one cable flash that moves a 3.x board
+  to tw_node 4.0's two program slots, and later it puts a board back on
+  slot 0 with the program just written. A new step 7 gives the board your
+  update key (making it the first time) when it runs 4.0. Checked with a
+  stand-in esptool: three pieces, at 0x0, 0x11000 and 0x20000, the settings
+  left alone.
+
 - **Computer side: `tw_setid.py PORT update-key [show|none]` and `update
   [board N|all] [FILE]`** (tw_node 4.0; the work is in the new
   `tw_update.py`).

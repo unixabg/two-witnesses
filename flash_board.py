@@ -9,16 +9,19 @@ Step by step, asking before each change:
   1. the kit: the firmware image's fingerprint, esptool, the port
   2. what is on the cable: a board already running tw_node (its number,
      group, firmware), or a new one
-  3. flashing: a new board gets the whole image; a tw_node board, the program
-     part only (keeps its number and settings), the whole image (a fresh
-     start), or nothing
+  3. flashing: a new board gets the whole image; a tw_node board, all but its
+     settings (keeps its number and settings; 4.0: this also moves a 3.x board
+     to the two program slots updates over the air need), the whole image (a
+     fresh start), or nothing
   4. its group (0 = the default) and its board number. Numbers are per group
      and must not repeat: write down which board got which, and label it
   5. its settings: it takes its group's within a few seconds (looking for the
      group if it is on another channel); the first board of a new group
      chooses the group's channel instead
   6. its LED (optional), a test blink so you can see which board it is
-  7. tw_setid.py PORT check: two boards with one number, firmware, settings
+  7. its update key (4.0): your key's public half, so it takes updates over the
+     air signed with your key (tw_setid.py PORT update-key; made once if none)
+  8. tw_setid.py PORT check: two boards with one number, firmware, settings
 Nothing is changed without a yes. Ctrl-C stops at any step.
 """
 import hashlib
@@ -31,7 +34,8 @@ import time
 
 KIT = os.path.dirname(os.path.abspath(__file__))
 IMAGE = os.path.join(KIT, "tw_node-s3-ch11.bin")
-APP_OFFSET = 0x20000                    # the program part (FLASH-README): the first 128 KB stay
+APP_OFFSET = 0x20000                    # the program (FLASH-README)
+SETTINGS = (0xB000, 0x11000)            # the settings area (nvs): "all but the settings" leaves it
 
 
 def say(text=""):
@@ -84,6 +88,14 @@ def hello(port, seconds=14):
     return None
 
 
+def fw_of(h):
+    """'tw_node 4.0' -> (4, 0)"""
+    try:
+        return tuple(int(x) for x in h["fw"].split()[1].split(".")[:2])
+    except (KeyError, IndexError, ValueError, AttributeError):
+        return None
+
+
 def image_ok():
     """the image's fingerprint against SHA256SUMS (the kit's)"""
     if not os.path.exists(IMAGE):
@@ -115,20 +127,25 @@ def esptool():
 
 
 def flash(port, whole):
-    """write the whole image (0x0) or the program part (0x20000); retries on a yes"""
-    path, offset, tmp = IMAGE, "0x0", None
+    """write the whole image (0x0), or all of it but the settings area (bootloader and partition
+    table, the program-slot record, the program); retries on a yes"""
+    pairs, tmps = ["0x0", IMAGE], []
     if not whole:
-        tmp = tempfile.NamedTemporaryFile(prefix="tw_node-app-", suffix=".bin", delete=False)
-        tmp.write(open(IMAGE, "rb").read()[APP_OFFSET:])
-        tmp.close()
-        path, offset = tmp.name, hex(APP_OFFSET)
+        img = open(IMAGE, "rb").read()
+        pairs = []
+        for start, end in ((0, SETTINGS[0]), (SETTINGS[1], APP_OFFSET), (APP_OFFSET, len(img))):
+            t = tempfile.NamedTemporaryFile(prefix="tw_node-part-", suffix=".bin", delete=False)
+            t.write(img[start:end])
+            t.close()
+            tmps.append(t.name)
+            pairs += [hex(start), t.name]
     try:
         while True:
             say("")
             say("Put the board in download mode: hold BOOT, tap RST, let go of BOOT.")
             ask("Press Enter when done", "")
-            cmd = esptool() + ["--chip", "esp32s3", "--port", port, "write-flash", offset, path]
-            say(f"  writing {'the whole image' if whole else 'the program part'} ...")
+            cmd = esptool() + ["--chip", "esp32s3", "--port", port, "write-flash"] + pairs
+            say(f"  writing {'the whole image' if whole else 'all but its settings'} ...")
             r = subprocess.run(cmd, capture_output=True, text=True)
             tail = "\n".join((r.stdout + r.stderr).strip().splitlines()[-3:])
             if r.returncode == 0:
@@ -141,8 +158,8 @@ def flash(port, whole):
             if not yes("Try again?"):
                 return False
     finally:
-        if tmp:
-            os.unlink(tmp.name)
+        for t in tmps:
+            os.unlink(t)
 
 
 def main():
@@ -161,7 +178,7 @@ def main():
     if h:
         say(f"   found: board {h['board']}{' (no number yet)' if h['board'] == 16 else ''}, group {h['group']}, "
             f"firmware {h['fw']}")
-        say("3. Flashing: [p] the program part only (keeps its number and settings),")
+        say("3. Flashing: [p] all but its settings (keeps its number and settings),")
         say("              [w] the whole image (a fresh start: number and settings cleared), [n] no flashing")
         how = ask("   Which", "p", ("p", "w", "n"))
     else:
@@ -224,8 +241,14 @@ def main():
         setid(port, "led", "on", "48")
         setid(port, "led", "test")
         say("   it blinks for 7 s: this is the board you just set up")
-    # 7. check
-    say("7. The health check (30 s):")
+    # 7. update key
+    say("7. Its update key (tw_node 4.0): so it takes updates over the air signed with your key.")
+    if (fw_of(h) or (0, 0)) >= (4, 0) and yes("   Give it your update key (made now if you have none)?", "y"):
+        setid(port, "update-key")
+    elif (fw_of(h) or (0, 0)) < (4, 0):
+        say("   (its firmware is older than 4.0: no updates over the air)")
+    # 8. check
+    say("8. The health check (30 s):")
     code, _ = setid(port, "check")
     say("")
     say(f"Done: board {n}, group {g}, firmware {h['fw']}. Unplug it, place it, and write its place in your layout")

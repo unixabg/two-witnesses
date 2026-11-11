@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2026 Richard Nelson
 # SPDX-License-Identifier: Apache-2.0
 # flash_board.sh - set up one board on the cable, step by step: flash it
-# (a new board: the whole image; a tw_node board: the program part), its
+# (a new board: the whole image; a tw_node board: all but its settings), its
 # group, its board number, its group's settings (and the channel, for the
 # first board of a new group), its LED, then a health check. It asks before
 # each change.
