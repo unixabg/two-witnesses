@@ -5,6 +5,11 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.6-next (work in progress, on the next branch)
 
+- **tw_node 3.5: version and image.** Steadier than quiet (below) in
+  `tw_node-s3-ch11.bin`. Program-only upgrade (its first 128 KB are 3.4's);
+  every board watches at 0.5x until given another (`detect low off` turns it
+  off).
+
 - **The replay: steadier than quiet, the boards' and its own.** On runs
   with tw_node 3.5 boards, the seconds a board marked a link steadier than
   quiet are a green line along the bottom of that direction's row. The page
