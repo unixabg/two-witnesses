@@ -39,6 +39,13 @@
                                                           default; tw_node 3.3). Over the cable only; it restarts
     ~/scratch-esp/bin/python tw_setid.py PORT survey          every board listens on channels 1-11 for a
                                                           second each: who else is on the air (tw_node 3.1)
+    ~/scratch-esp/bin/python tw_setid.py PORT update-key [show|none]   your update key (made once, kept in
+                                                          private/), given to THIS board; each board needs it
+                                                          once over its own cable (tw_node 4.0)
+    ~/scratch-esp/bin/python tw_setid.py PORT update [board N|all] [FILE]   updates over the air: the kit's
+                                                          program (or FILE), signed with your key, from this
+                                                          board to board N, every board of its group, or
+                                                          (without board) itself (tw_node 4.0; tw_update.py)
     e.g. ~/scratch-esp/bin/python tw_setid.py /dev/ttyACM0 power 11
 
 Board number: the board stores it in its flash and restarts; erase-flash clears it.
@@ -512,6 +519,28 @@ def board_key(p, cmd, key, target, what, ok_word, need=(3, 4)):
              "for 60 s, so try again when it is up")
 
 
+def update_args(a):
+    """4.0: update-key [show|none] / update [board N|all] [FILE] -> (word, arg, file)"""
+    rest = a[2:]
+    if a[1] == "update-key":
+        if len(rest) > 1 or (rest and rest[0] not in ("show", "none")):
+            sys.exit("update-key, update-key show, update-key none")
+        return a[1], rest[0] if rest else None, None
+    target, path = None, None
+    if len(rest) >= 2 and rest[0] == "board":
+        t = rest[1]
+        if t == "all":
+            target = 0
+        elif t.isdigit() and 1 <= int(t) <= 16:
+            target = int(t)
+        else:
+            sys.exit("board N (1-16) or board all")
+        rest = rest[2:]
+    if len(rest) > 1 or (rest and not os.path.isfile(rest[0])):
+        sys.exit("update [board N|all] [FILE] (FILE: a tw_node image or program file)")
+    return a[1], target, rest[0] if rest else None
+
+
 def board_key_args(a):
     """3.4: detect X [board N|all] / relearn [board N|all] -> board_key()'s arguments (target None:
     the board on the cable)"""
@@ -679,7 +708,7 @@ def main():
     a = sys.argv[1:]
     if not a or len(a) > 8:
         sys.exit(__doc__)
-    words = ("detect", "relearn", "check", "survey", "channel", "power", "relay", "second", "measure-second", "cap", "led", "group", "board")
+    words = ("update", "update-key", "detect", "relearn", "check", "survey", "channel", "power", "relay", "second", "measure-second", "cap", "led", "group", "board")
     if len(a) > 1 and a[1] not in words:
         sys.exit(__doc__)                   # e.g. the older "PORT N": the help shows "PORT board N"
     if len(a) > 1 and a[1] == "board" and (len(a) != 3 or not a[2].isdigit()):
@@ -687,7 +716,15 @@ def main():
     if len(a) == 3 and a[1] == "board" and not 1 <= int(a[2]) <= 16:
         sys.exit("board number must be 1..16")
     bk = board_key_args(a) if len(a) >= 2 and a[1] in ("detect", "relearn") else None
+    up = update_args(a) if len(a) >= 2 and a[1] in ("update", "update-key") else None
     p = Port(a[0])
+
+    if up:                                           # 4.0: updates over the air (tw_update.py)
+        import tw_update
+        if a[1] == "update-key":
+            tw_update.key_command(p, up[1])
+            return
+        sys.exit(tw_update.update(p, status, up[1], up[2]))
 
     if len(a) == 2 and a[1] == "survey":
         survey(p)
@@ -893,6 +930,10 @@ def main():
             if len(f) >= 9 and f[7].strip().isdigit():          # 2.4+: the LED's pin (0 = off), brightness
                 led = f", LED on GPIO {f[7]} (brightness {f[8].strip()})" if int(f[7]) else ", LED off"
             group = f", group {f[9].strip()}" if len(f) >= 10 and f[9].strip().isdigit() else ""    # 3.3+
+            if len(f) >= 13:                                    # 4.0: its program slot, proving, update key
+                group += f", program slot {f[10]}" + (" (new: kept once it has run a minute with its group)"
+                                                      if f[11].strip() == "1" else "")
+                group += f", update key {f[12].strip()}" if f[12].strip() != "none" else ", no update key"
             print(f"board {f[1]}, factory address {f[2]}, firmware {f[3]}{psram}{led}{group}")
             print("every board:")
             show(status(p, 11))         # 11 s: every board says its firmware and reports every 5 s, and a

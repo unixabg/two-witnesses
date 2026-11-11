@@ -5,6 +5,26 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.6-next (work in progress, on the next branch)
 
+- **Computer side: `tw_setid.py PORT update-key [show|none]` and `update
+  [board N|all] [FILE]`** (tw_node 4.0; the work is in the new
+  `tw_update.py`).
+  - **`update-key`** makes your key pair once (P-256,
+    `private/update-key.pem`, readable by you only) and gives its public half
+    to the board on the cable. `show` compares fingerprints; `none` removes
+    the key from the board.
+  - **`update`** takes the kit's image, or a program or image FILE, and
+    finds its version and build in it. It signs the program and gives it to
+    the board on the cable, several chunks in flight at once (about a second
+    on a stand-in; 10-30 s expected on a board). The board checks it and
+    sends it to board N, every board of its group, or (without `board`)
+    takes it itself.
+  - **Following it:** it shows each board's part every 5 s, and ends when
+    each board runs the new program or has said why not: no key, another
+    key's signature, damaged, no PSRAM, older firmware (named before
+    anything is sent), or not heard.
+  - Checked against a stand-in 4.0 board in every case above. Its signatures
+    were cross-checked with ESP-IDF's mbedtls, called as the board calls it.
+
 - **Firmware (tw_node 4.0): updates over the air.** docs/TW_NODE-4.0.md has
   the whole design and the steps for the first time on the boards; the frames
   are in docs/PROTOCOL-3.md.
