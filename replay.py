@@ -60,11 +60,20 @@ when 2 s or longer or one second at 1.5x the threshold.
 quiet level), to compare nights or try a board's own threshold.
 The boards' own detections (tw_node 3.4+: a link at its board's detect
 threshold, 3x quiet unless set, for 2 s in a row; its LED flashes white) are
-drawn on the timeline as a green line over the direction's row, tagged
-"boards" on the events they fall in, said in "This second", and counted in
-"About this recording" with each board's threshold. They are the boards'
-measure (from their own quiet level, learned in their first minute), not
-this page's: the two mostly agree, but not to the second.
+drawn on the timeline as a red line along the top of the direction's row,
+tagged "boards" on the events they fall in, said in "This second", and
+counted in "About this recording" with each board's threshold. They are the
+boards' measure (from their own quiet level, learned in their first minute),
+not this page's: the two mostly agree, but not to the second.
+Steadier than quiet: a link that goes stiller than its quiet level (something
+that is usually moving, a fan, a furnace, a radio nearby, someone sitting
+still, has stopped). The boards' own marks (tw_node 3.5+: at or below their
+low threshold, 0.5x unless set, for 10 s; their LED shows green) are a green
+line along the bottom of the row; this page's own (--below X, default 0.5:
+under X times quiet for 10 s or more, by this page's quiet level, which
+does not follow the stillness) are a green outline on the row and listed
+with the lasting changes. Both are said in "This second"; --below 0 turns
+the page's own off.
 Watch runs (watch.sh): the watch's events (detect/events.csv, radio or camera,
 with the label and note you give them) are marked on the timeline as "watch:"
 and listed with the lasting changes, events the camera kept frames for are tagged "camera", and a camera
@@ -224,8 +233,12 @@ def instrument(inst, p, t_from, t_to):
                 q = e.strip().split(":")
                 if len(q) == 6 and q[1] == "6" and q[2].isdigit() and int(q[2]) & 1 and q[5]:
                     inst["detect"].setdefault(int(q[0]), set()).add(int(q[5][:2], 16) / 10)
+                if len(q) == 6 and q[1] == "8" and q[2].isdigit() and int(q[2]) & 1 and q[5]:   # 3.5: low
+                    inst["low"].setdefault(int(q[0]), set()).add(int(q[5][:2], 16) / 10)
         if p[1] == "TWS" and len(f) >= 35 and int(f[33]):   # 3.4: the cabled board's own word for it
             inst["detect"].setdefault(int(f[0]), set()).add(int(f[33]) / 10)
+        if p[1] == "TWS" and len(f) >= 38:                   # 3.5: and its low threshold (0: off)
+            inst["low"].setdefault(int(f[0]), set()).add(int(f[35]) / 10)
     except ValueError:
         pass
 
@@ -247,7 +260,8 @@ def fw_text(inst):
     return ", ".join(sorted(inst["fw"])) or "not reported in this part"
 
 
-def describe(inst, epoch, settle, thr, names, layout, own, relearned=(), fixed=None, det=None):
+def describe(inst, epoch, settle, thr, names, layout, own, relearned=(), fixed=None, det=None, low=None,
+             below=0.0, still=()):
     """-> (one line for the title, rows for "About this recording", notes for power changes)"""
     dbm = lambda q: q / 4 if q else 20.0           # 0 = never set: full power
     per, changes = {}, []
@@ -296,6 +310,15 @@ def describe(inst, epoch, settle, thr, names, layout, own, relearned=(), fixed=N
          or "not reported (tw_node 3.4+)"),
         ("boards' detections", ", ".join(f"{n} {c}" for n, c in det.items() if c) or "none"
          if det is not None else "not in this recording (tw_node 3.4+)"),
+        ("boards' low thresholds", ", ".join(f"board {b} " + "/".join(f"{v:g}x" if v else "off" for v in sorted(vs))
+                                             for b, vs in sorted(inst.get("low", {}).items()))
+         or "not reported (tw_node 3.5+)"),
+        ("boards' steadier than quiet", ", ".join(f"{n} {c}" for n, c in low.items() if c) or "none"
+         if low is not None else "not in this recording (tw_node 3.5+)"),
+        ("steadier than quiet (this page)", (f"under {below:g}x quiet for 10 s or more: " +
+                                             (", ".join(f"{s['dir']} at {dt.datetime.fromtimestamp(int(epoch[s['i']])):%H:%M:%S}"
+                                                        f" for {s['n']} s" for s in still) or "none"))
+         if below else "off (--below 0)"),
         ("shape and quiet settle after", f"{settle:g} min"),
         ("quiet relearned", ", ".join(f"link {link} at {dt.datetime.fromtimestamp(int(epoch[i])):%H:%M:%S}"
                                       for i, link in relearned) or "none (after a lasting change, once it has settled)"),
@@ -310,8 +333,9 @@ def read_run(folder, t_from, t_to):
     if not files:
         sys.exit(f"no recording (csi-*.csv.gz) in {folder}")
     acc = Acc()
-    acc.inst = dict(power=[], relay=[], fw=set(), fwb={}, phy={}, detect={})   # the instrument, as the boards report it
+    acc.inst = dict(power=[], relay=[], fw=set(), fwb={}, phy={}, detect={}, low={})   # the instrument, as the boards report it
     acc.det = {}                # 3.4: (tx, rx) -> seconds its board marked a detection on it (TWM)
+    acc.low = {}                # 3.5: (tx, rx) -> seconds its board marked it steadier than quiet
     recent = {}                 # (rx, boot) -> set of record numbers seen lately (records come twice)
     total = dup = 0
     t_first = None
@@ -337,10 +361,16 @@ def read_run(folder, t_from, t_to):
                     sec, rx, bits = int(p[0]) // 1_000_000_000, int(p[2]), int(p[24], 16)
                 except ValueError:
                     continue
-                if bits and not ((t_from and sec < t_from) or (t_to and sec >= t_to)):
+                try:
+                    lbits = int(p[25], 16) if len(p) >= 26 else 0      # 3.5: steadier than quiet
+                except ValueError:
+                    lbits = 0
+                if (bits or lbits) and not ((t_from and sec < t_from) or (t_to and sec >= t_to)):
                     for tx in range(1, 17):
                         if bits >> (tx - 1) & 1:
                             acc.det.setdefault((tx, rx), set()).add(sec)
+                        if lbits >> (tx - 1) & 1:
+                            acc.low.setdefault((tx, rx), set()).add(sec)
                 continue
             if len(p) != 19 or p[1] != "TWR":
                 continue
@@ -528,6 +558,34 @@ def find_events(dirs, epoch, size, fixed=None):
             keep.append(dict(i=int(a), j=int(b), pk=[round(float(x), 1) for x in pk],
                              lit=[bool(x > t) for x, t in zip(pk, thr)]))
     return keep, thr
+
+
+def find_still(dirs, epoch, size, below, hold=10):
+    """3.5: stretches where a direction is steadier than quiet: under `below` times its quiet
+    level for `hold` seconds or more (seconds without data neither count nor break one) ->
+    [dict(d, dir, i, j, n seconds, lo: its median)]"""
+    out = []
+    if not below:
+        return out
+    for k, d in enumerate(dirs):
+        x = size[d]
+        i, n = 0, len(x)
+        while i < n:
+            if np.isnan(x[i]) or x[i] >= below:
+                i += 1
+                continue
+            j = last = i
+            while j < n and (np.isnan(x[j]) or x[j] < below):
+                if not np.isnan(x[j]):
+                    last = j
+                j += 1
+            secs = int(epoch[last] - epoch[i]) + 1
+            if secs >= hold:
+                v = x[i:last + 1]
+                out.append(dict(d=k, dir=f"{d[0]}-{d[1]}", i=int(i), j=int(last), n=secs,
+                                lo=round(float(np.nanmedian(v)), 2)))
+            i = j
+    return sorted(out, key=lambda s: s["i"])
 
 
 def board_marks(dirs, size, thr):
@@ -751,6 +809,8 @@ def main():
                     help="how the page opens: waves (each board a beacon, a fan per path) or lines (one line per direction)")
     ap.add_argument("--detect", type=float, metavar="X",
                     help="one fixed event threshold for every direction, X times its quiet level (1.1-20)")
+    ap.add_argument("--below", type=float, default=0.5, metavar="X",
+                    help="steadier than quiet: under X times quiet for 10 s or more (default 0.5; 0: off)")
     ap.add_argument("--serve", action="store_true",
                     help="serve the page (and its camera frames) to the computers at home, at a link with a random part")
     ap.add_argument("--port", type=int, default=8000, help="the port for --serve (default 8000)")
@@ -761,6 +821,8 @@ def main():
     folder = os.path.abspath(os.path.expanduser(a.folder))
     if a.detect is not None and not 1.1 <= a.detect <= 20:
         sys.exit("--detect X: 1.1 to 20 (times the quiet level)")
+    if a.below and not 0.05 <= a.below <= 0.95:
+        sys.exit("--below X: 0.05 to 0.95 (times the quiet level), or 0 (off)")
     if a.serve_only:                    # the page as it was last written: no reading of the run
         dest = os.path.abspath(os.path.expanduser(a.out)) if a.out else os.path.join(folder, "replay.html")
         if not os.path.isfile(dest):
@@ -808,19 +870,26 @@ def main():
     events, thr = find_events(dirs, epoch, size, a.detect)
     # 3.4: the boards' own detections, as runs [first, last] of seconds per direction
     pos = {int(t): i for i, t in enumerate(epoch)}
-    det_runs, det_count = [], {}
-    for d, nm in zip(dirs, (f"{tx}-{rx}" for tx, rx in dirs)):
-        idx = sorted(pos[t] for t in acc.det.get(d, ()) if t in pos)
-        runs = []
-        for i in idx:
-            if runs and i - runs[-1][1] <= 1:
-                runs[-1][1] = i
-            else:
-                runs.append([i, i])
-        det_runs.append(runs)
-        det_count[nm] = len(runs)
-    has_det = any(len(p) for p in acc.det.values()) or any(
-        (fw_version_of(v) or (0, 0)) >= (3, 4) for v in acc.inst["fwb"].values())
+
+    def runs_of(marks):                 # seconds per direction -> runs [first, last] (index), and counts
+        all_runs, count = [], {}
+        for d in dirs:
+            idx = sorted(pos[t] for t in marks.get(d, ()) if t in pos)
+            runs = []
+            for i in idx:
+                if runs and i - runs[-1][1] <= 1:
+                    runs[-1][1] = i
+                else:
+                    runs.append([i, i])
+            all_runs.append(runs)
+            count[f"{d[0]}-{d[1]}"] = len(runs)
+        return all_runs, count
+    fws = [fw_version_of(v) or (0, 0) for v in acc.inst["fwb"].values()]
+    det_runs, det_count = runs_of(acc.det)
+    has_det = any(len(p) for p in acc.det.values()) or any(v >= (3, 4) for v in fws)
+    low_runs, low_count = runs_of(acc.low)     # 3.5: the boards' steadier-than-quiet marks
+    has_low = any(len(p) for p in acc.low.values()) or any(v >= (3, 5) for v in fws)
+    still = find_still(dirs, epoch, size, a.below)
     for e in events:                    # an event the boards detected in too
         e["boards"] = any(a_ <= e["j"] and b_ >= e["i"] for runs in det_runs for a_, b_ in runs)
     near, one = board_marks(dirs, size, thr)
@@ -833,7 +902,8 @@ def main():
     cam_events, cam_frames = read_camera(folder, epoch)
     names = [f"{tx}-{rx}" for tx, rx in dirs]
     power, about, power_notes = describe(acc.inst, epoch, a.settle, thr, names, layout, own, relearned,
-                                         a.detect, det_count if has_det else None)
+                                         a.detect, det_count if has_det else None, low_count if has_low else None,
+                                         a.below, still)
 
     notes = []
     for s in a.note:
@@ -897,6 +967,7 @@ def main():
         events=[dict(n=k + 1, **e) for k, e in enumerate(events)],
         near=near.tolist(), one=["".join("1" if x else "0" for x in row) for row in one],
         det=det_runs if has_det else None,
+        low=low_runs if has_low else None, still=still, below=a.below,
         steps=steps, notes=notes,
         boards=[dict(id=str(k), x=v[0], y=v[1], label=v[3]) for k, v in sorted(boards.items())],
         marks=[dict(x=m[1], y=m[2], label=m[3]) for m in marks],
@@ -916,6 +987,11 @@ def main():
         both = sum(1 for e in events if e["boards"])
         print("the boards' detections: " + ("  ".join(f"{n} {c}" for n, c in det_count.items() if c) or "none")
               + f"; {both} of {len(events)} events have one")
+    if has_low:
+        print("the boards' steadier than quiet: " + ("  ".join(f"{n} {c}" for n, c in low_count.items() if c) or "none"))
+    if a.below:
+        print(f"steadier than quiet (this page, under {a.below:g}x for 10 s+): " + (", ".join(
+            f"{s['dir']} {loc(epoch[s['i']]):%H:%M:%S} {s['n']} s ({s['lo']:g}x)" for s in still) or "none"))
     nb = {x: int((near == x).sum()) for x in np.unique(near[near > 0])}
     print(power)
     if cam_events:
@@ -1044,21 +1120,21 @@ PAGE = r"""<!doctype html>
   --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink2: #52514e; --muted: #898781;
   --grid: #e1e0d9; --axis: #c3c2b7; --quiet: #d6d5ce;
   --s1: #cde2fb; --s2: #86b6ef; --s3: #3987e5; --s4: #1c5cab; --s5: #0d366b;
-  --shape: #eb6834; --note: #0b0b0b; --sel: #fde7c2; --cam: #6250d6; --det: #16855a;
+  --shape: #eb6834; --note: #0b0b0b; --sel: #fde7c2; --cam: #6250d6; --det: #c4314b; --low: #16855a;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink2: #c3c2b7; --muted: #898781;
     --grid: #2c2c2a; --axis: #383835; --quiet: #3a3a37;
     --s1: #184f95; --s2: #2a78d6; --s3: #5598e7; --s4: #9ec5f4; --s5: #e3eefc;
-    --shape: #d95926; --note: #f0efec; --sel: #4a3410; --cam: #9085e9; --det: #4cc38a;
+    --shape: #d95926; --note: #f0efec; --sel: #4a3410; --cam: #9085e9; --det: #f0798f; --low: #4cc38a;
   }
 }
 :root[data-theme="dark"] {
   --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink2: #c3c2b7; --muted: #898781;
   --grid: #2c2c2a; --axis: #383835; --quiet: #3a3a37;
   --s1: #184f95; --s2: #2a78d6; --s3: #5598e7; --s4: #9ec5f4; --s5: #e3eefc;
-  --shape: #d95926; --note: #f0efec; --sel: #4a3410; --cam: #9085e9; --det: #4cc38a;
+  --shape: #d95926; --note: #f0efec; --sel: #4a3410; --cam: #9085e9; --det: #f0798f; --low: #4cc38a;
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--page); color: var(--ink);
@@ -1094,7 +1170,7 @@ h1 { font-size: 17px; margin: 0 0 1px; font-weight: 650; }
 .dquiet { color: var(--muted); }
 .links { display: grid; grid-template-columns: auto auto 1fr; gap: 2px 10px; margin: 8px 0 4px; font-variant-numeric: tabular-nums; font-size: 13px; align-items: center; }
 .links .lk { font-weight: 600; } .links .v { color: var(--ink2); }
-.links .both { font-weight: 600; } .links .one { color: var(--shape); font-weight: 600; } .links .q, .links .nd { color: var(--muted); }
+.links .both { font-weight: 600; } .links .st { color: var(--low); font-weight: 600; } .links .one { color: var(--shape); font-weight: 600; } .links .q, .links .nd { color: var(--muted); }
 details.fold { margin-top: 6px; } details.fold summary { cursor: pointer; color: var(--ink2); font-size: 13px; }
 .card { background: var(--surface); border: 1px solid var(--grid); border-radius: 10px; padding: 10px 12px; min-width: 0; }
 .card h2 { font-size: 13px; font-weight: 600; margin: 0 0 6px; color: var(--ink2); text-transform: uppercase; letter-spacing: .04em; }
@@ -1202,7 +1278,7 @@ kbd { font: 11px ui-monospace, monospace; border: 1px solid var(--axis); border-
   <div class="card"><h2>Lasting changes and notes</h2><div id="marklist"></div></div>
 </div>
 <div class="notes">
-  <p><b>What this shows:</b> which links were disturbed, when, and how much. It cannot place a person: a lit link means something moved in or near that path, or (with no shape change) somewhere its signal reflects through. Orange marks on the timeline are lasting changes (a link&rsquo;s shape stepped and stayed: something parked, moved or opened); black marks are your notes; violet marks are the watch&rsquo;s events (watch runs, with or without the camera), with your label; green lines over a row are the boards&rsquo; own detections (tw_node 3.4+: a link at its board&rsquo;s threshold for 2 s; tagged &ldquo;boards&rdquo; in the events).</p>
+  <p><b>What this shows:</b> which links were disturbed, when, and how much. It cannot place a person: a lit link means something moved in or near that path, or (with no shape change) somewhere its signal reflects through. Orange marks on the timeline are lasting changes (a link&rsquo;s shape stepped and stayed: something parked, moved or opened); black marks are your notes; violet marks are the watch&rsquo;s events (watch runs, with or without the camera), with your label; red lines along the top of a row are the boards&rsquo; own detections (tw_node 3.4+: a link at its board&rsquo;s threshold for 2 s; tagged &ldquo;boards&rdquo; in the events); green is steadier than quiet (something usually moving has stopped): a line along the bottom of a row is the boards&rsquo; own mark (tw_node 3.5+, their LED green), an outline is this page&rsquo;s (listed with the lasting changes).</p>
   <details class="about"><summary><b>About this recording</b>: the instrument as the boards reported it</summary><table id="abouttbl"></table></details>
   <p><kbd>space</kbd> play/pause &middot; <kbd>&larr;</kbd><kbd>&rarr;</kbd> &plusmn;1 s (shift &plusmn;1 min) &middot; <kbd>n</kbd><kbd>p</kbd> next/previous event &middot; click or drag the timeline to jump.</p>
 </div>
@@ -1380,6 +1456,8 @@ function stepText(s, short) {
 const CAM = D.camera || { events: [], frames: [] };
 const DET = D.det || [];                 // 3.4: the boards' own detections, runs per direction
 const detAt = (d, i) => (DET[d] || []).some(([a, b]) => a <= i && i <= b);
+const LOW = D.low || [], STILL = D.still || [];   // 3.5: steadier than quiet: the boards' runs, the page's own
+const lowAt = (d, i) => (LOW[d] || []).some(([a, b]) => a <= i && i <= b);
 D.events.forEach((e, k) => { if (e.boards) { const r = ITEMS.find(x => x.name === `E${e.n}`);
   if (r) r.el.lastChild.insertAdjacentHTML("beforeend", ` <span class="bd">boards</span>`); } });
 ITEMS.forEach(e => {                     // events the camera kept frames for
@@ -1389,10 +1467,11 @@ const marklist = document.getElementById("marklist");
 const mk2 = D.steps.map(s => ({ i: s.i, kind: "change", text: "link " + stepText(s, false) }))
   .concat(D.notes.map(n => ({ i: n.i, kind: "note", text: n.label })))
   .concat(CAM.events.map(c => ({ i: c.i, kind: "cam", text: "watch: " + (c.label || c.kind) + (c.note ? " (" + c.note + ")" : "") })))
+  .concat(STILL.map(s => ({ i: s.i, kind: "still", text: `${arrow(s.d)} steadier than quiet: ${s.lo}× for ${s.n} s` })))
   .sort((a, b) => a.i - b.i);
 mk2.forEach(m => {
   const div = document.createElement("div"); div.className = "ev";
-  div.innerHTML = `<span class="m" style="color:var(${m.kind === "change" ? "--shape" : m.kind === "cam" ? "--cam" : "--note"})">${m.kind === "change" ? "▮" : m.kind === "cam" ? "◉" : "▸"}</span><span>${clk(m.i)}</span><span></span><span></span>`;
+  div.innerHTML = `<span class="m" style="color:var(${m.kind === "change" ? "--shape" : m.kind === "cam" ? "--cam" : m.kind === "still" ? "--low" : "--note"})">${m.kind === "change" ? "▮" : m.kind === "cam" ? "◉" : m.kind === "still" ? "▭" : "▸"}</span><span>${clk(m.i)}</span><span></span><span></span>`;
   div.lastChild.textContent = m.text;
   div.addEventListener("click", () => seek(Math.max(0, m.i - 20)));
   marklist.appendChild(div);
@@ -1472,9 +1551,15 @@ function drawTL() {
   D.steps.forEach(s => { const x = xOfI(s.i); cx.fillStyle = css("--shape"); cx.fillRect(x - .5, TL.top - 4, 2, ND * ROWH + 4); label(x, 9, stepText(s, true)); });
   CAM.events.forEach(c => { const x = xOfI(c.i); cx.fillStyle = css("--cam"); cx.fillRect(x - .5, TL.top - 4, 2, ND * ROWH + 4); label(x, 22, c.label || c.kind); });
   D.notes.forEach(n => { const x = xOfI(n.i); cx.fillStyle = css("--note"); cx.fillRect(x - .5, TL.top - 4, 2, ND * ROWH + 4); label(x, 22, n.label); });
-  cx.fillStyle = css("--det");              // the boards' detections: a line over the direction's row
+  const band = Math.max(2, ROWH / 4);
+  cx.fillStyle = css("--det");              // the boards' detections: a line along the top of the row
   DET.forEach((runs, d) => runs.forEach(([a, b]) =>
-    cx.fillRect(xOfI(a), TL.top + d * ROWH, Math.max(2, xOfI(b + 1) - xOfI(a)), Math.max(2, ROWH / 4))));
+    cx.fillRect(xOfI(a), TL.top + d * ROWH, Math.max(2, xOfI(b + 1) - xOfI(a)), band)));
+  cx.fillStyle = css("--low");              // 3.5: the boards' steadier than quiet: along the bottom
+  LOW.forEach((runs, d) => runs.forEach(([a, b]) =>
+    cx.fillRect(xOfI(a), TL.top + (d + 1) * ROWH - band, Math.max(2, xOfI(b + 1) - xOfI(a)), band)));
+  cx.strokeStyle = css("--low"); cx.lineWidth = 1.5;   // the page's own: an outline on the row
+  STILL.forEach(s => cx.strokeRect(xOfI(s.i), TL.top + s.d * ROWH + .75, Math.max(3, xOfI(s.j + 1) - xOfI(s.i)), ROWH - 1.5));
   cx.fillStyle = css("--ink2");
   D.events.forEach(e => {
     cx.fillRect(xOfI(e.i), TL.top - 6, 1, 3);
@@ -1569,9 +1654,14 @@ function details(on) {
   }
   const dn = NAMES.map((nm, d) => detAt(d, cur) ? nm.replace("-", "→") : null).filter(Boolean);
   if (dn.length) lines.push(`<span style="color:var(--det)">&#9644;</span> the boards detected: ${dn.join(", ")}`);
+  const ln = NAMES.map((nm, d) => lowAt(d, cur) ? nm.replace("-", "→") : null).filter(Boolean);
+  if (ln.length) lines.push(`<span style="color:var(--low)">&#9644;</span> the boards: steadier than quiet on ${ln.join(", ")}`);
+  const sn = STILL.filter(s => s.i <= cur && cur <= s.j);
+  if (sn.length) lines.push(`<span style="color:var(--low)">&#9645;</span> steadier than quiet: ` +
+    sn.map(s => `${arrow(s.d)} ${s.lo}× (${s.n} s from ${clk(s.i)})`).join(", "));
   const ce = CAM.events.find(c => c.i - 6 <= cur && cur <= c.j + 11);
   if (ce) lines.push(`<span style="color:var(--cam)">&#9673;</span> watch event ${ce.event}: ${ce.label || ce.kind}${ce.note ? " (" + ce.note + ")" : ""}`);
-  mk2.filter(m => m.kind !== "cam" && Math.abs(m.i - cur) <= 30).forEach(m =>
+  mk2.filter(m => m.kind !== "cam" && m.kind !== "still" && Math.abs(m.i - cur) <= 30).forEach(m =>
     lines.push(`<span style="color:var(${m.kind === "change" ? "--shape" : "--note"})">${m.kind === "change" ? "&#9646;" : "&#9656;"}</span> `
                + `${clk(m.i)} ${m.text.replace(/</g, "&lt;")}`));
   dsum.innerHTML = lines.length ? lines.map(l => `<div class="dline">${l}</div>`).join("")
@@ -1585,6 +1675,7 @@ function details(on) {
     if (va < 0 || (P.ba >= 0 && vb < 0)) { e[2].className = "nd"; e[2].textContent = "no data (frames lost)"; }
     else if (la && lb) { e[2].className = "both"; e[2].textContent = "changed both ways"; }
     else if (la || lb) { e[2].className = "one"; e[2].textContent = `changed one way only: ${la ? P.a + "→" + P.b : P.b + "→" + P.a}`; }
+    else if (D.below && va >= 0 && va < D.below && (P.ba < 0 || vb < D.below)) { e[2].className = "st"; e[2].textContent = "steadier than quiet"; }
     else { e[2].className = "q"; e[2].textContent = "quiet"; }
   });
 }

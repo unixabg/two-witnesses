@@ -5,6 +5,25 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.6-next (work in progress, on the next branch)
 
+- **The replay: steadier than quiet, the boards' and its own.** On runs
+  with tw_node 3.5 boards, the seconds a board marked a link steadier than
+  quiet are a green line along the bottom of that direction's row. The page
+  also finds its own: a direction under `--below X` times its quiet level
+  (0.5 unless given; 0 turns it off) for 10 s or more. These are drawn as a
+  green outline on the row and listed with the lasting changes. The page's
+  quiet level is the median of the whole scene, so unlike a board's it does
+  not follow the stillness: a still stretch shows for as long as it lasts.
+  "This second" names both, and a link whose two directions are both under
+  it reads "steadier than quiet" instead of "quiet". About lists each board's
+  low threshold, the boards' marks per direction, and the page's stretches;
+  the printed summary says them too. The boards' detections are now **red**
+  along the top of the row, so green means steadier on the page and on the
+  LED. Checked on a simulated half hour with a walk and 200 s of stillness on
+  link 1-3: the walk is one event, tagged "boards"; the stillness is marked
+  by both on 1→3 and 3→1 only (0.34x). Checked at 1280 px light and 390 px
+  dark: no script errors and no sideways scroll. On an older run it says "not in this
+  recording".
+
 - **Computer side: `tw_setid.py PORT detect low X|off [board N|all]`**
   (tw_node 3.5). X is 0.1 to 0.9 times the quiet level, given and confirmed
   as `detect`. The status shows each board's low threshold ("low 0.5x") and,
