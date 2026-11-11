@@ -265,6 +265,7 @@ uint8_t tw_chan_step(tw_node_t *n, uint32_t now, int *quiet)
             n->chan_home = n->chan_target = n->scan_ch;
             n->chan_wait = 0;
             n->chan_changed = 1;
+            tw_score_relearn(n);                    /* 3.4: another channel: learn quiet again */
             if (n->set_gen[TW_K_CHANNEL] == 0) {
                 /* 3.3: its own channel was never given (a new board, or one moved to this group): the
                    one it found is its channel. Else the network's never-given channel would not look
@@ -304,6 +305,7 @@ uint8_t tw_chan_step(tw_node_t *n, uint32_t now, int *quiet)
             n->chan_changed = 1;
             n->chan_switches++;
             n->last_frame_us = now;                 /* the others come within a second; if not, look */
+            tw_score_relearn(n);                    /* 3.4: another channel sees the room anew */
         }
     } else {
         n->chan_wait = 0;
@@ -965,10 +967,12 @@ int tw_key_class(uint8_t key)
     switch (key) {
     case TW_K_LED_PIN:
     case TW_K_LED_BRIGHT:
+    case TW_K_DETECT:
         return TW_KC_BOARD;
     case TW_K_LED_TEST:
     case TW_K_LED_TRY:
     case TW_K_SURVEY:
+    case TW_K_RELEARN:
         return TW_KC_ACTION;
     case TW_K_POWER:
     case TW_K_RELAY:
@@ -1011,6 +1015,9 @@ static void setting_take(tw_node_t *n, uint8_t target, uint8_t key, const uint8_
         n->set_rep_sent = 0;                /* and it is reported within a second */
         if (net) {
             net_apply(n);                   /* 3.0: the settings it uses (set_pending if they changed) */
+        }
+        if (key == TW_K_RELEARN) {
+            tw_score_relearn(n);            /* 3.4: here, so the firmware and the simulator do the same */
         }
     }
 }
@@ -1241,8 +1248,18 @@ static uint8_t score_close(tw_score_t *s)
         for (int b = 0; b < s->nb; b++) {
             float m = s->s1[b] / s->recs;
             float sd = sqrtf(fmaxf(s->s2[b] / s->recs - m * m, 0.0f));
-            if (!started) {                     /* the quiet level starts as the mean of 30 seconds */
-                s->ref[b] += (sd - s->ref[b]) / (float)(s->start + 1);
+            if (!started) {
+                /* 3.4: the quiet level starts as a stepped median of 60 seconds: the first second's,
+                   then a step toward each next one, large at first and smaller each second (30% down
+                   to 4%). Only above or below counts, not by how much, so a few loud seconds (someone
+                   about) move it little: with 10 of 60 seconds busy at 4x, within 7% (the mean of
+                   30 seconds was 54% high, and took minutes to come down) */
+                if (s->start == 0) {
+                    s->ref[b] = sd;
+                } else {
+                    float a = 0.3f * 8.0f / (8.0f + (float)s->start);
+                    s->ref[b] *= sd > s->ref[b] ? 1.0f + a : 1.0f / (1.0f + a);
+                }
             } else {
                 tot += sd / fmaxf(s->ref[b], 1e-3f);
                 /* then a running median: a small step towards each new second (0.2%: a lasting
@@ -1263,23 +1280,57 @@ static uint8_t score_close(tw_score_t *s)
     return out;
 }
 
+void tw_score_relearn(tw_node_t *n)
+{
+    for (int i = 1; i <= TW_MAX_NODES; i++) {
+        n->score[i].start = 0;              /* the live bins stay: the quiet level starts again */
+        n->score[i].above = 0;
+    }
+}
+
+uint8_t tw_detect_level(const tw_node_t *n)
+{
+    uint8_t v = n->set_len[TW_K_DETECT] ? n->set_val[TW_K_DETECT][0] : 0;
+    return v >= TW_DETECT_MIN && v <= TW_DETECT_MAX ? v : TW_DETECT_DEFAULT;
+}
+
 const tw_rec_t *tw_aux_record(tw_node_t *n, uint32_t now)
 {
     uint32_t sec = now / 1000000u;
     if (sec != n->score_sec) {                  /* once a second: close it, queue the scores */
         n->score_sec = sec;
-        uint8_t sc[TW_MAX_NODES + 1];
+        uint8_t sc[TW_MAX_NODES + 3];
         int any = 0;
+        uint8_t level = tw_detect_level(n);
+        uint16_t bits = 0;
         for (int i = 1; i <= TW_MAX_NODES; i++) {
             sc[i - 1] = i == n->id ? 0 : score_close(&n->score[i]);
             any |= sc[i - 1];
+            /* 3.4: a detection: at or above the threshold TW_DETECT_HOLD seconds in a row */
+            tw_score_t *s = &n->score[i];
+            if (sc[i - 1] && sc[i - 1] >= level) {
+                if (s->above < 255) {
+                    s->above++;
+                }
+                if (s->above >= TW_DETECT_HOLD) {
+                    bits |= (uint16_t)(1u << (i - 1));
+                    if (s->above == TW_DETECT_HOLD) {
+                        n->det_count++;             /* one more began */
+                    }
+                }
+            } else {
+                s->above = 0;
+            }
         }
         memcpy(n->score_last, sc, TW_MAX_NODES);
+        n->det_bits = bits;
         /* 2.7: and where its last second frame ended (as header byte 23, which goes in 3.0) */
         sc[TW_MAX_NODES] = n->xend_q;
+        sc[TW_MAX_NODES + 1] = (uint8_t)bits;   /* 3.4: this second's detections */
+        sc[TW_MAX_NODES + 2] = (uint8_t)(bits >> 8);
         any |= n->xend_q;
         if (any) {
-            tw_rec_t *r = queue_aux(n, now, TW_KIND_SCORE, sc, TW_MAX_NODES + 1);
+            tw_rec_t *r = queue_aux(n, now, TW_KIND_SCORE, sc, TW_MAX_NODES + 3);
             r->txseq = sec;                     /* this board's uptime, s */
             return r;
         }
@@ -1529,7 +1580,8 @@ int tw_format_record(const tw_rec_t *r, char *out, int max)
     }
     if ((r->kind & TW_KIND_MASK) == TW_KIND_SCORE) {
         /* TWM,board,boot,record number,its uptime s,the timekeeper's clock,score of board 1..16 (x10),
-           2.7: where its last second frame ended, us after its slot start by its clock (0: none) */
+           2.7: where its last second frame ended, us after its slot start by its clock (0: none),
+           3.4: its detections that second, hex (bit i: board i+1) */
         int k = snprintf(out, (size_t)max, "TWM,%u,%u,%lu,%lu,%lu", r->rx, r->boot, (unsigned long)r->recseq,
                          (unsigned long)r->txseq, (unsigned long)r->net_us);
         for (int i = 0; i < TW_MAX_NODES && k > 0 && k < max - 6; i++) {
@@ -1537,6 +1589,10 @@ int tw_format_record(const tw_rec_t *r, char *out, int max)
         }
         if (r->n > TW_MAX_NODES && k > 0 && k < max - 8) {
             k += snprintf(out + k, (size_t)(max - k), ",%u", 20u * r->q[TW_MAX_NODES]);
+        }
+        if (r->n > TW_MAX_NODES + 2 && k > 0 && k < max - 8) {   /* 3.4: its detections, bit i: board i+1 */
+            k += snprintf(out + k, (size_t)(max - k), ",%04x",
+                          (unsigned)r->q[TW_MAX_NODES + 1] | ((unsigned)r->q[TW_MAX_NODES + 2] << 8));
         }
         if (k > 0 && k < max - 1) {
             out[k++] = '\n';
@@ -1595,8 +1651,9 @@ int tw_format_status(const tw_node_t *n, uint32_t now, char *out, int max)
        2.1+: setting flags, extra frames sent, extra frames skipped (nothing fitted in time) */
     /* 3.2, at the end: the channel it works on, the network's (its key), 1 while looking for the
        others, switches and scans since start */
-    /* 3.3, after those: its group, frames of other groups heard, and the last such group */
-    return snprintf(out, (size_t)max, "TWS,%u,%u,%u,%u,%04x,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%u,%d,%u,%u,%u,%u,%lu,%lu,%u,%lu,%lu,%u,%u,%u,%u,%u,%u,%lu,%u\n",
+    /* 3.3, after those: its group, frames of other groups heard, and the last such group; 3.4: its
+       detection threshold (x10) and the detections begun since start */
+    return snprintf(out, (size_t)max, "TWS,%u,%u,%u,%u,%04x,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%u,%d,%u,%u,%u,%u,%lu,%lu,%u,%lu,%lu,%u,%u,%u,%u,%u,%u,%lu,%u,%u,%lu\n",
                     n->id, TW_VERSION, n->leader, (unsigned)((n->synced ? TW_F_SYNCED : 0) |
                     (n->is_exit ? TW_F_EXIT : 0) | (n->leader == n->id ? TW_F_LEADER : 0)),
                     tw_active(n, now), (unsigned long)(p / 1000u), (unsigned long)(fits ? start : 0),
@@ -1606,5 +1663,6 @@ int tw_format_status(const tw_node_t *n, uint32_t now, char *out, int max)
                     n->tx_power_q, (n->set_flags & TW_SET_RELAY_OFF) ? 0u : 1u, (unsigned long)n->n_relayed_out,
                     (unsigned long)n->n_relay_full, n->set_flags, (unsigned long)n->n_extra_sent,
                     (unsigned long)n->n_extra_skipped, n->chan_home, n->set_channel, n->scan_on, n->chan_switches,
-                    n->chan_scans, n->group, (unsigned long)n->n_other_group, n->other_group_last);
+                    n->chan_scans, n->group, (unsigned long)n->n_other_group, n->other_group_last,
+                    tw_detect_level(n), (unsigned long)n->det_count);
 }

@@ -755,6 +755,18 @@ static void led_load(void)
     }
     tw_setting_init(&s_node, TW_K_LED_PIN, &s_led_pin, 1, gp);
     tw_setting_init(&s_node, TW_K_LED_BRIGHT, &s_led_bright, 1, gb);
+    /* 3.4: its detection threshold (x10), never given: the default (reported as such, generation 0) */
+    uint8_t det = 0, gd = 0;
+    if (nvs_open("tw", NVS_READONLY, &h) == ESP_OK) {
+        nvs_get_u8(h, "det", &det);
+        nvs_get_u8(h, "lgd", &gd);
+        nvs_close(h);
+    }
+    if (det < TW_DETECT_MIN || det > TW_DETECT_MAX) {
+        det = TW_DETECT_DEFAULT;
+        gd = 0;
+    }
+    tw_setting_init(&s_node, TW_K_DETECT, &det, 1, gd);
 }
 
 /* what the board says about itself every 5 s (TWV): firmware and build (2.5-2.7 added its LED
@@ -952,6 +964,19 @@ static void led_apply(void)
         s_survey_at = (uint32_t)esp_timer_get_time() + TW_SURVEY_DELAY_US;
         s_survey_due = 1;
     }
+    if (ch & (1u << TW_K_DETECT)) {     /* 3.4: its detection threshold: kept */
+        nvs_handle_t h;
+        if (nvs_open("tw", NVS_READWRITE, &h) == ESP_OK) {
+            nvs_set_u8(h, "det", tw_detect_level(&s_node));
+            nvs_set_u8(h, "lgd", s_node.set_gen[TW_K_DETECT]);
+            nvs_commit(h);
+            nvs_close(h);
+        }
+        ESP_LOGW(TAG, "detection threshold %u.%u x quiet", tw_detect_level(&s_node) / 10, tw_detect_level(&s_node) % 10);
+    }
+    if (ch & (1u << TW_K_RELEARN)) {    /* 3.4: tw_proto.c started it again when it took the action */
+        ESP_LOGW(TAG, "learning the quiet level again (60 s)");
+    }
     if ((ch & (1u << TW_K_LED_TRY)) && s_led_ch) {
         memcpy(s_led_try_rgb, s_node.set_val[TW_K_LED_TRY], 3);
         s_led_try = 10;
@@ -988,6 +1013,10 @@ static void led_save(void)
     }
 }
 
+#define LED_FLASH_US 150000u            /* 3.4: a detection's white flash */
+static uint32_t s_led_flash_end;
+static uint8_t s_led_after[3];
+
 /* once a second: the test sequence, or what the board's scores say */
 static void led_second(void)
 {
@@ -1012,9 +1041,29 @@ static void led_second(void)
         }
     } else {
         tw_led_color(tw_led_pick(s_node.score_last), s_led_bright, c);
+        if (s_node.det_bits) {
+            /* 3.4: a detection this second (a link at or above the threshold, held): a short white
+               flash, then the color as usual. While it holds, once a second */
+            const uint8_t w[3] = {s_led_bright, s_led_bright, s_led_bright};
+            led_show(w);
+            memcpy(s_led_after, c, 3);
+            s_led_flash_end = (uint32_t)esp_timer_get_time() + LED_FLASH_US;
+            return;
+        }
     }
     if (memcmp(c, s_led_shown, 3)) {
         led_show(c);
+    }
+}
+
+/* 3.4: the end of a detection's flash (called often): back to the color it covered */
+static void led_flash_tick(uint32_t now)
+{
+    if (s_led_flash_end && (int32_t)(now - s_led_flash_end) >= 0) {
+        s_led_flash_end = 0;
+        if (s_led_ch) {
+            led_show(s_led_after);
+        }
     }
 }
 
@@ -1159,6 +1208,43 @@ static void poll_commands(void)
                 }
                 out_wait(msg, k);
                 hello();
+            } else if (n && (!strncmp(cmd, "TWSET detect ", 13) || !strncmp(cmd, "TWSET relearn", 13))) {
+                /* 3.4: "TWSET detect V" (x10 of quiet, TW_DETECT_MIN..MAX) and "TWSET relearn", for
+                   this board; with " board N gen G", given to board N (0: all) by record, as led */
+                char msg[128], *bd = strstr(cmd, " board ");
+                int k, v = 0, target = -1, gen = -1, key = 0, vlen = 0;
+                uint8_t val[1] = {0};
+                if (bd) {
+                    if (sscanf(bd, " board %d gen %d", &target, &gen) != 2 || target < 0 ||
+                        target > TW_MAX_NODES || gen < 1 || gen > 255) {
+                        target = -2;
+                    }
+                    *bd = 0;
+                }
+                if (sscanf(cmd, "TWSET detect %d", &v) == 1 && v >= TW_DETECT_MIN && v <= TW_DETECT_MAX) {
+                    key = TW_K_DETECT;
+                    val[0] = (uint8_t)v;
+                    vlen = 1;
+                } else if (!strcmp(cmd, "TWSET relearn")) {
+                    key = TW_K_RELEARN;
+                }
+                if (key && target == -1) {
+                    tw_setting_local(&s_node, (uint8_t)key, val, vlen);
+                    led_apply();
+                    k = key == TW_K_DETECT ? snprintf(msg, sizeof(msg), "TWOK detect %d.%d x quiet\n", v / 10, v % 10)
+                                           : snprintf(msg, sizeof(msg), "TWOK relearn: the quiet level again (60 s)\n");
+                } else if (key && target >= 0) {
+                    tw_setting_give(&s_node, (uint8_t)target, (uint8_t)key, val, vlen, (uint8_t)gen);
+                    led_apply();
+                    char who[12];
+                    snprintf(who, sizeof(who), target ? "board %d" : "all boards", target);
+                    k = snprintf(msg, sizeof(msg), "TWOK %s given to %s, generation %d\n",
+                                 key == TW_K_DETECT ? "detect" : "relearn", who, gen);
+                } else {
+                    k = snprintf(msg, sizeof(msg), "TWERR detect %d..%d (x10 of quiet), relearn [board N gen G]\n",
+                                 TW_DETECT_MIN, TW_DETECT_MAX);
+                }
+                out_wait(msg, k);
             } else if (n && sscanf(cmd, "TWSET channel %d", &id) == 1) {
                 /* 3.2: the channel, for every board: each moves TW_CHAN_SWITCH_US after taking it */
                 char msg[128];
@@ -1247,6 +1333,7 @@ static void work_task(void *arg)
         now = (uint32_t)esp_timer_get_time();
         int quiet;                          /* 3.2: where the radio should be; silent while looking */
         uint8_t want = tw_chan_step(&s_node, now, &quiet);
+        led_flash_tick(now);                /* 3.4 */
         if (want != s_radio_ch) {
             radio_channel(want);
         }

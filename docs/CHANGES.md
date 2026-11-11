@@ -5,6 +5,35 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.6-next (work in progress, on the next branch)
 
+- **Firmware (tw_node 3.4): each board detects, and holds its own
+  threshold.** Until now each board scored every link it measures once a
+  second (TWM) and nothing decided anything from it. Now a link at or above
+  its board's threshold for 2 s in a row is a *detection*: marked in that
+  second's TWM record (a bit per link, after the second frame's end), counted
+  in the cabled board's TWS (its threshold x10 and the detections since it
+  started, fields 34 and 35), and shown by the LED as a short white flash on
+  top of its blue (it then goes back to the blue). Two new keys (docs/PROTOCOL-3.md):
+  6 *detect*, a board key (x10 of the quiet level, 15-100; 30 until given;
+  kept in the board's flash, so each board holds its own), and 7 *relearn*,
+  an action: the board learns every link's quiet level again from the next
+  60 s. A board relearns by itself when it moves to another channel (by
+  command, or finding its group by scanning): the old quiet level belongs to
+  the old channel.
+  The quiet level itself now starts from the first 60 s, as a stepped median
+  (each second moves it a shrinking step toward that second, up or down), not
+  the mean of the first 30 s. The mean took everything in: someone walking
+  past in the first half minute left the floor high for hours (it then
+  corrects by only 2x every ~6 minutes), so later movement scored low. Desk
+  tests (Python, then the simulator): 10 busy seconds of 60 at 4x leave the
+  floor within 7% (the mean: 54% high); 20 busy seconds at 10x, 1.27x (the
+  mean: 4.11x); in the simulator, a walk during the start left 3.3's floor
+  3.3x high (quiet scored 0.3x, the walk only 2.3x), 3.4's 1.4x (0.7x).
+  Simulator: a walk across link 1-2 at 100-110 s is detected 101-110 s on
+  1→2 and 2→1 only, the other links never; threshold 9.9x trims it; relearn
+  at 90 s pauses the scores for 61 s and the walk inside is not scored. The
+  standard and timing cases give the same verdicts as 3.3 (a few timing
+  numbers move a little: each score record is 2 bytes longer on the air).
+
 - **`replay.py --serve` ends cleanly.** After Ctrl-C (or `--hours`) it
   printed "stopped serving" and then a Python error (`NameError: total`): the
   run's summary (records, thresholds, events, lasting changes) had landed

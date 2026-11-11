@@ -121,6 +121,8 @@ LED fields in TWV are dropped in 3.0 (kept until then).
 | 3 | action | LED test, 0 bytes | `led test` [`board N\|all`] |
 | 4 | action | LED try, 3 bytes R G B | `led try R G B` [`board N\|all`] |
 | 5 | action | channel survey (3.1), 0 bytes, for all; its result is a record (TWU) | `survey` |
+| 6 | board | detect threshold (3.4), 1 byte: x10 of the quiet level, 15-100 (3.0x until given) | `detect X` [`board N\|all`] |
+| 7 | action | relearn (3.4), 0 bytes: learn every link's quiet level again (60 s) | `relearn` [`board N\|all`] |
 | 16 | network | power, 1 byte (quarter dBm) | `power DBM`, `power default` |
 | 17 | network | relay, 1 byte (on/off) | `relay on\|off` |
 | 18 | network | second frame, 1 byte (on/off/force) | `second on\|off\|force` |
