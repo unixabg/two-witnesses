@@ -968,6 +968,7 @@ int tw_key_class(uint8_t key)
     case TW_K_LED_PIN:
     case TW_K_LED_BRIGHT:
     case TW_K_DETECT:
+    case TW_K_DETECT_LOW:
         return TW_KC_BOARD;
     case TW_K_LED_TEST:
     case TW_K_LED_TRY:
@@ -1239,7 +1240,7 @@ static void score_add(tw_node_t *n, uint8_t tx, const tw_rec_t *r)
 }
 
 /* close a second of board tx's score: x10 as a byte (0: none this second) */
-static uint8_t score_close(tw_score_t *s)
+static uint8_t score_close(tw_score_t *s, int hold_down)
 {
     uint8_t out = 0;
     if (s->nb && s->recs >= 5) {
@@ -1264,7 +1265,12 @@ static uint8_t score_close(tw_score_t *s)
                 tot += sd / fmaxf(s->ref[b], 1e-3f);
                 /* then a running median: a small step towards each new second (0.2%: a lasting
                    change becomes the usual in about 10-15 minutes, as the replay's settle) */
-                s->ref[b] *= sd > s->ref[b] ? 1.002f : 1.0f / 1.002f;
+                /* 3.5: but not down while the link is marked steadier than quiet (hold_down) */
+                if (sd > s->ref[b]) {
+                    s->ref[b] *= 1.002f;
+                } else if (!hold_down) {
+                    s->ref[b] *= 1.0f / 1.002f;
+                }
             }
         }
         if (!started) {
@@ -1285,6 +1291,8 @@ void tw_score_relearn(tw_node_t *n)
     for (int i = 1; i <= TW_MAX_NODES; i++) {
         n->score[i].start = 0;              /* the live bins stay: the quiet level starts again */
         n->score[i].above = 0;
+        n->score[i].below = 0;
+        n->score[i].low_held = 0;
     }
 }
 
@@ -1294,17 +1302,49 @@ uint8_t tw_detect_level(const tw_node_t *n)
     return v >= TW_DETECT_MIN && v <= TW_DETECT_MAX ? v : TW_DETECT_DEFAULT;
 }
 
+uint8_t tw_detect_low_level(const tw_node_t *n)
+{
+    if (!n->set_len[TW_K_DETECT_LOW]) {
+        return TW_LOW_DEFAULT;
+    }
+    uint8_t v = n->set_val[TW_K_DETECT_LOW][0];
+    return v <= TW_LOW_MAX ? v : TW_LOW_DEFAULT;
+}
+
 const tw_rec_t *tw_aux_record(tw_node_t *n, uint32_t now)
 {
     uint32_t sec = now / 1000000u;
     if (sec != n->score_sec) {                  /* once a second: close it, queue the scores */
         n->score_sec = sec;
-        uint8_t sc[TW_MAX_NODES + 3];
+        uint8_t sc[TW_MAX_NODES + 5];
         int any = 0;
-        uint8_t level = tw_detect_level(n);
-        uint16_t bits = 0;
+        uint8_t level = tw_detect_level(n), low = tw_detect_low_level(n);
+        uint16_t bits = 0, lbits = 0;
         for (int i = 1; i <= TW_MAX_NODES; i++) {
-            sc[i - 1] = i == n->id ? 0 : score_close(&n->score[i]);
+            tw_score_t *t = &n->score[i];
+            int held = low && t->below >= TW_LOW_HOLD && t->low_held < TW_LOW_KEEP;
+            sc[i - 1] = i == n->id ? 0 : score_close(t, held);
+            /* 3.5: steadier than quiet: at or below the low threshold TW_LOW_HOLD seconds in a row;
+               a second without a score leaves it as it was */
+            if (!low || (sc[i - 1] && sc[i - 1] > low)) {
+                t->below = 0;
+                t->low_held = 0;
+            } else if (sc[i - 1]) {
+                if (t->below < 255) {
+                    t->below++;
+                }
+                if (t->below >= TW_LOW_HOLD && t->low_held < TW_LOW_KEEP) {
+                    if (t->below == TW_LOW_HOLD) {
+                        n->low_count++;             /* one more began */
+                    }
+                    if (++t->low_held == TW_LOW_KEEP) {
+                        n->low_accepted++;          /* held long enough: the new quiet */
+                    }
+                }
+            }
+            if (t->below >= TW_LOW_HOLD && t->low_held > 0 && t->low_held < TW_LOW_KEEP) {
+                lbits |= (uint16_t)(1u << (i - 1));
+            }
             any |= sc[i - 1];
             /* 3.4: a detection: at or above the threshold TW_DETECT_HOLD seconds in a row */
             tw_score_t *s = &n->score[i];
@@ -1328,9 +1368,12 @@ const tw_rec_t *tw_aux_record(tw_node_t *n, uint32_t now)
         sc[TW_MAX_NODES] = n->xend_q;
         sc[TW_MAX_NODES + 1] = (uint8_t)bits;   /* 3.4: this second's detections */
         sc[TW_MAX_NODES + 2] = (uint8_t)(bits >> 8);
+        n->low_bits = lbits;
+        sc[TW_MAX_NODES + 3] = (uint8_t)lbits;  /* 3.5: this second's steadier-than-quiet marks */
+        sc[TW_MAX_NODES + 4] = (uint8_t)(lbits >> 8);
         any |= n->xend_q;
         if (any) {
-            tw_rec_t *r = queue_aux(n, now, TW_KIND_SCORE, sc, TW_MAX_NODES + 3);
+            tw_rec_t *r = queue_aux(n, now, TW_KIND_SCORE, sc, TW_MAX_NODES + 5);
             r->txseq = sec;                     /* this board's uptime, s */
             return r;
         }
@@ -1581,7 +1624,8 @@ int tw_format_record(const tw_rec_t *r, char *out, int max)
     if ((r->kind & TW_KIND_MASK) == TW_KIND_SCORE) {
         /* TWM,board,boot,record number,its uptime s,the timekeeper's clock,score of board 1..16 (x10),
            2.7: where its last second frame ended, us after its slot start by its clock (0: none),
-           3.4: its detections that second, hex (bit i: board i+1) */
+           3.4: its detections that second, hex (bit i: board i+1); 3.5: its steadier-than-quiet marks,
+           hex (the same bits) */
         int k = snprintf(out, (size_t)max, "TWM,%u,%u,%lu,%lu,%lu", r->rx, r->boot, (unsigned long)r->recseq,
                          (unsigned long)r->txseq, (unsigned long)r->net_us);
         for (int i = 0; i < TW_MAX_NODES && k > 0 && k < max - 6; i++) {
@@ -1593,6 +1637,10 @@ int tw_format_record(const tw_rec_t *r, char *out, int max)
         if (r->n > TW_MAX_NODES + 2 && k > 0 && k < max - 8) {   /* 3.4: its detections, bit i: board i+1 */
             k += snprintf(out + k, (size_t)(max - k), ",%04x",
                           (unsigned)r->q[TW_MAX_NODES + 1] | ((unsigned)r->q[TW_MAX_NODES + 2] << 8));
+        }
+        if (r->n > TW_MAX_NODES + 4 && k > 0 && k < max - 8) {   /* 3.5: steadier than quiet, the same bits */
+            k += snprintf(out + k, (size_t)(max - k), ",%04x",
+                          (unsigned)r->q[TW_MAX_NODES + 3] | ((unsigned)r->q[TW_MAX_NODES + 4] << 8));
         }
         if (k > 0 && k < max - 1) {
             out[k++] = '\n';
@@ -1652,8 +1700,9 @@ int tw_format_status(const tw_node_t *n, uint32_t now, char *out, int max)
     /* 3.2, at the end: the channel it works on, the network's (its key), 1 while looking for the
        others, switches and scans since start */
     /* 3.3, after those: its group, frames of other groups heard, and the last such group; 3.4: its
-       detection threshold (x10) and the detections begun since start */
-    return snprintf(out, (size_t)max, "TWS,%u,%u,%u,%u,%04x,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%u,%d,%u,%u,%u,%u,%lu,%lu,%u,%lu,%lu,%u,%u,%u,%u,%u,%u,%lu,%u,%u,%lu\n",
+       detection threshold (x10) and the detections begun since start; 3.5: its steadier-than-quiet
+       threshold (x10, 0: off), the marks begun, and those that became the new quiet */
+    return snprintf(out, (size_t)max, "TWS,%u,%u,%u,%u,%04x,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%u,%d,%u,%u,%u,%u,%lu,%lu,%u,%lu,%lu,%u,%u,%u,%u,%u,%u,%lu,%u,%u,%lu,%u,%lu,%lu\n",
                     n->id, TW_VERSION, n->leader, (unsigned)((n->synced ? TW_F_SYNCED : 0) |
                     (n->is_exit ? TW_F_EXIT : 0) | (n->leader == n->id ? TW_F_LEADER : 0)),
                     tw_active(n, now), (unsigned long)(p / 1000u), (unsigned long)(fits ? start : 0),
@@ -1664,5 +1713,6 @@ int tw_format_status(const tw_node_t *n, uint32_t now, char *out, int max)
                     (unsigned long)n->n_relay_full, n->set_flags, (unsigned long)n->n_extra_sent,
                     (unsigned long)n->n_extra_skipped, n->chan_home, n->set_channel, n->scan_on, n->chan_switches,
                     n->chan_scans, n->group, (unsigned long)n->n_other_group, n->other_group_last,
-                    tw_detect_level(n), (unsigned long)n->det_count);
+                    tw_detect_level(n), (unsigned long)n->det_count, tw_detect_low_level(n),
+                    (unsigned long)n->low_count, (unsigned long)n->low_accepted);
 }

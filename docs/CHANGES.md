@@ -5,6 +5,30 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.6-next (work in progress, on the next branch)
 
+- **Firmware (tw_node 3.5): steadier than quiet.** A link only gets stiller
+  than its quiet level when something that is part of that quiet stops: a
+  fan or the furnace, a compressor, a radio nearby, someone who was sitting
+  still and leaves. A link at or below its board's low threshold for 10 s in
+  a row is now marked. The threshold is key 8 (a board key, x10 of the quiet
+  level, 1-9, 0 = off; 0.5x until given; kept in the board's flash). The mark
+  goes in the TWM record (a second set of 16 bits), and the cabled board's
+  TWS counts it (threshold, stretches begun, stretches that became the quiet:
+  fields 36-38). The LED shows green while it lasts; movement (blue) and the
+  white flash come first. A second without a score, from lost frames, neither
+  counts nor breaks a stretch, so losing frames cannot look like stillness. While a link is marked, its quiet level is
+  held: it does not step down, which would otherwise take the stillness in
+  as quiet within minutes and end the mark. After 30 minutes the stillness
+  becomes the new quiet: that is counted, the mark ends, and the quiet level
+  follows again. `relearn` clears it. The simulator has `--still A-B`: a
+  "fan" on link 1-3 that stops between A and B s. Results:
+  - 120 s still: marked 310-419 s on 1→3 and 3→1 only (0.3x). When the fan
+    started again the link read 1.0x, not a false movement detection.
+  - 35 minutes still: marked for 1,800 s, then accepted (counted once).
+  - 40% frame loss with nothing still: no marks.
+  - Low threshold turned off by record: no marks.
+  - The standard cases give the same verdicts as 3.4. A few timing numbers
+    move a little, because each score record is 2 bytes longer on the air.
+
 - **tw_node 3.4: version and image.** Detections, each board's threshold
   and relearn (below) in `tw_node-s3-ch11.bin`. Program-only upgrade (its
   first 128 KB are 3.3's); every board starts at 3x until given another.

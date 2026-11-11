@@ -105,6 +105,8 @@ static simnode_t N_[MAXN + 1];
 static int n_nodes = 3, realtime = 0, exits[MAXN + 1];
 static double seconds = 60, p_loss = 0.05, p_rxerr = 0, t0_unix;
 static double walk_a = 30e6, walk_b = 40e6;    /* planted walk across the 1-2 link (--walk A-B seconds) */
+static double still_a = -1, still_b = -1;       /* 3.5: --still A-B: link 1-3 has a fan going (part of its
+                                                   quiet) except between A and B s: steadier than quiet */
 static long collisions = 0, frames = 0, lost_random = 0, lost_blocked = 0, rx_err_made = 0;
 static double air_used_us = 0;
 static long extra_frames = 0, collisions_extra = 0, extra_measured = 0;
@@ -182,6 +184,9 @@ static void make_csi(int rx, int tx, double t, int8_t *buf)
         double motion = 0;
         if (t > walk_a && t < walk_b && ((rx == 1 && tx == 2) || (rx == 2 && tx == 1))) {
             motion = 0.25 * sin(0.9 * b + t / 1e5);
+        }
+        if (still_a >= 0 && !(t > still_a && t < still_b) && ((rx == 1 && tx == 3) || (rx == 3 && tx == 1))) {
+            motion = 0.2 * (urand() - 0.5);   /* the fan: restless all the time, but nothing walking */
         }
         double a = base * (1 + 0.03 * (urand() - 0.5) + motion);
         double ph = urand() * 6.283;
@@ -281,6 +286,9 @@ static int parse_args(int argc, char **argv, char *kill_spec, char *exit_spec, u
         }
         else if (!strcmp(argv[i], "--walk") && i + 1 < argc) {
             char *e; walk_a = strtod(argv[++i], &e) * 1e6; walk_b = (*e == '-' ? strtod(e + 1, NULL) : walk_a / 1e6 + 10) * 1e6;
+        }
+        else if (!strcmp(argv[i], "--still") && i + 1 < argc) {
+            char *e; still_a = strtod(argv[++i], &e) * 1e6; still_b = (*e == '-' ? strtod(e + 1, NULL) : still_a / 1e6 + 60) * 1e6;
         }
         else if (!strcmp(argv[i], "--out") && i + 1 < argc) *outpath = argv[++i];
         else if (!strcmp(argv[i], "--block") && i + 1 < argc) {

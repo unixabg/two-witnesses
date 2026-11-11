@@ -115,7 +115,8 @@
                                            none); 2.7: q[16] where its last second frame ended (20 us
                                            steps); txseq its uptime, s; printed as TWM. 3.0: the only
                                            place of both (the header carried them before). 3.4:
-                                           q[17..18] its detections that second (bit i: board i+1) */
+                                           q[17..18] its detections that second (bit i: board i+1).
+                                           3.5: q[19..20] its steadier-than-quiet marks (the same) */
                                         /* 4: 2.5's settings record (TW_KIND_SET), gone in 3.0 */
 #define TW_KIND_SURVEY      6           /* 3.1: not a measurement: this board's last channel survey;
                                            txseq its generation (TW_K_SURVEY), q: the first channel, the
@@ -150,6 +151,8 @@
 #define TW_K_DETECT         6           /* board (3.4): its detection threshold, x10 of quiet, 1 byte
                                            (TW_DETECT_MIN..MAX; never given: TW_DETECT_DEFAULT) */
 #define TW_K_RELEARN        7           /* action (3.4): learn every link's quiet level again, no value */
+#define TW_K_DETECT_LOW     8           /* board (3.5): its steadier-than-quiet threshold, x10 of quiet,
+                                           1 byte (0: off; 1..TW_LOW_MAX; never given: TW_LOW_DEFAULT) */
 #define TW_K_POWER          16          /* network (2.6): transmit power, 1 byte, quarter dBm (0: never set) */
 #define TW_K_RELAY          17          /* network: relaying, 1 byte (1 on, 0 off) */
 #define TW_K_SECOND         18          /* network: the second frame, 1 byte (0 on, 1 off, 2 force) */
@@ -196,6 +199,16 @@
 #define TW_DETECT_MIN       15
 #define TW_DETECT_MAX       100
 #define TW_DETECT_HOLD      2
+/* 3.5: steadier than quiet. A link's score at or below its board's low threshold (TW_K_DETECT_LOW,
+   x10; never given: TW_LOW_DEFAULT; 0: off) for TW_LOW_HOLD seconds in a row (seconds without a
+   score neither count nor break it); marked in the TWM record, bit tx-1 of q[19..20], every second
+   it holds. While it holds, the link's quiet level does not step down (it would follow the
+   stillness and end the mark within minutes), for up to TW_LOW_KEEP seconds: then the stillness
+   is the new quiet (counted), the mark ends and the quiet level follows again */
+#define TW_LOW_DEFAULT      5           /* 0.5 x quiet */
+#define TW_LOW_MAX          9
+#define TW_LOW_HOLD         10
+#define TW_LOW_KEEP         1800
 #define TW_KIND_EXTRA       0x20        /* flag: measured from an extra frame (TW_SET_MEASURE_EXTRA only) */
 #define TW_KIND_RXERR       0x40        /* flag: the radio reported this frame received with an error
                                            (rx_state != 0; the numbers are not documented). Kept, only
@@ -262,6 +275,8 @@ typedef struct {
     uint8_t  nb;                            /* bands (0 until learned) */
     uint8_t  start;                         /* seconds into the quiet level's start */
     uint8_t  above;                         /* 3.4: seconds in a row at or above the threshold */
+    uint8_t  below;                         /* 3.5: seconds in a row at or below the low threshold */
+    uint16_t low_held;                      /* 3.5: seconds its quiet level was held (up to TW_LOW_KEEP) */
     uint8_t  bin[TW_MAX_AMPS];              /* while learning: records with that bin above 0; then
                                                the live bins, TW_SCORE_BAND per band */
     uint16_t recs;                          /* records this second */
@@ -301,6 +316,10 @@ typedef struct {
     /* 3.4: this second's detections (bit tx-1), and how many began since start (for TWS) */
     uint16_t det_bits;
     uint32_t det_count;
+    /* 3.5: this second's steadier-than-quiet marks (bit tx-1); how many began, and how many
+       became the new quiet after TW_LOW_KEEP, since start */
+    uint16_t low_bits;
+    uint32_t low_count, low_accepted;
     /* 3.3: this board's group; frames of other groups: how many, and the last group heard */
     uint8_t  group, other_group_last;
     uint32_t n_other_group;
@@ -457,6 +476,9 @@ uint8_t  tw_chan_step(tw_node_t *n, uint32_t now, int *quiet);
 void     tw_score_relearn(tw_node_t *n);
 /* 3.4: this board's detection threshold, x10 (its TW_K_DETECT, or TW_DETECT_DEFAULT) */
 uint8_t  tw_detect_level(const tw_node_t *n);
+/* 3.5: this board's steadier-than-quiet threshold, x10 (its TW_K_DETECT_LOW, or TW_LOW_DEFAULT;
+   0: off) */
+uint8_t  tw_detect_low_level(const tw_node_t *n);
 
 /* 3.3: is this frame (its header peeked) of this board's group? If not, it is counted (TWS) and
    the caller drops it */

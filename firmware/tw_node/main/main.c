@@ -767,6 +767,18 @@ static void led_load(void)
         gd = 0;
     }
     tw_setting_init(&s_node, TW_K_DETECT, &det, 1, gd);
+    /* 3.5: its steadier-than-quiet threshold (x10, 0: off), never given: the default */
+    uint8_t low = 255, gl = 0;
+    if (nvs_open("tw", NVS_READONLY, &h) == ESP_OK) {
+        nvs_get_u8(h, "dlo", &low);
+        nvs_get_u8(h, "lgl", &gl);
+        nvs_close(h);
+    }
+    if (low > TW_LOW_MAX) {
+        low = TW_LOW_DEFAULT;
+        gl = 0;
+    }
+    tw_setting_init(&s_node, TW_K_DETECT_LOW, &low, 1, gl);
 }
 
 /* what the board says about itself every 5 s (TWV): firmware and build (2.5-2.7 added its LED
@@ -974,6 +986,21 @@ static void led_apply(void)
         }
         ESP_LOGW(TAG, "detection threshold %u.%u x quiet", tw_detect_level(&s_node) / 10, tw_detect_level(&s_node) % 10);
     }
+    if (ch & (1u << TW_K_DETECT_LOW)) { /* 3.5: its steadier-than-quiet threshold: kept */
+        nvs_handle_t h;
+        uint8_t v = tw_detect_low_level(&s_node);
+        if (nvs_open("tw", NVS_READWRITE, &h) == ESP_OK) {
+            nvs_set_u8(h, "dlo", v);
+            nvs_set_u8(h, "lgl", s_node.set_gen[TW_K_DETECT_LOW]);
+            nvs_commit(h);
+            nvs_close(h);
+        }
+        if (v) {
+            ESP_LOGW(TAG, "steadier-than-quiet threshold 0.%u x quiet", v);
+        } else {
+            ESP_LOGW(TAG, "steadier-than-quiet detection off");
+        }
+    }
     if (ch & (1u << TW_K_RELEARN)) {    /* 3.4: tw_proto.c started it again when it took the action */
         ESP_LOGW(TAG, "learning the quiet level again (60 s)");
     }
@@ -1041,6 +1068,10 @@ static void led_second(void)
         }
     } else {
         tw_led_color(tw_led_pick(s_node.score_last), s_led_bright, c);
+        if (!c[0] && !c[1] && !c[2] && s_node.low_bits) {
+            /* 3.5: nothing moving, and a link steadier than quiet (held): green */
+            c[1] = s_led_bright;
+        }
         if (s_node.det_bits) {
             /* 3.4: a detection this second (a link at or above the threshold, held): a short white
                flash, then the color as usual. While it holds, once a second */
@@ -1209,7 +1240,8 @@ static void poll_commands(void)
                 out_wait(msg, k);
                 hello();
             } else if (n && (!strncmp(cmd, "TWSET detect ", 13) || !strncmp(cmd, "TWSET relearn", 13))) {
-                /* 3.4: "TWSET detect V" (x10 of quiet, TW_DETECT_MIN..MAX) and "TWSET relearn", for
+                /* 3.4: "TWSET detect V" (x10 of quiet, TW_DETECT_MIN..MAX) and "TWSET relearn" (3.5: and
+                   "TWSET detect low V", 0..TW_LOW_MAX, 0: off), for
                    this board; with " board N gen G", given to board N (0: all) by record, as led */
                 char msg[128], *bd = strstr(cmd, " board ");
                 int k, v = 0, target = -1, gen = -1, key = 0, vlen = 0;
@@ -1221,7 +1253,11 @@ static void poll_commands(void)
                     }
                     *bd = 0;
                 }
-                if (sscanf(cmd, "TWSET detect %d", &v) == 1 && v >= TW_DETECT_MIN && v <= TW_DETECT_MAX) {
+                if (sscanf(cmd, "TWSET detect low %d", &v) == 1 && v >= 0 && v <= TW_LOW_MAX) {
+                    key = TW_K_DETECT_LOW;      /* 3.5: steadier than quiet, x10 (0: off) */
+                    val[0] = (uint8_t)v;
+                    vlen = 1;
+                } else if (sscanf(cmd, "TWSET detect %d", &v) == 1 && v >= TW_DETECT_MIN && v <= TW_DETECT_MAX) {
                     key = TW_K_DETECT;
                     val[0] = (uint8_t)v;
                     vlen = 1;
@@ -1232,17 +1268,20 @@ static void poll_commands(void)
                     tw_setting_local(&s_node, (uint8_t)key, val, vlen);
                     led_apply();
                     k = key == TW_K_DETECT ? snprintf(msg, sizeof(msg), "TWOK detect %d.%d x quiet\n", v / 10, v % 10)
-                                           : snprintf(msg, sizeof(msg), "TWOK relearn: the quiet level again (60 s)\n");
+                        : key == TW_K_DETECT_LOW ? (v ? snprintf(msg, sizeof(msg), "TWOK detect low 0.%d x quiet\n", v)
+                                                      : snprintf(msg, sizeof(msg), "TWOK detect low off\n"))
+                        : snprintf(msg, sizeof(msg), "TWOK relearn: the quiet level again (60 s)\n");
                 } else if (key && target >= 0) {
                     tw_setting_give(&s_node, (uint8_t)target, (uint8_t)key, val, vlen, (uint8_t)gen);
                     led_apply();
                     char who[12];
                     snprintf(who, sizeof(who), target ? "board %d" : "all boards", target);
                     k = snprintf(msg, sizeof(msg), "TWOK %s given to %s, generation %d\n",
-                                 key == TW_K_DETECT ? "detect" : "relearn", who, gen);
+                                 key == TW_K_DETECT ? "detect" : key == TW_K_DETECT_LOW ? "detect low" : "relearn",
+                                 who, gen);
                 } else {
-                    k = snprintf(msg, sizeof(msg), "TWERR detect %d..%d (x10 of quiet), relearn [board N gen G]\n",
-                                 TW_DETECT_MIN, TW_DETECT_MAX);
+                    k = snprintf(msg, sizeof(msg), "TWERR detect %d..%d, detect low 0..%d (x10 of quiet; 0: off), "
+                                 "relearn [board N gen G]\n", TW_DETECT_MIN, TW_DETECT_MAX, TW_LOW_MAX);
                 }
                 out_wait(msg, k);
             } else if (n && sscanf(cmd, "TWSET channel %d", &id) == 1) {
