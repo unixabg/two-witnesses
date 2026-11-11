@@ -5,6 +5,12 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.6-next (work in progress, on the next branch)
 
+- **The program's description names its version.** The board's "TWUP
+  verified" line read "tw_node 1": ESP-IDF's program description takes its
+  version from `firmware/tw_node/version.txt` (or git), and there was none,
+  so it said 1. Now `version.txt` holds the firmware's version, kept the same
+  as FW_VERSION in main.c, and the line reads "tw_node 4.1".
+
 - **`tw_setid.py PORT update`: the manifest and the check go together.** So
   the board takes both in one go, before 4.0's once-a-second tick can drop
   the update in between (see below). If it is lost anyway, the upload runs
