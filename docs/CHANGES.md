@@ -5,6 +5,14 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.6-next (work in progress, on the next branch)
 
+- **The replay's camera no longer flashes while playing.** The camera keeps
+  about one frame a second, with gaps; a second without its own frame (or one
+  before it) hid the picture and said "no frame kept", so playback flickered.
+  Now a second shows the latest frame of the last 6 s (saying "frame from
+  HH:MM:SS" when it is not its own), and "no frame kept" only where there is
+  none; the next frames load ahead while playing. Checked with a third of an
+  event's frames missing: the picture stays up through the event.
+
 - **`replay.py RUN --serve-only`** serves the page already made (after a
   Ctrl-C, say) without reading the run again: seconds instead of minutes, a
   new link each time; with no page yet it says how to make one.

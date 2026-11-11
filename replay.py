@@ -1310,7 +1310,6 @@ function stepText(s, short) {
   return `${s.link} ` + [sh, rs].filter(Boolean).join(", ");
 }
 const CAM = D.camera || { events: [], frames: [] };
-const frameAt = new Map(CAM.frames.map(f => [f.i, f.src]));
 ITEMS.forEach(e => {                     // events the camera kept frames for
   if (CAM.frames.some(f => f.i >= e.i - 2 && f.i <= e.j + 2)) e.el.lastChild.insertAdjacentHTML("beforeend", ` <span class="cam">camera</span>`);
 });
@@ -1517,22 +1516,35 @@ const camcard = document.getElementById("camcard"), camimg = document.getElement
 const stage = document.getElementById("stage");
 if (CAM.frames.length) { camcard.hidden = false; stage.classList.add("hascam"); }
 camimg.addEventListener("click", () => { stage.classList.toggle("cambig"); layoutTL(); });   // tap: bigger, again: back
-camimg.addEventListener("error", () => { camimg.hidden = true;
+camimg.addEventListener("error", () => { camimg.hidden = true; camnote.dataset.k = "";
   camnote.textContent = "frame not found: open this page in its watch folder, or through a web server started there (see replay.py)"; });
+/* the camera: the latest frame of the last few seconds (it keeps about one a second, with gaps:
+   a second without its own frame shows the one before, so playing does not flash) */
+const FI = CAM.frames.map(f => f.i), HOLD = 6, PRE = new Set();
+function frameBefore(i) { let lo = 0, hi = FI.length - 1, k = -1;
+  while (lo <= hi) { const m = (lo + hi) >> 1; if (FI[m] <= i) { k = m; lo = m + 1; } else hi = m - 1; } return k; }
 function showFrame() {
   if (!CAM.frames.length) return;
-  const src = frameAt.get(cur) || frameAt.get(cur - 1);
+  const k = frameBefore(cur), f = k >= 0 && cur - FI[k] <= HOLD ? CAM.frames[k] : null;
   const ev = CAM.events.find(c => c.i - 6 <= cur && cur <= c.j + 11);
-  if (src) {
+  if (f) {
     camimg.hidden = false;
-    if (camimg.getAttribute("src") !== src) camimg.setAttribute("src", src);
-    camnote.textContent = (ev ? `watch event ${ev.event}: ${ev.label || ev.kind}${ev.note ? " (" + ev.note + ")" : ""}` : "");
+    if (camimg.getAttribute("src") !== f.src) camimg.setAttribute("src", f.src);
+    const age = cur - f.i;
+    const note = (ev ? `watch event ${ev.event}: ${ev.label || ev.kind}${ev.note ? " (" + ev.note + ")" : ""}` : "")
+               + (age > 1 ? `${ev ? " · " : ""}frame from ${clk(f.i)}` : "");
+    if (camnote.dataset.k !== note) { camnote.textContent = note; camnote.dataset.k = note; }
+    if (playing) for (let j = k + 1; j <= k + 6 && j < CAM.frames.length; j++) {   // load the next ones ahead
+      const s = CAM.frames[j].src; if (!PRE.has(s)) { PRE.add(s); new Image().src = s; } }
   } else {
     camimg.hidden = true;
-    const nx = CAM.frames.find(f => f.i > cur) || CAM.frames[0];
-    camnote.innerHTML = "no frame kept for this moment (the camera keeps frames around the watch's events)";
-    const b = document.createElement("button"); b.textContent = `${clk(nx.i)} →`;
-    b.addEventListener("click", () => seek(nx.i)); camnote.appendChild(b);
+    const nx = CAM.frames.find(g => g.i > cur) || CAM.frames[0], key = "none " + nx.i;
+    if (camnote.dataset.k !== key) {        // (built once, not every tick)
+      camnote.dataset.k = key;
+      camnote.innerHTML = "no frame kept for this moment (the camera keeps frames around the watch's events)";
+      const b = document.createElement("button"); b.textContent = `${clk(nx.i)} →`;
+      b.addEventListener("click", () => seek(nx.i)); camnote.appendChild(b);
+    }
   }
 }
 const still = matchMedia("(prefers-reduced-motion: reduce)");
