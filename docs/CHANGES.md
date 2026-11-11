@@ -5,6 +5,12 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.6-next (work in progress, on the next branch)
 
+- **`replay.py --serve` ends cleanly.** After Ctrl-C (or `--hours`) it
+  printed "stopped serving" and then a Python error (`NameError: total`): the
+  run's summary (records, thresholds, events, lasting changes) had landed
+  inside the serving code when `--serve` was added. The summary is back where
+  it was, printed before serving starts.
+
 - **The replay's camera no longer flashes while playing.** The camera keeps
   about one frame a second, with gaps; a second without its own frame (or one
   before it) hid the picture and said "no frame kept", so playback flickered.

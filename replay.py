@@ -846,6 +846,25 @@ def main():
         f.write(page)
 
     print(f"\n{dest}  ({os.path.getsize(dest) // 1024} KB)  layout: {layout}")
+    print(f"{total:,} records ({dup:,} second copies skipped); {len(names)} directions; "
+          f"{len(epoch) // 3600} h {len(epoch) % 3600 // 60} min in {len(segs)} part(s)")
+    print("thresholds: " + "  ".join(f"{n} {t:.2f}" for n, t in zip(names, thr)))
+    nb = {x: int((near == x).sum()) for x in np.unique(near[near > 0])}
+    print(power)
+    if cam_events:
+        print(f"camera: {len(cam_events)} watch events, {len(cam_frames)} frames linked "
+              f"(the page shows them while it sits in this folder)")
+    for e in events:
+        if e.get("stretch"):
+            print(f"stretch {loc(epoch[e['i']]):%H:%M:%S}, {int(epoch[e['j']] - epoch[e['i']]) + 1} s: "
+                  f"{names[e['level'][0]]} restless ({e['level'][1]}x quiet); peaks inside: "
+                  + (", ".join(f"{loc(epoch[s['i']]):%H:%M:%S}" + (" (weak)" if s["weak"] else "") for s in e["subs"]) or "none"))
+    print(f"{len(events)} events" + "".join(f"; near board {x}: {n} s" for x, n in nb.items())
+          + "; lasting changes:" + ("" if steps else " none"))
+    for s in steps:
+        print(f"  {loc(epoch[s['i']]):%H:%M:%S}  link {s['link']}: shape {s['db']} dB, RSSI {s['rssi']:+.1f} dB")
+    for i, link in relearned:
+        print(f"  {loc(epoch[i]):%H:%M:%S}  link {link}: quiet level relearned from the new scene")
     if a.serve:
         serve(dest, folder, a.port, a.hours)
 
@@ -945,25 +964,6 @@ def serve(page, folder, port, hours):
     finally:
         srv.server_close()
     print("stopped serving")
-    print(f"{total:,} records ({dup:,} second copies skipped); {len(names)} directions; "
-          f"{len(epoch) // 3600} h {len(epoch) % 3600 // 60} min in {len(segs)} part(s)")
-    print("thresholds: " + "  ".join(f"{n} {t:.2f}" for n, t in zip(names, thr)))
-    nb = {x: int((near == x).sum()) for x in np.unique(near[near > 0])}
-    print(power)
-    if cam_events:
-        print(f"camera: {len(cam_events)} watch events, {len(cam_frames)} frames linked "
-              f"(the page shows them while it sits in this folder)")
-    for e in events:
-        if e.get("stretch"):
-            print(f"stretch {loc(epoch[e['i']]):%H:%M:%S}, {int(epoch[e['j']] - epoch[e['i']]) + 1} s: "
-                  f"{names[e['level'][0]]} restless ({e['level'][1]}x quiet); peaks inside: "
-                  + (", ".join(f"{loc(epoch[s['i']]):%H:%M:%S}" + (" (weak)" if s["weak"] else "") for s in e["subs"]) or "none"))
-    print(f"{len(events)} events" + "".join(f"; near board {x}: {n} s" for x, n in nb.items())
-          + "; lasting changes:" + ("" if steps else " none"))
-    for s in steps:
-        print(f"  {loc(epoch[s['i']]):%H:%M:%S}  link {s['link']}: shape {s['db']} dB, RSSI {s['rssi']:+.1f} dB")
-    for i, link in relearned:
-        print(f"  {loc(epoch[i]):%H:%M:%S}  link {link}: quiet level relearned from the new scene")
 
 
 PAGE = r"""<!doctype html>
