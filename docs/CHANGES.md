@@ -5,6 +5,11 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.6-next (work in progress, on the next branch)
 
+- **`tw_setid.py PORT survey` no longer calls 3.4 and 3.5 boards older
+  firmware.** It recognised 3.1 to 3.3 (and 4.x) by name, so a 3.4 or 3.5
+  board was named as "older firmware" that "does not survey", though it does.
+  It now compares version numbers, as the other commands do.
+
 - **tw_node 3.5: version and image.** Steadier than quiet (below) in
   `tw_node-s3-ch11.bin`. Program-only upgrade (its first 128 KB are 3.4's);
   every board watches at 0.5x until given another (`detect low off` turns it

@@ -621,8 +621,7 @@ def survey(p):
     st = status(p, 11)
     if not st:
         sys.exit("no boards heard: is tw_node running (and nothing else using the port)?")
-    old = sorted(b for b, v in st.items() if v.get("fw") and not v["fw"].startswith(("tw_node 3.1", "tw_node 3.2",
-                                                                                     "tw_node 3.3", "tw_node 4")))
+    old = sorted(b for b, v in st.items() if v.get("fw") and (fw_version(v["fw"]) or (0, 0)) < (3, 1))
     if old:
         print(f"  board{'s' if len(old) > 1 else ''} {', '.join(map(str, old))} run older firmware: "
               "they keep sending and do not survey (their frames are left out of the others' counts)")
