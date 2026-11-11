@@ -12,7 +12,13 @@
  *       [--seed 7] [--realtime] [--out FILE] [--setpower 20@11[@1],40@20]
  *       [--block 2-1@10-50@0.75,...] [--setrelay 30@off,60@on] [--rxerr 0.01]
  *       [--set 0@cap=3,0@second=off,...] [--late measured] [--fix ahead,hwrx,cb]
+ *       [--update T@TARGET:SIZE] [--still A-B] [--walk A-B]
  *
+ * --update T@TARGET:SIZE (4.0): at T seconds the computer has given the first exit a program of
+ * SIZE bytes (made up), and it sends it to TARGET (0: every board of its group) over the air. A
+ * board with every chunk checks it against the program (the firmware: SHA-256 and signature),
+ * "writes" it (READY) and restarts 3 s later (off for 4 s: a reboot). The JSON summary says when
+ * each board had it, how many update frames and bursts it took, and when the sending ended.
  * --block S-R@A-B@P: from A to B seconds, board R misses each of board S's frames with
  * probability P (on top of --loss): something in the way of that one direction.
  * --setrelay T@on|off: at T seconds the computer turns relaying on or off (first exit).
@@ -95,6 +101,7 @@ typedef struct {
     int q_len;                  /* --fix queue: the extra frame, built at once, behind the normal one */
     uint8_t qbuf[TW_MAX_PAYLOAD];
     double stamp_t, hand_t, hand2_t;
+    double up_at;               /* 4.0: true time the exit asks for its next update frame (< 0: none) */
     lstat_t s_start, s_xend, s_defer, f_at, f_radio, f_wake, f_xradio, f_xend, f_len, f_xlen;
     long x_over, x_into;
     double ovh, ovh_dev;        /* --fix cb: hand-over to send-done less the air, running mean / spread */
@@ -105,6 +112,15 @@ static simnode_t N_[MAXN + 1];
 static int n_nodes = 3, realtime = 0, exits[MAXN + 1];
 static double seconds = 60, p_loss = 0.05, p_rxerr = 0, t0_unix;
 static double walk_a = 30e6, walk_b = 40e6;    /* planted walk across the 1-2 link (--walk A-B seconds) */
+static double up_t = -1;                        /* 4.0: --update T@TARGET:SIZE */
+static int up_target = 0, up_fired = 0;
+static uint32_t up_size = 0;
+static uint8_t *up_src;                         /* the program the computer gave */
+static double up_done_t[MAXN + 1], up_end_t = -1;
+static int up_state_end[MAXN + 1];
+static long up_frames_air = 0;
+void *tw_up_alloc(uint32_t size) { return malloc(size); }
+void tw_up_free(void *p) { free(p); }
 static double still_a = -1, still_b = -1;       /* 3.5: --still A-B: link 1-3 has a fan going (part of its
                                                    quiet) except between A and B s: steadier than quiet */
 static long collisions = 0, frames = 0, lost_random = 0, lost_blocked = 0, rx_err_made = 0;
@@ -287,6 +303,13 @@ static int parse_args(int argc, char **argv, char *kill_spec, char *exit_spec, u
         else if (!strcmp(argv[i], "--walk") && i + 1 < argc) {
             char *e; walk_a = strtod(argv[++i], &e) * 1e6; walk_b = (*e == '-' ? strtod(e + 1, NULL) : walk_a / 1e6 + 10) * 1e6;
         }
+        else if (!strcmp(argv[i], "--update") && i + 1 < argc) {
+            int tg; unsigned sz;
+            if (sscanf(argv[++i], "%lf@%d:%u", &up_t, &tg, &sz) != 3 || sz == 0 || sz > TW_UP_MAX) {
+                fprintf(stderr, "--update T@TARGET:SIZE (SIZE up to %u)\n", TW_UP_MAX); return -1;
+            }
+            up_target = tg; up_size = sz;
+        }
         else if (!strcmp(argv[i], "--still") && i + 1 < argc) {
             char *e; still_a = strtod(argv[++i], &e) * 1e6; still_b = (*e == '-' ? strtod(e + 1, NULL) : still_a / 1e6 + 60) * 1e6;
         }
@@ -372,6 +395,7 @@ int main(int argc, char **argv)
         s->ovh = 650;
         s->ovh_dev = 60;
         s->last_status = -1e9;
+        s->up_at = -1;
         tw_init(&s->st, (uint8_t)id, (uint8_t)s->exit, seed * 31u + (unsigned)id);
         tw_set_info(&s->st, "sim|board");
         s->st.set_channel = 11;                          /* 3.2: the firmware's default */
@@ -414,6 +438,34 @@ int main(int argc, char **argv)
     clock_gettime(CLOCK_MONOTONIC, &wall0);
 
     while (t < end) {
+        /* 4.0: the computer gives the first exit a program, and has it send it */
+        if (!up_fired && up_t >= 0 && t >= up_t * 1e6) {
+            up_fired = 1;
+            simnode_t *x = &N_[first_exit()];
+            up_src = malloc(up_size);
+            for (uint32_t i = 0; i < up_size; i++) up_src[i] = (uint8_t)(urand() * 256);
+            uint8_t man[TW_UP_MAN_LEN];
+            for (int i = 0; i < TW_UP_MAN_LEN; i++) man[i] = (uint8_t)(urand() * 256);
+            if (tw_up_begin(&x->st, up_size) == 0) {
+                for (uint32_t i = 0; i * TW_UP_CHUNK < up_size; i++) {
+                    uint32_t l = up_size - i * TW_UP_CHUNK < TW_UP_CHUNK ? up_size - i * TW_UP_CHUNK : TW_UP_CHUNK;
+                    tw_up_chunk(&x->st, (uint16_t)i, up_src + i * TW_UP_CHUNK, (int)l);
+                }
+                tw_up_manifest(&x->st, man);
+                tw_up_set_state(&x->st, TW_UP_ST_STAGED, local_us(x, t));    /* the firmware checked it */
+                if (tw_up_send(&x->st, local_us(x, t), (uint8_t)up_target) == 0) x->up_at = t;
+            }
+        }
+        for (int id = 1; up_fired && id <= n_nodes; id++) {   /* the firmware's part: check, write, restart */
+            simnode_t *r = &N_[id];
+            if (r->st.up_state != TW_UP_ST_COMPLETE) continue;
+            int ok = r->st.up_buf && r->st.up_size == up_size && !memcmp(r->st.up_buf, up_src, up_size);
+            tw_up_set_state(&r->st, ok ? TW_UP_ST_READY : TW_UP_ST_BADHASH, local_us(r, t));
+            up_done_t[id] = t / 1e6;
+            up_state_end[id] = ok ? TW_UP_ST_READY : TW_UP_ST_BADHASH;
+            if (ok && r->dead_from < 0) { r->dead_from = t + 3e6; r->dead_to = t + 7e6; }   /* restarts */
+        }
+        if (up_fired && up_end_t < 0 && !N_[first_exit()].st.up_tx_on && t > up_t * 1e6) up_end_t = t / 1e6;
         /* 2.5: settings given at the exit, and which boards took them when */
         for (int g = 0; g < n_give; g++) {
             if (!give[g].done && t >= give[g].t * 1e6) {
@@ -464,11 +516,12 @@ int main(int argc, char **argv)
             int e = 0;
             if (N_[id].extra_at >= 0 && N_[id].extra_at <= tt) { tt = N_[id].extra_at; e = 1; }
             if (N_[id].air_t >= 0 && N_[id].air_t <= tt) { tt = N_[id].air_t; e = 2; }
+            if (N_[id].up_at >= 0 && N_[id].up_at <= tt) { tt = N_[id].up_at; e = 3; }
             if (!who || tt < when) { who = id; when = tt; ev = e; }
         }
         simnode_t *s = &N_[who];
         is_extra = ev == 1;
-        double tx_t = late ? when
+        double tx_t = late || ev == 3 ? when
                     : is_extra ? when + urand() * TW_ACCESS_US      /* channel access after send-done */
                                : s->next_tx + urand() * 300;        /* queueing delay before the air */
         /* deliver the previous frame if it ended before this one starts */
@@ -494,6 +547,7 @@ int main(int argc, char **argv)
                 uint32_t now_l = local_us(r, rx_t), cb_l = local_us(r, cb_t);
                 /* --late: the radio's own receive time (rx_ctrl timestamp) taken as the frame's start */
                 uint32_t hw_l = late ? local_us(r, last_start) : now_l;
+                if (tw_up_rx(&r->st, last_frame, last_len, now_l)) continue;     /* 4.0: an update frame */
                 tw_hdr_t h;
                 if (tw_peek_header(last_frame, last_len, &h) < 0) { r->st.n_bad_frames++; continue; }
                 if (!tw_frame_ours(&r->st, &h)) continue;        /* 3.3: another group's */
@@ -546,6 +600,7 @@ int main(int argc, char **argv)
             s->radio = tw_chan_step(&s->st, lnow, &quiet);
             dead |= quiet;
         }
+        int hushed = !dead && tw_up_hush(&s->st, lnow);   /* 4.0: update frames on the air: quiet */
         /* the computer's power commands, and the firmware applying settings */
         for (int k = 0; k < n_sets; k++) {
             if (!sets[k].fired && tx_t >= sets[k].t) {
@@ -587,6 +642,33 @@ int main(int argc, char **argv)
             if (all) sets[k].done_t = tx_t;
         }
         int len = 0;
+        if (ev == 3) {                                       /* 4.0: the exit's next update frame */
+            if (dead) { s->up_at = tx_t + 20000; t = tx_t; continue; }
+            uint32_t nx;
+            len = tw_up_frame(&s->st, lnow, frame, TW_MAX_PAYLOAD, &nx);
+            s->up_at = s->st.up_tx_on ? true_after(s, tx_t, lnow, nx) : -1;
+            if (len > 0) {
+                double air = tw_air_us(len);
+                air_used_us += air;
+                frames++;
+                up_frames_air++;
+                if (last_len && tx_t < busy_until) {
+                    collisions++;
+                    last_collided = 1;
+                } else {
+                    memcpy(last_frame, frame, (size_t)len);
+                    last_len = len;
+                    last_collided = 0;
+                    last_extra = 0;
+                    last_start = tx_t;
+                    busy_until = tx_t + air;
+                    busy_src = who;
+                }
+            }
+            t = tx_t;
+            continue;
+        }
+        dead |= hushed;
         if (ev == 2) {                                       /* --late: a built frame asks for the air */
             if (dead) { s->air_t = -1; s->q_len = 0; t = tx_t; continue; }
             if (last_len && tx_t < busy_until && tx_t - last_start >= 9) {
@@ -617,6 +699,7 @@ int main(int argc, char **argv)
                 continue;
             }
         } else if (!dead) {
+            tw_up_tick(&s->st, lnow);                    /* 4.0 (the firmware: once a second) */
             for (const tw_rec_t *a; (a = tw_aux_record(&s->st, lnow)) != NULL;) {    /* firmware: once a second */
                 char line[600];
                 if (s->exit && tw_format_record(a, line, sizeof(line)) > 0) emit(tx_t, line);
@@ -758,8 +841,10 @@ int main(int argc, char **argv)
             /* a dead board forgets everything: it reboots when it comes back */
             int was_exit = s->exit;
             uint8_t grp = s->st.group;                   /* 3.3: its group is in its flash: kept */
+            uint32_t done_id = s->st.up_state == TW_UP_ST_READY ? s->st.up_id : s->st.up_done_id;   /* 4.0 */
             tw_init(&s->st, (uint8_t)who, (uint8_t)was_exit, (unsigned)(t + who));
             s->st.group = grp;
+            s->st.up_done_id = done_id;                  /* 4.0: the firmware's word, from its flash */
             tw_set_info(&s->st, "sim|board");
             s->st.set_channel = 11;                      /* a board with an empty flash: channel 11 */
             tw_net_init(&s->st, NULL);
@@ -885,7 +970,12 @@ int main(int argc, char **argv)
     fprintf(stderr, "], \"final_power\": {");
     for (int id = 1; id <= n_nodes; id++)
         fprintf(stderr, "%s\"%d\": [%u, %u]", id > 1 ? ", " : "", id, N_[id].st.set_seq, N_[id].st.set_power);
-    fprintf(stderr, "}}\n");
+    fprintf(stderr, "}, \"update\": {\"size\": %u, \"target\": %d, \"start\": %.1f, \"end\": %.1f, "
+                    "\"frames\": %ld, \"bursts\": %lu, \"boards\": {", up_size, up_target, up_t, up_end_t,
+            up_frames_air, (unsigned long)N_[first_exit()].st.up_bursts);
+    for (int id = 1; id <= n_nodes; id++)
+        fprintf(stderr, "%s\"%d\": [%d, %.1f]", id > 1 ? ", " : "", id, up_state_end[id], up_done_t[id]);
+    fprintf(stderr, "}}}\n");
     if (out != stdout) fclose(out);
     return 0;
 }

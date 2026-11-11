@@ -25,6 +25,10 @@ static int popcount16(uint16_t v)
 static uint16_t bit_of(uint8_t id) { return (uint16_t)(1u << (id - 1)); }
 
 static int valid_id(uint8_t id) { return id >= 1 && id <= TW_MAX_NODES; }
+static tw_rec_t *up_status_record(tw_node_t *n, uint32_t now);    /* 4.0 */
+static int up_need_count(const tw_node_t *n);
+static uint32_t rd32be(const uint8_t *p);
+static void up_report(tw_node_t *n, uint8_t s, const tw_rec_t *r);
 
 uint32_t tw_rand(tw_node_t *n)
 {
@@ -1127,6 +1131,8 @@ void tw_setting_heard(tw_node_t *n, const tw_rec_t *r)
         if (r->n > TW_MAX_NODES) {
             n->c_xend_q[s] = r->q[TW_MAX_NODES];
         }
+    } else if (kind == TW_KIND_UPDATE) {        /* 4.0: at the exit, while it sends */
+        up_report(n, s, r);
     } else if (kind == TW_KIND_CMD) {
         for (int i = 0; i + TW_CMD_HDR <= r->n;) {
             const uint8_t *e = r->q + i;
@@ -1385,6 +1391,11 @@ const tw_rec_t *tw_aux_record(tw_node_t *n, uint32_t now)
             return r;
         }
     }
+    if (n->up_state && sec != n->up_rep_sec && !tw_up_hush(n, now) &&
+        (n->up_id || n->up_state >= TW_UP_ST_FAIL)) {  /* 4.0: its part in an update, once a second */
+        n->up_rep_sec = sec;
+        return up_status_record(n, now);
+    }
     if (n->survey_len && (uint32_t)(now - n->survey_us) < TW_SURVEY_SEND_US &&
         (uint32_t)(now - n->survey_sent_us) >= TW_INFO_EVERY_US) {    /* 3.1: the survey, every 5 s */
         n->survey_sent_us = now;
@@ -1398,6 +1409,393 @@ const tw_rec_t *tw_aux_record(tw_node_t *n, uint32_t now)
         return queue_aux(n, now, TW_KIND_INFO, (const uint8_t *)n->info, (int)strlen(n->info));
     }
     return NULL;
+}
+
+/* ---------------- 4.0: updates over the air ---------------- */
+static int up_bit(const uint8_t *bits, unsigned i) { return (bits[i >> 3] >> (i & 7)) & 1; }
+static void up_set(uint8_t *bits, unsigned i) { bits[i >> 3] |= (uint8_t)(1u << (i & 7)); }
+static void up_clr(uint8_t *bits, unsigned i) { bits[i >> 3] &= (uint8_t)~(1u << (i & 7)); }
+static uint32_t rd32be(const uint8_t *p) { return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3]; }
+static void wr32be(uint8_t *p, uint32_t v) { p[0] = (uint8_t)(v >> 24); p[1] = (uint8_t)(v >> 16); p[2] = (uint8_t)(v >> 8); p[3] = (uint8_t)v; }
+
+static int up_chunk_len(const tw_node_t *n, unsigned idx)
+{
+    uint32_t off = (uint32_t)idx * TW_UP_CHUNK;
+    return off >= n->up_size ? 0 : (int)(n->up_size - off < TW_UP_CHUNK ? n->up_size - off : TW_UP_CHUNK);
+}
+
+static void up_drop(tw_node_t *n)
+{
+    if (n->up_buf) {
+        tw_up_free(n->up_buf);
+        n->up_buf = NULL;
+    }
+    n->up_state = TW_UP_ST_NONE;
+    n->up_tx_on = 0;
+    n->up_burst = 0;
+    n->up_have = 0;
+    n->up_man_ok = 0;
+}
+
+/* a new update to receive (by radio, or from the computer on the exit): memory, nothing yet */
+static int up_start(tw_node_t *n, uint32_t id, uint32_t size, uint8_t target, uint32_t now)
+{
+    up_drop(n);
+    n->up_id = id;
+    n->up_size = size;
+    n->up_total = (uint16_t)((size + TW_UP_CHUNK - 1) / TW_UP_CHUNK);
+    n->up_target = target;
+    memset(n->up_bits, 0, sizeof(n->up_bits));
+    n->up_last_us = now;
+    n->up_state_us = now;
+    n->up_buf = size && size <= TW_UP_MAX ? tw_up_alloc(size) : NULL;
+    n->up_state = n->up_buf ? TW_UP_ST_RECEIVING : TW_UP_ST_NOMEM;
+    if (!n->up_buf) {
+        n->up_failed_id = id;
+    }
+    return n->up_buf ? 0 : -1;
+}
+
+static void up_take(tw_node_t *n, unsigned idx, const uint8_t *data, int len, uint32_t now)
+{
+    if (idx == TW_UP_MANIFEST) {
+        if (len >= TW_UP_MAN_LEN && !n->up_man_ok) {
+            memcpy(n->up_man, data, TW_UP_MAN_LEN);
+            n->up_man_ok = 1;
+        }
+    } else if (idx < n->up_total && !up_bit(n->up_bits, idx)) {
+        int want = up_chunk_len(n, idx);
+        if (len >= want) {
+            memcpy(n->up_buf + (uint32_t)idx * TW_UP_CHUNK, data, (size_t)want);
+            up_set(n->up_bits, idx);
+            n->up_have++;
+        }
+    }
+    if (n->up_id && n->up_have == n->up_total && n->up_man_ok && n->up_state == TW_UP_ST_RECEIVING) {
+        n->up_state = TW_UP_ST_COMPLETE;        /* the firmware takes it from here */
+        n->up_state_us = now;
+    }
+}
+
+int tw_up_rx(tw_node_t *n, const uint8_t *d, int len, uint32_t now)
+{
+    if (len < TW_UP_HDR || d[0] != TW_MAGIC0 || d[1] != TW_UP_MAGIC1) {
+        return 0;
+    }
+    if (d[2] != TW_VERSION || d[3] != n->group || d[4] == n->id || n->up_tx_on) {
+        return 1;                               /* another group's (or our own echo): nothing to do */
+    }
+    n->up_hush_on = 1;                          /* the group's air is the update's for now */
+    n->up_hush_until = now + TW_UP_HUSH_US;
+    uint8_t target = d[5];
+    if (target && target != n->id) {
+        return 1;
+    }
+    uint32_t id = rd32be(d + 6), size = (uint32_t)d[10] | (uint32_t)d[11] << 8 | (uint32_t)d[12] << 16;
+    unsigned idx = (unsigned)d[13] | (unsigned)d[14] << 8;
+    if (id && id == n->up_done_id) {            /* we run it already (restarted into it) */
+        if (n->up_state == TW_UP_ST_NONE) {
+            n->up_id = id;
+            n->up_size = size;
+            n->up_total = n->up_have = (uint16_t)((size + TW_UP_CHUNK - 1) / TW_UP_CHUNK);
+            n->up_man_ok = 1;
+            memset(n->up_bits, 0xff, sizeof(n->up_bits));
+            n->up_state = TW_UP_ST_READY;
+            n->up_state_us = now;
+        }
+        return 1;
+    }
+    if (id != n->up_id || n->up_state == TW_UP_ST_NONE) {
+        if (n->up_state == TW_UP_ST_COMPLETE || n->up_state == TW_UP_ST_INSTALLING ||
+            n->up_state == TW_UP_ST_READY || n->up_state == TW_UP_ST_STAGED || id == n->up_failed_id) {
+            return 1;                           /* busy with one, or this one failed here already */
+        }
+        up_start(n, id, size, target, now);
+    }
+    if (n->up_state != TW_UP_ST_RECEIVING || size != n->up_size) {
+        return 1;
+    }
+    n->up_last_us = now;
+    up_take(n, idx, d + TW_UP_HDR, len - TW_UP_HDR, now);
+    return 1;
+}
+
+int tw_up_hush(const tw_node_t *n, uint32_t now)
+{
+    return n->up_burst || (n->up_hush_on && (int32_t)(n->up_hush_until - now) > 0);
+}
+
+int tw_up_begin(tw_node_t *n, uint32_t size)
+{
+    if (n->up_tx_on || n->up_state == TW_UP_ST_COMPLETE || n->up_state == TW_UP_ST_INSTALLING ||
+        n->up_state == TW_UP_ST_READY || !size || size > TW_UP_MAX) {
+        return -1;
+    }
+    n->up_failed_id = 0;
+    return up_start(n, 0, size, 0, n->up_last_us);
+}
+
+int tw_up_chunk(tw_node_t *n, uint16_t idx, const uint8_t *data, int len)
+{
+    if (n->up_state != TW_UP_ST_RECEIVING || n->up_id || idx >= n->up_total || len != up_chunk_len(n, idx)) {
+        return -1;
+    }
+    up_take(n, idx, data, len, n->up_last_us);
+    return 0;
+}
+
+int tw_up_manifest(tw_node_t *n, const uint8_t *man)
+{
+    if (n->up_state != TW_UP_ST_RECEIVING || n->up_id) {
+        return -1;
+    }
+    memcpy(n->up_man, man, TW_UP_MAN_LEN);
+    n->up_man_ok = 1;
+    n->up_id = rd32be(man);
+    return n->up_have == n->up_total;
+}
+
+int tw_up_send(tw_node_t *n, uint32_t now, uint8_t target)
+{
+    if (n->up_state != TW_UP_ST_STAGED || (target && !valid_id(target))) {
+        return -1;
+    }
+    n->up_target = target;
+    n->up_self = !target || target == n->id;
+    n->up_start_us = now;
+    n->up_state_us = now;
+    if (target == n->id) {                      /* only this board: no radio */
+        n->up_state = TW_UP_ST_COMPLETE;
+        return 0;
+    }
+    memset(n->up_need, 0, sizeof(n->up_need));
+    for (unsigned i = 0; i < n->up_total; i++) {
+        up_set(n->up_need, i);
+    }
+    memset(n->up_rep, 0, sizeof(n->up_rep));
+    memset(n->up_rep_have, 0, sizeof(n->up_rep_have));
+    n->up_cursor = 0;
+    n->up_burst = 0;
+    n->up_first_pass = 1;
+    n->up_next_us = now;
+    n->up_frames = n->up_bursts = 0;
+    n->up_tx_on = 1;
+    n->up_state = TW_UP_ST_SENDING;
+    return 0;
+}
+
+void tw_up_cancel(tw_node_t *n)
+{
+    up_drop(n);
+}
+
+static int up_need_count(const tw_node_t *n)
+{
+    int c = 0;
+    for (unsigned i = 0; n->up_tx_on && i < n->up_total; i++) {
+        c += up_bit(n->up_need, i);
+    }
+    return c;
+}
+
+static int up_need_next(const tw_node_t *n, unsigned from)
+{
+    for (unsigned i = from; i < n->up_total; i++) {
+        if (up_bit(n->up_need, i)) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+static int up_build(const tw_node_t *n, unsigned idx, uint8_t *b, int max)
+{
+    int dl = idx == TW_UP_MANIFEST ? TW_UP_MAN_LEN : up_chunk_len(n, idx);
+    if (TW_UP_HDR + dl > max) {
+        return 0;
+    }
+    b[0] = TW_MAGIC0;
+    b[1] = TW_UP_MAGIC1;
+    b[2] = TW_VERSION;
+    b[3] = n->group;
+    b[4] = n->id;
+    b[5] = n->up_target;
+    wr32be(b + 6, n->up_id);
+    b[10] = (uint8_t)n->up_size;
+    b[11] = (uint8_t)(n->up_size >> 8);
+    b[12] = (uint8_t)(n->up_size >> 16);
+    b[13] = (uint8_t)idx;
+    b[14] = (uint8_t)(idx >> 8);
+    b[15] = 0;
+    memcpy(b + TW_UP_HDR, idx == TW_UP_MANIFEST ? n->up_man : n->up_buf + (uint32_t)idx * TW_UP_CHUNK, (size_t)dl);
+    return TW_UP_HDR + dl;
+}
+
+int tw_up_frame(tw_node_t *n, uint32_t now, uint8_t *buf, int max, uint32_t *next)
+{
+    if (!n->up_tx_on) {
+        *next = now + 1000000u;
+        return 0;
+    }
+    if ((int32_t)(now - n->up_next_us) < 0) {
+        *next = n->up_next_us;
+        return 0;
+    }
+    if (!n->up_burst) {
+        if (up_need_next(n, 0) < 0) {           /* nothing lacking that we know of: wait for reports */
+            n->up_next_us = now + 200000u;
+            *next = n->up_next_us;
+            return 0;
+        }
+        n->up_burst = 1;                        /* a burst: the manifest first, then what is lacking */
+        n->up_burst_end = now + TW_UP_BURST_US;
+        n->up_cursor = 0;
+        n->up_bursts++;
+        n->up_frames++;
+        n->up_next_us = now + TW_UP_PACE_US;
+        *next = n->up_next_us;
+        return up_build(n, TW_UP_MANIFEST, buf, max);
+    }
+    int idx = up_need_next(n, n->up_cursor);
+    if (idx < 0 || (int32_t)(now - n->up_burst_end) >= 0) {
+        n->up_burst = 0;                        /* the burst ends: the network's turn */
+        if (idx < 0 && n->up_first_pass && up_need_next(n, 0) < 0) {
+            n->up_first_pass = 0;
+            n->up_pass_us = now;
+        }
+        n->up_next_us = now + TW_UP_GAP_US;
+        *next = n->up_next_us;
+        return 0;
+    }
+    up_clr(n->up_need, (unsigned)idx);
+    n->up_cursor = (uint16_t)(idx + 1);
+    n->up_frames++;
+    n->up_next_us = now + TW_UP_PACE_US;
+    *next = n->up_next_us;
+    return up_build(n, (unsigned)idx, buf, max);
+}
+
+/* a board's report (TW_KIND_UPDATE), at the exit while it sends: what it lacks is sent again */
+static void up_report(tw_node_t *n, uint8_t s, const tw_rec_t *r)
+{
+    if (!n->up_tx_on || r->n < 10 || rd32be(r->q) != n->up_id || (n->up_target && s != n->up_target)) {
+        return;
+    }
+    n->up_rep[s] = r->q[4];
+    n->up_rep_have[s] = (uint16_t)(r->q[5] | r->q[6] << 8);
+    n->up_rep_us[s] = n->up_last_us;
+    if (r->q[4] != TW_UP_ST_RECEIVING) {
+        return;
+    }
+    for (unsigned i = 0; i < n->up_total; i++) {
+        unsigned byte = 10 + (i >> 3);
+        if (byte >= r->n || !((r->q[byte] >> (i & 7)) & 1)) {
+            up_set(n->up_need, i);
+        }
+    }
+}
+
+void tw_up_tick(tw_node_t *n, uint32_t now)
+{
+    if (n->up_hush_on && (int32_t)(n->up_hush_until - now) <= 0) {
+        n->up_hush_on = 0;
+    }
+    if (n->up_state == TW_UP_ST_RECEIVING && n->up_id && !n->up_tx_on &&
+        (uint32_t)(now - n->up_last_us) > TW_UP_IDLE_US) {
+        up_drop(n);                             /* the sender went quiet: dropped */
+    }
+    if ((n->up_state >= TW_UP_ST_FAIL || (n->up_state == TW_UP_ST_READY && !n->up_buf)) &&
+        (uint32_t)(now - n->up_state_us) > TW_UP_FAIL_SEND_US) {
+        up_drop(n);                             /* said long enough (up_failed_id, up_done_id keep it) */
+    }
+    if (!n->up_tx_on) {
+        return;
+    }
+    n->up_last_us = now;                        /* (the exit's clock for the reports' times) */
+    int done = !n->up_first_pass;
+    for (int b = 1; b <= TW_MAX_NODES; b++) {
+        if (b == n->id || (n->up_target && b != n->up_target)) {
+            continue;
+        }
+        uint8_t st = n->up_rep[b];
+        int active = n->heard[b] && (uint32_t)(now - n->heard_us[b]) < TW_ACTIVE_US;
+        if ((st == TW_UP_ST_RECEIVING || st == TW_UP_ST_COMPLETE || st == TW_UP_ST_INSTALLING) &&
+            (uint32_t)(now - n->up_rep_us[b]) > TW_UP_STALE_US) {
+            if (active) {                       /* restarted: everything again */
+                st = n->up_rep[b] = TW_UP_ST_NONE;
+                n->up_rep_us[b] = now;          /* (its wait starts again) */
+                for (unsigned i = 0; i < n->up_total; i++) {
+                    up_set(n->up_need, i);
+                }
+            } else {
+                st = n->up_rep[b] = TW_UP_ST_SILENT;    /* gone (off, out of reach) */
+            }
+        }
+        if (!done) {
+            continue;
+        }
+        if (st == TW_UP_ST_NONE) {
+            uint32_t since = now - n->up_pass_us;       /* waiting for its first report since */
+            if (n->up_rep_us[b] && (uint32_t)(now - n->up_rep_us[b]) < since) {
+                since = now - n->up_rep_us[b];
+            }
+            if (n->up_target) {
+                done = since > TW_UP_WAIT_US;           /* the one asked for: off */
+                if (done) {
+                    n->up_rep[b] = TW_UP_ST_SILENT;
+                }
+            } else if (active) {
+                if (since > TW_UP_WAIT_US) {
+                    n->up_rep[b] = TW_UP_ST_SILENT;     /* active, but takes no part */
+                } else {
+                    done = 0;
+                }
+            }
+        } else if (st != TW_UP_ST_READY && st < TW_UP_ST_FAIL) {
+            done = 0;
+        }
+    }
+    if (done || (uint32_t)(now - n->up_start_us) > TW_UP_GIVE_UP_US) {
+        n->up_tx_on = 0;
+        n->up_burst = 0;
+        if (n->up_self) {
+            n->up_state = TW_UP_ST_COMPLETE;    /* its own turn: the firmware checks and writes it */
+        } else {
+            up_drop(n);
+        }
+        n->up_state_us = now;
+    }
+}
+
+void tw_up_set_state(tw_node_t *n, uint8_t state, uint32_t now)
+{
+    n->up_state = state;
+    n->up_state_us = now;
+    if (state >= TW_UP_ST_FAIL) {
+        n->up_failed_id = n->up_id;
+        if (n->up_buf) {
+            tw_up_free(n->up_buf);
+            n->up_buf = NULL;
+        }
+    }
+}
+
+static tw_rec_t *up_status_record(tw_node_t *n, uint32_t now)
+{
+    uint8_t q[10 + TW_UP_BITS];
+    int nb = (n->up_total + 7) / 8;
+    if (10 + nb > TW_MAX_AMPS) {
+        nb = TW_MAX_AMPS - 10;
+    }
+    wr32be(q, n->up_id);
+    q[4] = n->up_state;
+    q[5] = (uint8_t)n->up_have;
+    q[6] = (uint8_t)(n->up_have >> 8);
+    q[7] = (uint8_t)n->up_total;
+    q[8] = (uint8_t)(n->up_total >> 8);
+    q[9] = n->up_man_ok;
+    memcpy(q + 10, n->up_bits, (size_t)nb);
+    return queue_aux(n, now, TW_KIND_UPDATE, q, 10 + nb);
 }
 
 int tw_frame_ours(tw_node_t *n, const tw_hdr_t *h)
@@ -1598,6 +1996,16 @@ int tw_format_record(const tw_rec_t *r, char *out, int max)
         }
         return k;
     }
+    if ((r->kind & TW_KIND_MASK) == TW_KIND_UPDATE) {
+        /* 4.0: TWP,board,boot,record number,the update's id (hex),its state (TW_UP_ST_*),chunks it has,
+           of how many,1 if it has the manifest */
+        if (r->n < 10) {
+            return 0;
+        }
+        return snprintf(out, (size_t)max, "TWP,%u,%u,%lu,%08lx,%u,%u,%u,%u\n", r->rx, r->boot,
+                        (unsigned long)r->recseq, (unsigned long)rd32be(r->q), r->q[4],
+                        (unsigned)(r->q[5] | r->q[6] << 8), (unsigned)(r->q[7] | r->q[8] << 8), r->q[9]);
+    }
     if ((r->kind & TW_KIND_MASK) == TW_KIND_SURVEY) {
         /* 3.1: TWU,board,boot,record number,generation,then per channel
            channel:busy %:foreign frames:loudest RSSI:mean RSSI:noise floor (the last three empty
@@ -1701,8 +2109,9 @@ int tw_format_status(const tw_node_t *n, uint32_t now, char *out, int max)
        others, switches and scans since start */
     /* 3.3, after those: its group, frames of other groups heard, and the last such group; 3.4: its
        detection threshold (x10) and the detections begun since start; 3.5: its steadier-than-quiet
-       threshold (x10, 0: off), the marks begun, and those that became the new quiet */
-    return snprintf(out, (size_t)max, "TWS,%u,%u,%u,%u,%04x,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%u,%d,%u,%u,%u,%u,%lu,%lu,%u,%lu,%lu,%u,%u,%u,%u,%u,%u,%lu,%u,%u,%lu,%u,%lu,%lu\n",
+       threshold (x10, 0: off), the marks begun, and those that became the new quiet; 4.0: its update's
+       state, 1 while sending one, update frames and bursts sent, chunks still lacking somewhere */
+    return snprintf(out, (size_t)max, "TWS,%u,%u,%u,%u,%04x,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%u,%d,%u,%u,%u,%u,%lu,%lu,%u,%lu,%lu,%u,%u,%u,%u,%u,%u,%lu,%u,%u,%lu,%u,%lu,%lu,%u,%u,%lu,%lu,%d\n",
                     n->id, TW_VERSION, n->leader, (unsigned)((n->synced ? TW_F_SYNCED : 0) |
                     (n->is_exit ? TW_F_EXIT : 0) | (n->leader == n->id ? TW_F_LEADER : 0)),
                     tw_active(n, now), (unsigned long)(p / 1000u), (unsigned long)(fits ? start : 0),
@@ -1714,5 +2123,6 @@ int tw_format_status(const tw_node_t *n, uint32_t now, char *out, int max)
                     (unsigned long)n->n_extra_skipped, n->chan_home, n->set_channel, n->scan_on, n->chan_switches,
                     n->chan_scans, n->group, (unsigned long)n->n_other_group, n->other_group_last,
                     tw_detect_level(n), (unsigned long)n->det_count, tw_detect_low_level(n),
-                    (unsigned long)n->low_count, (unsigned long)n->low_accepted);
+                    (unsigned long)n->low_count, (unsigned long)n->low_accepted, n->up_state, n->up_tx_on,
+                    (unsigned long)n->up_frames, (unsigned long)n->up_bursts, up_need_count(n));
 }

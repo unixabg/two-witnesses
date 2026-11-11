@@ -1,0 +1,11 @@
+# tw_node 4.0: two program slots for updates over the air (tw_setid.py PORT update).
+# The settings (nvs) stay where they were (0xb000, 24 KB), so a board moved to this layout by
+# flash_board.sh keeps its number, group and settings. otadata says which slot starts; it sits
+# where phy_init was (unused: the radio's calibration is in nvs). Each slot is 1.5 MB (the
+# program is about 0.8 MB); the 4 MB the build assumes leaves room (the N16R8 has 16 MB).
+# Name,     Type, SubType, Offset,   Size
+nvs,        data, nvs,     0xb000,   0x6000
+otadata,    data, ota,     0x11000,  0x2000
+phy_init,   data, phy,     0x13000,  0x1000
+ota_0,      app,  ota_0,   0x20000,  0x180000
+ota_1,      app,  ota_1,   0x1a0000, 0x180000

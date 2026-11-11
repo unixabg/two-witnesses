@@ -70,6 +70,12 @@
 #include "freertos/queue.h"
 #include "driver/usb_serial_jtag.h"
 #include "esp_csi_gain_ctrl.h"
+#include "esp_ota_ops.h"                /* 4.0: updates over the air */
+#include "esp_app_format.h"
+#include "esp_partition.h"
+#include "mbedtls/sha256.h"
+#include "mbedtls/ecdsa.h"
+#include "mbedtls/base64.h"
 
 #include "tw_proto.h"
 
@@ -391,7 +397,8 @@ static void wifi_init(void)
 
 static void espnow_recv_cb(const esp_now_recv_info_t *info, const uint8_t *data, int len)
 {
-    if (len < TW_HDR_LEN || len > TW_MAX_PAYLOAD || data[0] != TW_MAGIC0 || data[1] != TW_MAGIC1) {
+    if (len < TW_UP_HDR || len > TW_MAX_PAYLOAD || data[0] != TW_MAGIC0 ||
+        (data[1] != TW_MAGIC1 && data[1] != TW_UP_MAGIC1)) {      /* 4.0: and update frames */
         return;
     }
     static ev_t ev;                     /* the Wi-Fi task calls us one at a time */
@@ -435,7 +442,7 @@ static void espnow_send_cb(const esp_now_send_info_t *info, esp_now_send_status_
                 }
             }
         }
-    } else if (s_cb_state == 2) {
+    } else if (s_cb_state == 2 || s_cb_state == 3) {    /* 3: an update frame (4.0) */
         s_cb_state = 0;
     }
     if (xQueueSendToFront(s_q, &ev, 0) != pdTRUE) {
@@ -572,8 +579,17 @@ static void extra_from_task(uint32_t now)
 
 /* ESP-NOW says a frame of ours has gone out. After the normal frame: the callback has sent the
    extra frame, or left it to us (not ready yet when it came, or refused), or found it too late */
+static uint8_t s_up_inflight;                  /* 4.0: an update frame of ours is on its way out */
+static uint32_t s_up_next, s_up_sent, s_up_err;
+
 static void sent(const ev_t *ev)
 {
+    if (ev->s.which == 3) {
+        s_up_inflight = 0;
+        s_up_sent++;
+        s_up_err += !ev->s.ok;
+        return;
+    }
     if (ev->s.which == 1 && s_tx_state == 1) {
         s_tx_state = 0;
         s_cb1_us = ev->local_us;
@@ -621,6 +637,9 @@ static void handle(ev_t *ev)
         return;
     }
     if (ev->kind == EV_FRAME) {
+        if (tw_up_rx(&s_node, ev->f.data, ev->f.len, ev->local_us)) {
+            return;                         /* 4.0: an update frame */
+        }
         tw_hdr_t h;
         if (tw_peek_header(ev->f.data, ev->f.len, &h) < 0) {
             s_node.n_bad_frames++;
@@ -1098,11 +1117,328 @@ static void led_flash_tick(uint32_t now)
     }
 }
 
+/* ---------------- 4.0: updates over the air ---------------- */
+/* the program travels in PSRAM (tw_proto.c asks for it); a board without PSRAM takes no update */
+void *tw_up_alloc(uint32_t size)
+{
+    return heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
+}
+
+void tw_up_free(void *p)
+{
+    heap_caps_free(p);
+}
+
+#define UPK_LEN 65                              /* the update key: a P-256 public key, uncompressed */
+static uint8_t s_upk[UPK_LEN], s_upk_ok;
+static uint8_t s_up_verify_pending;             /* running a new program not yet marked good */
+static esp_ota_handle_t s_ota;
+static const esp_partition_t *s_ota_part;
+static uint32_t s_ota_off, s_up_restart_at;
+
+static void upk_load(void)
+{
+    nvs_handle_t h;
+    size_t len = UPK_LEN;
+    s_upk_ok = 0;
+    if (nvs_open("tw", NVS_READONLY, &h) == ESP_OK) {
+        s_upk_ok = nvs_get_blob(h, "upk", s_upk, &len) == ESP_OK && len == UPK_LEN && s_upk[0] == 0x04;
+        nvs_close(h);
+    }
+}
+
+/* the key's fingerprint: the first 4 bytes of its SHA-256, as 8 hex digits ("none" without one) */
+static void upk_print(char *out, size_t max)
+{
+    if (!s_upk_ok) {
+        snprintf(out, max, "none");
+        return;
+    }
+    uint8_t d[32];
+    mbedtls_sha256(s_upk, UPK_LEN, d, 0);
+    snprintf(out, max, "%02x%02x%02x%02x", d[0], d[1], d[2], d[3]);
+}
+
+/* is this a P-256 point? (a key that cannot verify anything is refused when given) */
+static int upk_valid(const uint8_t *k)
+{
+    mbedtls_ecp_group grp;
+    mbedtls_ecp_point q;
+    mbedtls_ecp_group_init(&grp);
+    mbedtls_ecp_point_init(&q);
+    int ok = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP256R1) == 0 &&
+             mbedtls_ecp_point_read_binary(&grp, &q, k, UPK_LEN) == 0 && mbedtls_ecp_check_pubkey(&grp, &q) == 0;
+    mbedtls_ecp_point_free(&q);
+    mbedtls_ecp_group_free(&grp);
+    return ok;
+}
+
+/* the program in up_buf against its manifest and this board's key: 0 if good, else TW_UP_ST_* */
+static uint8_t up_verify(void)
+{
+    if (!s_upk_ok) {
+        return TW_UP_ST_NOKEY;
+    }
+    const uint8_t *b = s_node.up_buf, *man = s_node.up_man;
+    uint32_t size = s_node.up_size;
+    uint8_t d[32];
+    if (!b || mbedtls_sha256(b, size, d, 0) != 0 || memcmp(d, man, 32)) {
+        return TW_UP_ST_BADHASH;
+    }
+    mbedtls_ecp_group grp;
+    mbedtls_ecp_point q;
+    mbedtls_mpi r, sv;
+    mbedtls_ecp_group_init(&grp);
+    mbedtls_ecp_point_init(&q);
+    mbedtls_mpi_init(&r);
+    mbedtls_mpi_init(&sv);
+    int ok = mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP256R1) == 0 &&
+             mbedtls_ecp_point_read_binary(&grp, &q, s_upk, UPK_LEN) == 0 &&
+             mbedtls_mpi_read_binary(&r, man + 32, 32) == 0 && mbedtls_mpi_read_binary(&sv, man + 64, 32) == 0 &&
+             mbedtls_ecdsa_verify(&grp, d, 32, &q, &r, &sv) == 0;
+    mbedtls_mpi_free(&sv);
+    mbedtls_mpi_free(&r);
+    mbedtls_ecp_point_free(&q);
+    mbedtls_ecp_group_free(&grp);
+    if (!ok) {
+        return TW_UP_ST_BADSIG;
+    }
+    /* a program for this chip, and a tw_node */
+    const size_t at = sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t);
+    const esp_image_header_t *ih = (const esp_image_header_t *)b;
+    const esp_app_desc_t *ad = (const esp_app_desc_t *)(b + at);
+    if (size < at + sizeof(esp_app_desc_t) || ih->magic != ESP_IMAGE_HEADER_MAGIC || ih->chip_id != ESP_CHIP_ID_ESP32S3 ||
+        ad->magic_word != ESP_APP_DESC_MAGIC_WORD || strncmp(ad->project_name, "tw_node", sizeof(ad->project_name))) {
+        return TW_UP_ST_BADIMAGE;
+    }
+    return 0;
+}
+
+static void up_fail(uint8_t st, uint32_t now)
+{
+    static const char *why[] = {"no memory", "no update key", "bad fingerprint", "bad signature", "not a tw_node program",
+                                "flash write failed"};
+    ESP_LOGW(TAG, "update %08lx refused: %s", (unsigned long)s_node.up_id,
+             st >= TW_UP_ST_FAIL && st <= TW_UP_ST_WRITE ? why[st - TW_UP_ST_FAIL] : "?");
+    tw_up_set_state(&s_node, st, now);
+}
+
+/* one step of taking an update (the work loop, away from our slot): check it, then write it to the
+   other slot 4 KB at a time (each step stops both cores for tens of ms: flash), then restart */
+static void up_step(uint32_t now)
+{
+    if (s_node.up_state == TW_UP_ST_COMPLETE) {
+        uint8_t bad = up_verify();
+        if (bad) {
+            up_fail(bad, now);
+            return;
+        }
+        s_ota_part = esp_ota_get_next_update_partition(NULL);
+        if (!s_ota_part || s_node.up_size > s_ota_part->size ||
+            esp_ota_begin(s_ota_part, OTA_WITH_SEQUENTIAL_WRITES, &s_ota) != ESP_OK) {
+            up_fail(TW_UP_ST_WRITE, now);
+            return;
+        }
+        s_ota_off = 0;
+        tw_up_set_state(&s_node, TW_UP_ST_INSTALLING, now);
+        ESP_LOGW(TAG, "update %08lx: good; writing it to %s", (unsigned long)s_node.up_id, s_ota_part->label);
+    } else if (s_node.up_state == TW_UP_ST_INSTALLING) {
+        uint32_t n = s_node.up_size - s_ota_off > 4096 ? 4096 : s_node.up_size - s_ota_off;
+        if (esp_ota_write(s_ota, s_node.up_buf + s_ota_off, n) != ESP_OK) {
+            esp_ota_abort(s_ota);
+            up_fail(TW_UP_ST_WRITE, now);
+            return;
+        }
+        s_ota_off += n;
+        if (s_ota_off < s_node.up_size) {
+            return;
+        }
+        if (esp_ota_end(s_ota) != ESP_OK || esp_ota_set_boot_partition(s_ota_part) != ESP_OK) {
+            up_fail(TW_UP_ST_WRITE, now);
+            return;
+        }
+        nvs_handle_t h;                         /* which update it will run, and where (see up_load) */
+        if (nvs_open("tw", NVS_READWRITE, &h) == ESP_OK) {
+            nvs_set_u32(h, "updone", s_node.up_id);
+            nvs_set_u32(h, "updpart", s_ota_part->address);
+            nvs_commit(h);
+            nvs_close(h);
+        }
+        tw_up_set_state(&s_node, TW_UP_ST_READY, now);
+        s_up_restart_at = now + 3000000u;       /* time to say so */
+        ESP_LOGW(TAG, "update %08lx written: restarting into it", (unsigned long)s_node.up_id);
+    } else if (s_node.up_state == TW_UP_ST_READY && s_up_restart_at && (int32_t)(now - s_up_restart_at) >= 0) {
+        char msg[64];
+        int k = snprintf(msg, sizeof(msg), "TWUP restarting into %08lx\n", (unsigned long)s_node.up_id);
+        out(msg, k);
+        usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(200));
+        esp_restart();
+    }
+}
+
+/* at start: the update this board runs (so it says READY to it, not taking it again), and whether
+   this program still has to prove itself (the bootloader goes back to the old one otherwise) */
+static void up_load(void)
+{
+    upk_load();
+    const esp_partition_t *run = esp_ota_get_running_partition();
+    esp_ota_img_states_t st;
+    s_up_verify_pending = run && esp_ota_get_state_partition(run, &st) == ESP_OK && st == ESP_OTA_IMG_PENDING_VERIFY;
+    nvs_handle_t h;
+    uint32_t id = 0, part = 0;
+    if (nvs_open("tw", NVS_READONLY, &h) == ESP_OK) {
+        nvs_get_u32(h, "updone", &id);
+        nvs_get_u32(h, "updpart", &part);
+        nvs_close(h);
+    }
+    if (run && part == run->address) {
+        s_node.up_done_id = id;                 /* (after a rollback it runs another slot: not this one) */
+    }
+}
+
+/* once a second: a new program is kept once it has run a minute and hears its group (or a computer
+   reads it); after 10 minutes without, the old one comes back */
+static void up_prove(uint32_t now)
+{
+    if (!s_up_verify_pending) {
+        return;
+    }
+    uint32_t up_s = (uint32_t)(esp_timer_get_time() / 1000000);
+    uint16_t others = tw_active(&s_node, now) & (uint16_t)~(1u << (s_id - 1));
+    if (up_s >= 60 && (others || s_node.is_exit)) {
+        if (esp_ota_mark_app_valid_cancel_rollback() == ESP_OK) {
+            s_up_verify_pending = 0;
+            ESP_LOGW(TAG, "this program has proved itself: kept");
+        }
+    } else if (up_s >= 600) {
+        ESP_LOGW(TAG, "this program did not hear its group in 10 minutes: back to the one before");
+        esp_ota_mark_app_invalid_rollback_and_reboot();
+    }
+}
+
+static int hexbytes(const char *h, uint8_t *out, int n)
+{
+    for (int i = 0; i < n; i++) {
+        unsigned v;
+        if (sscanf(h + 2 * i, "%2x", &v) != 1) {
+            return -1;
+        }
+        out[i] = (uint8_t)v;
+    }
+    return h[2 * n] == 0 || h[2 * n] == ' ' ? 0 : -1;
+}
+
+/* the computer's update commands (cmd: one line). 1 if it was one */
+static int up_command(char *cmd, uint32_t now)
+{
+    char msg[160];
+    int k = 0;
+    if (!strcmp(cmd, "TWSET upkey") || !strncmp(cmd, "TWSET upkey ", 12)) {
+        const char *arg = cmd[11] ? cmd + 12 : "";
+        uint8_t key[UPK_LEN];
+        nvs_handle_t h;
+        if (!strcmp(arg, "none")) {
+            if (nvs_open("tw", NVS_READWRITE, &h) == ESP_OK) {
+                nvs_erase_key(h, "upk");
+                nvs_commit(h);
+                nvs_close(h);
+            }
+            s_upk_ok = 0;
+        } else if (*arg) {
+            if (hexbytes(arg, key, UPK_LEN) < 0 || key[0] != 0x04 || !upk_valid(key)) {
+                out_wait("TWERR upkey: 130 hex digits, a P-256 public key (04...)\n", 56);
+                return 1;
+            }
+            if (nvs_open("tw", NVS_READWRITE, &h) == ESP_OK) {
+                nvs_set_blob(h, "upk", key, UPK_LEN);
+                nvs_commit(h);
+                nvs_close(h);
+            }
+            upk_load();
+        }
+        char fp[12];
+        upk_print(fp, sizeof(fp));
+        k = snprintf(msg, sizeof(msg), "TWOK upkey %s\n", fp);
+    } else if (!strncmp(cmd, "TWUP ", 5)) {
+        unsigned a;
+        if (sscanf(cmd, "TWUP begin %u", &a) == 1) {
+            if (s_max_payload < TW_UP_HDR + TW_UP_CHUNK) {
+                k = snprintf(msg, sizeof(msg), "TWUP err frames too small (ESP-NOW v1)\n");
+            } else if (tw_up_begin(&s_node, a) < 0) {
+                k = snprintf(msg, sizeof(msg), "TWUP err %s\n", a > TW_UP_MAX ? "too big" :
+                             s_node.up_state == TW_UP_ST_NOMEM ? "no memory (PSRAM)" : "busy");
+            } else {
+                k = snprintf(msg, sizeof(msg), "TWUP ready %u %u\n", a, s_node.up_total);
+            }
+        } else if (sscanf(cmd, "TWUP d %u ", &a) == 1) {
+            static uint8_t chunk[TW_UP_CHUNK + 4];
+            size_t got = 0;
+            const char *b64 = strchr(cmd + 7, ' ');
+            if (b64 && mbedtls_base64_decode(chunk, sizeof(chunk), &got, (const unsigned char *)b64 + 1,
+                                             strlen(b64 + 1)) == 0 && a < 0xFFFF &&
+                tw_up_chunk(&s_node, (uint16_t)a, chunk, (int)got) == 0) {
+                k = snprintf(msg, sizeof(msg), "TWUP ok %u\n", a);
+            } else {
+                k = snprintf(msg, sizeof(msg), "TWUP err chunk %u\n", a);
+            }
+        } else if (!strncmp(cmd, "TWUP man ", 9)) {
+            uint8_t man[TW_UP_MAN_LEN];
+            if (hexbytes(cmd + 9, man, TW_UP_MAN_LEN) < 0 || tw_up_manifest(&s_node, man) < 0) {
+                k = snprintf(msg, sizeof(msg), "TWUP err manifest\n");
+            } else {
+                k = snprintf(msg, sizeof(msg), "TWUP ok man %08lx\n", (unsigned long)s_node.up_id);
+            }
+        } else if (!strcmp(cmd, "TWUP check")) {
+            if (s_node.up_state != TW_UP_ST_RECEIVING || !s_node.up_id || s_node.up_have != s_node.up_total) {
+                k = snprintf(msg, sizeof(msg), "TWUP err not all there (%u of %u chunks%s)\n", s_node.up_have,
+                             s_node.up_total, s_node.up_man_ok ? "" : ", no manifest");
+            } else {
+                uint8_t bad = up_verify();
+                static const char *why[] = {"no memory", "no update key on this board (TWSET upkey)",
+                                            "bad fingerprint", "bad signature (not this board's key)",
+                                            "not a tw_node program for this chip"};
+                if (bad) {
+                    k = snprintf(msg, sizeof(msg), "TWUP err %s\n", bad <= TW_UP_ST_BADIMAGE ? why[bad - TW_UP_ST_FAIL] : "?");
+                    tw_up_cancel(&s_node);
+                } else {
+                    tw_up_set_state(&s_node, TW_UP_ST_STAGED, now);
+                    const esp_app_desc_t *ad = (const esp_app_desc_t *)(s_node.up_buf + sizeof(esp_image_header_t) +
+                                                                        sizeof(esp_image_segment_header_t));
+                    k = snprintf(msg, sizeof(msg), "TWUP verified %08lx %.32s %.32s\n", (unsigned long)s_node.up_id,
+                                 ad->project_name, ad->version);
+                }
+            }
+        } else if (sscanf(cmd, "TWUP send %u", &a) == 1) {
+            if (a > TW_MAX_NODES || tw_up_send(&s_node, now, (uint8_t)a) < 0) {
+                k = snprintf(msg, sizeof(msg), "TWUP err nothing checked to send (TWUP check first)\n");
+            } else {
+                s_up_next = now;
+                k = a ? snprintf(msg, sizeof(msg), "TWUP sending %08lx to board %u\n", (unsigned long)s_node.up_id, a)
+                      : snprintf(msg, sizeof(msg), "TWUP sending %08lx to every board of group %u\n",
+                                 (unsigned long)s_node.up_id, s_node.group);
+            }
+        } else if (!strcmp(cmd, "TWUP cancel")) {
+            if (s_node.up_state == TW_UP_ST_INSTALLING || s_node.up_state == TW_UP_ST_READY) {
+                k = snprintf(msg, sizeof(msg), "TWUP err writing it already\n");
+            } else {
+                tw_up_cancel(&s_node);
+                k = snprintf(msg, sizeof(msg), "TWUP cancelled\n");
+            }
+        } else {
+            k = snprintf(msg, sizeof(msg), "TWUP err begin SIZE, d N BASE64, man HEX, check, send BOARD|0, cancel\n");
+        }
+    } else {
+        return 0;
+    }
+    out_wait(msg, k);
+    return 1;
+}
+
 static void hello(void);
 
 static void poll_commands(void)
 {
-    static char cmd[64];
+    static char cmd[2048];              /* 4.0: an update chunk's line is about 1.7 KB */
     static int n = 0;
     uint8_t ch;
     while (usb_serial_jtag_read_bytes(&ch, 1, 0) == 1) {
@@ -1110,7 +1446,9 @@ static void poll_commands(void)
             cmd[n] = 0;
             int id;
             float dbm;
-            if (n && (!strcmp(cmd, "TWSET relay on") || !strcmp(cmd, "TWSET relay off"))) {
+            if (n && up_command(cmd, (uint32_t)esp_timer_get_time())) {
+                /* 4.0: TWSET upkey, TWUP ... (answered there) */
+            } else if (n && (!strcmp(cmd, "TWSET relay on") || !strcmp(cmd, "TWSET relay off"))) {
                 tw_set_relay(&s_node, !strcmp(cmd, "TWSET relay on"));
                 apply_settings();
                 char msg[64];
@@ -1347,13 +1685,17 @@ static void hello(void)
 {
     uint8_t mac[6];
     esp_efuse_mac_get_default(mac);
-    char line[180];
+    char line[220];
     /* ...,max payload, 2.2: PSRAM found (bytes; 0 = none), 2.4: the LED's pin (0 = none), brightness,
-       3.3: its group */
-    int k = snprintf(line, sizeof(line), "TWH,%u,%02x:%02x:%02x:%02x:%02x:%02x,%s,%s %s,%d,%lu,%u,%u,%u\n", s_id,
-                     mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], FW_VERSION, __DATE__, __TIME__,
+       3.3: its group, 4.0: the program slot it runs, 1 while that program has still to prove itself,
+       its update key's fingerprint (none) */
+    const esp_partition_t *run = esp_ota_get_running_partition();
+    char fp[12];
+    upk_print(fp, sizeof(fp));
+    int k = snprintf(line, sizeof(line), "TWH,%u,%02x:%02x:%02x:%02x:%02x:%02x,%s,%s %s,%d,%lu,%u,%u,%u,%s,%u,%s\n",
+                     s_id, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], FW_VERSION, __DATE__, __TIME__,
                      s_max_payload, (unsigned long)(esp_psram_is_initialized() ? esp_psram_get_size() : 0),
-                     s_led_pin, s_led_bright, s_node.group);
+                     s_led_pin, s_led_bright, s_node.group, run ? run->label : "?", s_up_verify_pending, fp);
     out(line, k);
 }
 
@@ -1372,6 +1714,24 @@ static void work_task(void *arg)
         now = (uint32_t)esp_timer_get_time();
         int quiet;                          /* 3.2: where the radio should be; silent while looking */
         uint8_t want = tw_chan_step(&s_node, now, &quiet);
+        quiet |= tw_up_hush(&s_node, now);  /* 4.0: update frames on the air (or ours): silent */
+        if (s_node.up_tx_on && !s_up_inflight && !s_cb_state && !s_tx_state &&
+            (int32_t)(now - s_up_next) >= 0) {
+            /* 4.0: the exit's next update frame, when due */
+            static uint8_t uframe[TW_MAX_PAYLOAD];
+            uint32_t nx;
+            int ul = tw_up_frame(&s_node, now, uframe, s_max_payload, &nx);
+            s_up_next = nx;
+            if (ul > 0) {
+                s_cb_state = 3;
+                if (esp_now_send(BCAST, uframe, (size_t)ul) == ESP_OK) {
+                    s_up_inflight = 1;
+                } else {
+                    s_cb_state = 0;
+                    s_up_err++;
+                }
+            }
+        }
         led_flash_tick(now);                /* 3.4 */
         if (want != s_radio_ch) {
             radio_channel(want);
@@ -1433,10 +1793,20 @@ static void work_task(void *arg)
             esp_rom_delay_us((uint32_t)(built ? wait : wait - (int32_t)BUILD_AHEAD_US));
             continue;
         }
-        TickType_t ticks = pdMS_TO_TICKS((wait - 1000) / 1000);
+        int stepping = s_node.up_state == TW_UP_ST_COMPLETE || s_node.up_state == TW_UP_ST_INSTALLING ||
+                       s_node.up_state == TW_UP_ST_READY;
+        if (stepping) {
+            up_step(now);                   /* 4.0: check, write, restart: a step at a time */
+        }
+        int32_t sleep = stepping ? 0 : wait - 1000;
+        if (s_node.up_tx_on && (int32_t)(s_up_next - now) < sleep) {
+            sleep = (int32_t)(s_up_next - now);     /* 4.0: the next update frame */
+        }
+        TickType_t ticks = pdMS_TO_TICKS(sleep > 0 ? sleep / 1000 : 0);
         if (xQueueReceive(s_q, &ev, ticks) == pdTRUE) {
             handle(&ev);
         }
+        poll_commands();                    /* 4.0: often (an update's chunks come one per answer) */
         now = (uint32_t)esp_timer_get_time();
         if ((int32_t)(now - next_status) >= 0) {
             next_status += 1000000u;
@@ -1459,6 +1829,8 @@ static void work_task(void *arg)
                     out(line, tw_format_record(a, line, sizeof(line)));
                 }
             }
+            tw_up_tick(&s_node, now);           /* 4.0 */
+            up_prove(now);
             led_apply();                        /* 2.5: settings that came by record */
             led_second();                       /* 2.4: the LED, from the scores just closed */
             poll_commands();
@@ -1529,13 +1901,14 @@ void app_main(void)
         ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
-    usb_serial_jtag_driver_config_t usb_cfg = {.tx_buffer_size = 32768, .rx_buffer_size = 256};
+    usb_serial_jtag_driver_config_t usb_cfg = {.tx_buffer_size = 32768, .rx_buffer_size = 4096};
     ESP_ERROR_CHECK(usb_serial_jtag_driver_install(&usb_cfg));
     s_id = board_id();
     tw_init(&s_node, s_id, 0, esp_random());
     s_node.group = board_group();       /* 3.3: before the radio (its address carries it) */
     s_node.access_us = X_ACCESS_US;
     tw_set_info(&s_node, FW_VERSION "|" __DATE__ " " __TIME__);     /* sent to the computer every 5 s */
+    up_load();                          /* 4.0: its update key, the update it runs, still to prove? */
     load_settings();
     s_q = xQueueCreate(48, sizeof(ev_t));
     wifi_init();

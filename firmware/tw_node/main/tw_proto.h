@@ -130,6 +130,12 @@
 #define TW_SURVEY_DELAY_US  5000000u    /* from taking the action to leaving: time for it to reach all */
 #define TW_SURVEY_DWELL_MS  1000        /* listening on each channel */
 #define TW_SURVEY_SEND_US   60000000u   /* the result is sent every 5 s for this long after */
+#define TW_KIND_UPDATE      7           /* 4.0: not a measurement: this board's part in an update over
+                                           the air, once a second while it has one: q[0..3] the
+                                           update's id, q[4] its state (TW_UP_ST_*), q[5..6] chunks it
+                                           has, q[7..8] of how many, q[9] 1 if it has the manifest, then
+                                           a bit per chunk it has (chunk i: byte 10 + i/8, bit i%8).
+                                           Printed as TWP */
 #define TW_KIND_CMD         5           /* 2.5.1+: settings and commands for boards (docs/PROTOCOL-3.md):
                                            entries of TW_CMD_HDR bytes and a value: target (0 = all),
                                            key, flags (TW_CF_REPORT), generation, seconds left to pass
@@ -266,6 +272,55 @@ typedef struct {
     uint8_t  boot, used;
 } tw_seen_t;
 
+/* 4.0: updates over the air (docs/PROTOCOL-3.md, "Updates over the air"). The computer gives a
+   signed program to the board on its cable (the exit), which sends it to its group in chunks, in
+   short bursts: its own frames, marked 'T','U' (older firmware and other groups drop them). While
+   they come, every board of the group keeps quiet (TW_UP_HUSH_US after the last one). Between
+   bursts the network runs as usual, and each board taking part says which chunks it has
+   (TW_KIND_UPDATE); the next bursts send what any of them still lacks. A board with every chunk
+   and the manifest (the program's SHA-256 and the signature over it) leaves the rest to its
+   firmware: check, write to the other program slot, restart. The update's id is the first 4
+   bytes of the SHA-256. The frame: 'T','U', TW_VERSION, group, sender, target (0: every board of
+   the group), id (4 bytes), size (3 bytes), chunk number (2 bytes; TW_UP_MANIFEST: the
+   manifest), 0; then the chunk (TW_UP_CHUNK bytes, the last one shorter) or the manifest */
+#define TW_UP_MAGIC1        'U'
+#define TW_UP_HDR           16
+#define TW_UP_CHUNK         1280
+#define TW_UP_MAX           0x180000u   /* a program slot (partitions.csv) */
+#define TW_UP_CHUNKS_MAX    ((TW_UP_MAX + TW_UP_CHUNK - 1) / TW_UP_CHUNK)
+#define TW_UP_BITS          ((TW_UP_CHUNKS_MAX + 7) / 8)
+#define TW_UP_MANIFEST      0xFFFFu
+#define TW_UP_MAN_LEN       96          /* SHA-256 (32), then the signature: ECDSA P-256, r and s (64) */
+#define TW_UP_PACE_US       2200u       /* between the exit's update frames in a burst */
+#define TW_UP_BURST_US      600000u     /* a burst: at most this long (under TW_ACTIVE_US: no board is
+                                           taken for gone) */
+#define TW_UP_GAP_US        1600000u    /* between bursts: the network as usual, the reports come in */
+#define TW_UP_HUSH_US       60000u      /* a board sends nothing this long after an update frame */
+#define TW_UP_IDLE_US       120000000u  /* a board drops an update with no frame of it for this long */
+#define TW_UP_GIVE_UP_US    300000000u  /* the exit stops sending after this long */
+#define TW_UP_WAIT_US       15000000u   /* after the first pass: an active board not reporting by then
+                                           is not taking part (older firmware, no memory) */
+#define TW_UP_FAIL_SEND_US  60000000u   /* a failed board says so this long, then drops it */
+#define TW_UP_STALE_US      6000000u    /* a board taking part that has not reported for this long: if
+                                           still heard, it restarted (it gets every chunk again); if
+                                           not, it is gone */
+/* states (TWP; the exit's view in up_rep[]) */
+#define TW_UP_ST_NONE       0
+#define TW_UP_ST_RECEIVING  1
+#define TW_UP_ST_COMPLETE   2           /* every chunk: the firmware checks it */
+#define TW_UP_ST_INSTALLING 3           /* checked: being written to the other slot */
+#define TW_UP_ST_READY      4           /* written: restarting into it */
+#define TW_UP_ST_SENDING    5           /* the exit, sending */
+#define TW_UP_ST_STAGED     6           /* the exit: given by the computer, checked, not sent yet */
+#define TW_UP_ST_FAIL       10          /* 10 and up: failed, and why */
+#define TW_UP_ST_NOMEM      10          /* no PSRAM, or too big */
+#define TW_UP_ST_NOKEY      11          /* no update key set over its cable: takes no update */
+#define TW_UP_ST_BADHASH    12          /* the chunks do not make the program the manifest names */
+#define TW_UP_ST_BADSIG     13          /* not signed with the key it was given */
+#define TW_UP_ST_BADIMAGE   14          /* not a tw_node program for this chip */
+#define TW_UP_ST_WRITE      15          /* writing it to flash failed */
+#define TW_UP_ST_SILENT     16          /* the exit's view only: active, never reported */
+
 /* the movement score for one board heard (tw_node 2.2): per record the amplitudes in dB, in
    bands of 4 live bins, the record's own level out; per second each band's spread, against the
    band's quiet level (its running median of those spreads); averaged over the bands */
@@ -395,6 +450,26 @@ typedef struct {
     uint8_t  survey[2 + TW_SURVEY_N * TW_SURVEY_ENTRY];
     uint8_t  survey_len, survey_gen;
     uint32_t survey_us, survey_sent_us;
+    /* 4.0: an update over the air. Its program (up_buf, TW_UP_MAX at most: the firmware's PSRAM, by
+       tw_up_alloc), the chunks we have (a bit each), the manifest */
+    uint8_t  up_state, up_target, up_man_ok, up_hush_on;
+    uint32_t up_id, up_size, up_last_us, up_hush_until, up_rep_sec, up_state_us, up_failed_id;
+    uint32_t up_done_id;                    /* the firmware's word: the update this board now runs (it
+                                               says READY to it, and takes it no more) */
+    uint16_t up_total, up_have;
+    uint8_t *up_buf;
+    uint8_t  up_bits[TW_UP_BITS];
+    uint8_t  up_man[TW_UP_MAN_LEN];
+    /* the exit, sending: chunks still to send (any board lacks them), the cursor, the burst, each
+       board's last report (TW_UP_ST_*), counts for TWS */
+    uint8_t  up_tx_on, up_burst, up_first_pass, up_self;
+    uint8_t  up_need[TW_UP_BITS];
+    uint16_t up_cursor;
+    uint32_t up_start_us, up_burst_end, up_next_us, up_pass_us;
+    uint8_t  up_rep[TW_MAX_NODES + 1];
+    uint16_t up_rep_have[TW_MAX_NODES + 1];
+    uint32_t up_rep_us[TW_MAX_NODES + 1];   /* when its last report came */
+    uint32_t up_frames, up_bursts;
 } tw_node_t;
 
 void     tw_init(tw_node_t *n, uint8_t id, uint8_t is_exit, uint32_t seed);
@@ -483,6 +558,34 @@ uint8_t  tw_detect_low_level(const tw_node_t *n);
 /* 3.3: is this frame (its header peeked) of this board's group? If not, it is counted (TWS) and
    the caller drops it */
 int      tw_frame_ours(tw_node_t *n, const tw_hdr_t *h);
+
+/* 4.0: updates over the air (TW_UP_*). The firmware (and the simulator) gives the memory: */
+void    *tw_up_alloc(uint32_t size);
+void     tw_up_free(void *p);
+/* an update frame ('T','U') arrived: keeps quiet for a while, and takes the chunk if it is for
+   this board. Returns 1 if it was one (of any group), 0 if not an update frame */
+int      tw_up_rx(tw_node_t *n, const uint8_t *data, int len, uint32_t now_local_us);
+/* 1 while this board must send nothing of its own (update frames on the air, or its own burst) */
+int      tw_up_hush(const tw_node_t *n, uint32_t now_local_us);
+/* the computer gives this board (the exit) a program of size bytes: memory for it, every chunk
+   missing. 0, or -1 (too big, no memory, busy) */
+int      tw_up_begin(tw_node_t *n, uint32_t size);
+/* chunk idx of it (len bytes: TW_UP_CHUNK, the last one shorter); 0 or -1 */
+int      tw_up_chunk(tw_node_t *n, uint16_t idx, const uint8_t *data, int len);
+/* its manifest (TW_UP_MAN_LEN bytes): sets the update's id. 1 if every chunk is there too */
+int      tw_up_manifest(tw_node_t *n, const uint8_t *man);
+/* send the staged program to target (0: every board of the group, this one last); 0 or -1 */
+int      tw_up_send(tw_node_t *n, uint32_t now_local_us, uint8_t target);
+/* drop any update (sending or receiving) */
+void     tw_up_cancel(tw_node_t *n);
+/* the exit: its next update frame, if one is due now (its length; 0: none). *next_local_us: when to
+   ask again */
+int      tw_up_frame(tw_node_t *n, uint32_t now_local_us, uint8_t *buf, int max, uint32_t *next_local_us);
+/* once a second: drops a stale update, ends the sending when every target is done (or after
+   TW_UP_GIVE_UP_US; then the exit's own turn, if it is one) */
+void     tw_up_tick(tw_node_t *n, uint32_t now_local_us);
+/* the firmware's word on this board's update (TW_UP_ST_INSTALLING, READY, a failure) */
+void     tw_up_set_state(tw_node_t *n, uint8_t state, uint32_t now_local_us);
 
 /* 3.1: this board finished the channel survey (TW_K_SURVEY, generation gen): TW_SURVEY_N entries
    of TW_SURVEY_ENTRY bytes, from channel TW_SURVEY_FIRST up; sent as a TW_KIND_SURVEY record

@@ -135,6 +135,38 @@ Without `board ...`, a board key or action is for the board on the cable (as
 now); network keys are always for every board. A future feature adds a key
 and a command here.
 
+### Updates over the air (4.0)
+
+Not a key: a program is far too big for the transport. The board on the
+cable (the exit) has the program from the computer (`TWUP` lines over USB;
+signed there, checked here with this board's update key) and sends it to its
+group in its own frames, in bursts:
+
+| bytes | update frame |
+|---|---|
+| 0-1 | `T`, `U` (a normal frame is `T`, `W`: older firmware drops these) |
+| 2 | protocol version (3) |
+| 3 | group (other groups drop it) |
+| 4 | sender |
+| 5 | target board (0: every board of the group) |
+| 6-9 | the update's id: the first 4 bytes of the program's SHA-256 |
+| 10-12 | the program's size, bytes (low first) |
+| 13-14 | chunk number (low first); 0xFFFF: the manifest |
+| 15 | 0 |
+| 16- | the chunk (1,280 bytes, the last one shorter), or the manifest: SHA-256 (32), signature (ECDSA P-256: r, s, 32 each) |
+
+A burst lasts at most 0.6 s (a frame every 2.2 ms, the manifest first); 1.6 s
+of normal running follow. Every board of the group sends nothing for 60 ms
+after an update frame, so the burst has the air. Each board taking part says
+once a second, outside bursts, which chunks it has: a record of kind 7
+(TW_KIND_UPDATE, printed as TWP: the id, its state, chunks it has, of how
+many, the manifest or not, then a bit per chunk). The exit sends again
+whatever any of them lacks. It stops when each board asked for is READY or
+has failed (or, for "every board", went quiet or never answered within 15 s
+of the first pass), or after 5 minutes. Then it takes the update itself, if
+it was one of those asked for. A board that restarts in the middle gets
+every chunk again. docs/TW_NODE-4.0.md has the rest: checks, slots, rollback.
+
 ## Steps
 
 Each step: the simulator first (the same tw_proto.c), then a real run and a

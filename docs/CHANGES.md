@@ -5,6 +5,38 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.6-next (work in progress, on the next branch)
 
+- **Firmware (tw_node 4.0): updates over the air.** docs/TW_NODE-4.0.md has
+  the whole design and the steps for the first time on the boards; the frames
+  are in docs/PROTOCOL-3.md.
+  - **Two program slots and rollback.** The flash gets two 1.5 MB program
+    slots and rollback in the bootloader. The settings area stays where it
+    was.
+  - **The update key.** Each board learns an update key's public half over
+    its cable (`TWSET upkey`). A board with none takes no update.
+  - **Sending.** The board on the cable receives a signed program over USB
+    (`TWUP ...`) into its PSRAM, checks it, and sends it to its group in short
+    bursts of its own `TU` frames. The group keeps quiet for 60 ms after each
+    one. Each board reports which chunks it has, and the next bursts fill the
+    gaps.
+  - **Taking it.** Each board checks the SHA-256, your signature and that it
+    is a tw_node for the ESP32-S3. It writes the program to its other slot
+    4 KB at a time, says READY and restarts into it. The board on the cable
+    goes last.
+  - **Proving it.** A new program is kept once it has run a minute and hears
+    its group (or a computer reads it). Otherwise the bootloader returns to
+    the old one within 10 minutes, or at once after a crash.
+  - **New lines.** TWP for each board's part; TWS, TWH and the replies gain
+    their update fields.
+  - **The simulator** gains `--update T@TARGET:SIZE`. An 820 KB program
+    reached 3 boards in 6-8 s, at 20% loss in 10-13 s, and 6 boards in 7-9 s.
+    1.5 MB reached 8 boards in 13-15 s. One board only, the cabled board
+    alone, a board off mid-update (the sender stops waiting), a board
+    restarting mid-update (it gets every chunk again) and a second group
+    (untouched) all worked, measuring went on throughout (PASS), and with no
+    update the records are byte-for-byte 3.5's.
+  - **Not yet tried on a board:** the flash writes, the signature check and
+    the rollback.
+
 - **`tw_setid.py PORT survey` no longer calls 3.4 and 3.5 boards older
   firmware.** It recognised 3.1 to 3.3 (and 4.x) by name, so a 3.4 or 3.5
   board was named as "older firmware" that "does not survey", though it does.
