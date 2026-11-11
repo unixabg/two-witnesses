@@ -569,11 +569,11 @@ int      tw_up_rx(tw_node_t *n, const uint8_t *data, int len, uint32_t now_local
 int      tw_up_hush(const tw_node_t *n, uint32_t now_local_us);
 /* the computer gives this board (the exit) a program of size bytes: memory for it, every chunk
    missing. 0, or -1 (too big, no memory, busy) */
-int      tw_up_begin(tw_node_t *n, uint32_t size);
+int      tw_up_begin(tw_node_t *n, uint32_t size, uint32_t now_local_us);
 /* chunk idx of it (len bytes: TW_UP_CHUNK, the last one shorter); 0 or -1 */
 int      tw_up_chunk(tw_node_t *n, uint16_t idx, const uint8_t *data, int len);
 /* its manifest (TW_UP_MAN_LEN bytes): sets the update's id. 1 if every chunk is there too */
-int      tw_up_manifest(tw_node_t *n, const uint8_t *man);
+int      tw_up_manifest(tw_node_t *n, const uint8_t *man, uint32_t now_local_us);
 /* send the staged program to target (0: every board of the group, this one last); 0 or -1 */
 int      tw_up_send(tw_node_t *n, uint32_t now_local_us, uint8_t target);
 /* drop any update (sending or receiving) */

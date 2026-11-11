@@ -1525,14 +1525,15 @@ int tw_up_hush(const tw_node_t *n, uint32_t now)
     return n->up_burst || (n->up_hush_on && (int32_t)(n->up_hush_until - now) > 0);
 }
 
-int tw_up_begin(tw_node_t *n, uint32_t size)
+int tw_up_begin(tw_node_t *n, uint32_t size, uint32_t now)
 {
     if (n->up_tx_on || n->up_state == TW_UP_ST_COMPLETE || n->up_state == TW_UP_ST_INSTALLING ||
         n->up_state == TW_UP_ST_READY || !size || size > TW_UP_MAX) {
         return -1;
     }
     n->up_failed_id = 0;
-    return up_start(n, 0, size, 0, n->up_last_us);
+    return up_start(n, 0, size, 0, now);   /* (4.0 gave it a stale time: the update was dropped as idle
+                                               at the first tick after its manifest) */
 }
 
 int tw_up_chunk(tw_node_t *n, uint16_t idx, const uint8_t *data, int len)
@@ -1544,7 +1545,7 @@ int tw_up_chunk(tw_node_t *n, uint16_t idx, const uint8_t *data, int len)
     return 0;
 }
 
-int tw_up_manifest(tw_node_t *n, const uint8_t *man)
+int tw_up_manifest(tw_node_t *n, const uint8_t *man, uint32_t now)
 {
     if (n->up_state != TW_UP_ST_RECEIVING || n->up_id) {
         return -1;
@@ -1552,6 +1553,7 @@ int tw_up_manifest(tw_node_t *n, const uint8_t *man)
     memcpy(n->up_man, man, TW_UP_MAN_LEN);
     n->up_man_ok = 1;
     n->up_id = rd32be(man);
+    n->up_last_us = now;                        /* from now it counts as idle (TW_UP_IDLE_US) */
     return n->up_have == n->up_total;
 }
 

@@ -5,6 +5,20 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.6-next (work in progress, on the next branch)
 
+- **Firmware (tw_node, next version): the board on the cable no longer drops
+  an update before checking it.** On 4.0, `TWUP check` answered "not all
+  there (0 of 655 chunks, no manifest)" right after a complete upload. When
+  the computer gave the cabled board a program, the board started the
+  update's idle clock (2 minutes without data drops an unfinished update)
+  from a stale time, not from that moment. So once the manifest arrived, the
+  next once-a-second tick took the update as long idle and dropped it before
+  the check came. The clock now starts when the upload begins and again at
+  the manifest. Receiving boards were not affected; they start the clock
+  from the first frame. The simulator now runs a tick between the manifest
+  and the check, which fails on 4.0's code and passes now, and the update
+  cases give the same results. It goes out with the next firmware version,
+  over the air.
+
 - **`tw_setid.py PORT update`: two chunks at a time over USB, not eight.**
   On the first real board the upload stopped at chunk 2 ("no answer after 5
   tries"). The board's USB driver keeps at most 4 KB it has not read yet, and

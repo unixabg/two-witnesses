@@ -446,12 +446,14 @@ int main(int argc, char **argv)
             for (uint32_t i = 0; i < up_size; i++) up_src[i] = (uint8_t)(urand() * 256);
             uint8_t man[TW_UP_MAN_LEN];
             for (int i = 0; i < TW_UP_MAN_LEN; i++) man[i] = (uint8_t)(urand() * 256);
-            if (tw_up_begin(&x->st, up_size) == 0) {
+            if (tw_up_begin(&x->st, up_size, local_us(x, t)) == 0) {
                 for (uint32_t i = 0; i * TW_UP_CHUNK < up_size; i++) {
                     uint32_t l = up_size - i * TW_UP_CHUNK < TW_UP_CHUNK ? up_size - i * TW_UP_CHUNK : TW_UP_CHUNK;
                     tw_up_chunk(&x->st, (uint16_t)i, up_src + i * TW_UP_CHUNK, (int)l);
                 }
-                tw_up_manifest(&x->st, man);
+                tw_up_manifest(&x->st, man, local_us(x, t));
+                tw_up_tick(&x->st, local_us(x, t) + 1500000);   /* a tick before the check (4.0 dropped it here) */
+                if (x->st.up_state != TW_UP_ST_RECEIVING) { fprintf(stderr, "the exit lost the update before its check\n"); return 1; }
                 tw_up_set_state(&x->st, TW_UP_ST_STAGED, local_us(x, t));    /* the firmware checked it */
                 if (tw_up_send(&x->st, local_us(x, t), (uint8_t)up_target) == 0) x->up_at = t;
             }

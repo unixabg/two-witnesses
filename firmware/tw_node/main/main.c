@@ -1364,7 +1364,7 @@ static int up_command(char *cmd, uint32_t now)
         if (sscanf(cmd, "TWUP begin %u", &a) == 1) {
             if (s_max_payload < TW_UP_HDR + TW_UP_CHUNK) {
                 k = snprintf(msg, sizeof(msg), "TWUP err frames too small (ESP-NOW v1)\n");
-            } else if (tw_up_begin(&s_node, a) < 0) {
+            } else if (tw_up_begin(&s_node, a, now) < 0) {
                 k = snprintf(msg, sizeof(msg), "TWUP err %s\n", a > TW_UP_MAX ? "too big" :
                              s_node.up_state == TW_UP_ST_NOMEM ? "no memory (PSRAM)" : "busy");
             } else {
@@ -1383,7 +1383,7 @@ static int up_command(char *cmd, uint32_t now)
             }
         } else if (!strncmp(cmd, "TWUP man ", 9)) {
             uint8_t man[TW_UP_MAN_LEN];
-            if (hexbytes(cmd + 9, man, TW_UP_MAN_LEN) < 0 || tw_up_manifest(&s_node, man) < 0) {
+            if (hexbytes(cmd + 9, man, TW_UP_MAN_LEN) < 0 || tw_up_manifest(&s_node, man, now) < 0) {
                 k = snprintf(msg, sizeof(msg), "TWUP err manifest\n");
             } else {
                 k = snprintf(msg, sizeof(msg), "TWUP ok man %08lx\n", (unsigned long)s_node.up_id);
