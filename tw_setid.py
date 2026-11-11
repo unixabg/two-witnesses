@@ -7,6 +7,9 @@
     ~/scratch-esp/bin/python tw_setid.py PORT detect X [board N|all]   a board's detection threshold: a link at
                                                           X times its quiet level (1.5-10, default 3) for 2 s
                                                           counts; its LED flashes white (tw_node 3.4)
+    ~/scratch-esp/bin/python tw_setid.py PORT detect low X|off [board N|all]   steadier than quiet: a link at or
+                                                          below X times its quiet level (0.1-0.9, default 0.5)
+                                                          for 10 s counts; its LED shows green (tw_node 3.5)
     ~/scratch-esp/bin/python tw_setid.py PORT relearn [board N|all]    learn every link's quiet level again
                                                           (60 s; after moving a board, once you step away)
     ~/scratch-esp/bin/python tw_setid.py PORT check           listen 30 s and report problems: two boards with one
@@ -106,6 +109,7 @@ import serial
 TRIES = 3
 K_PIN, K_BRIGHT, K_TEST, K_TRY, K_SURVEY = 1, 2, 3, 4, 5  # keys (docs/PROTOCOL-3.md, tw_proto.h TW_K_*)
 K_DETECT, K_RELEARN = 6, 7                       # 3.4: each board's detection threshold (x10); relearn
+K_DETECT_LOW = 8                                 # 3.5: its steadier-than-quiet threshold (x10, 0 off)
 SURVEY_CHANNELS = {"2.4 GHz": range(1, 12)}      # 3.1: what a survey covers (US); a band adds a row
 OUR_PAIR = (11, 7)                               # the firmware's channel: 11, its 40 MHz partner below
 CHANNELS = {"2.4 GHz (US)": range(1, 12)}        # 3.2: what "channel N" accepts; a band adds a row
@@ -205,7 +209,9 @@ def status(p, seconds):
                                        group=int(f[31]) if len(f) >= 34 else None,     # 3.3: its group,
                                        other=int(f[32]) if len(f) >= 34 else 0,        # other groups' frames
                                        other_last=int(f[33]) if len(f) >= 34 else None,
-                                       detections=int(f[35]) if len(f) >= 36 else None)  # 3.4: begun since start
+                                       detections=int(f[35]) if len(f) >= 36 else None,  # 3.4: begun since start
+                                       lows=int(f[37]) if len(f) >= 39 else None,        # 3.5: steadier, begun,
+                                       lows_kept=int(f[38]) if len(f) >= 39 else None)   # and became the quiet
             elif f[0] == "TWN" and len(f) >= 11:
                 seen[int(f[1])] = dict(cable=False, set_seq=int(f[9]), power_q=int(f[10]),
                                        relay=int(f[11]) if len(f) >= 12 else None,
@@ -268,6 +274,11 @@ def show(seen):
             relay += f", detect {det[1][0] / 10:.1f}x quiet"
             if b["cable"] and b.get("detections") is not None:
                 relay += f" ({b['detections']:,} detections since it started)"
+        low = b.get("keys", {}).get(K_DETECT_LOW)   # 3.5: steadier than quiet
+        if low and low[1]:
+            relay += f", low {low[1][0] / 10:.1f}x" if low[1][0] else ", low off"
+            if b["cable"] and b.get("lows") is not None:
+                relay += f" ({b['lows']:,} steadier since it started, {b['lows_kept']:,} became its quiet)"
         if b.get("led"):
             pin, br = b["led"][:2]
             relay += f", LED on GPIO {pin} (brightness {br})" if pin else ", LED off"
@@ -447,7 +458,7 @@ def check(p, seconds=30):
     return len(problems)
 
 
-def board_key(p, cmd, key, target, what, ok_word):
+def board_key(p, cmd, key, target, what, ok_word, need=(3, 4)):
     """3.4: give a board key or action (detect, relearn) to board N or all (target 0) by record,
     and wait until they report its new generation, as led does; target None: the board on the
     cable, over its cable"""
@@ -463,12 +474,13 @@ def board_key(p, cmd, key, target, what, ok_word):
     print("listening for each board's report (every 5 s) ...")
     st = status(p, 11)
     known = {b: v["keys"][key][0] for b, v in st.items() if key in v.get("keys", {})}
-    old = sorted(b for b, v in st.items() if (fw_version(v.get("fw")) or (0, 0)) < (3, 4))
+    old = sorted(b for b, v in st.items() if (fw_version(v.get("fw")) or (0, 0)) < need)
     targets = sorted(st) if target == 0 else [target]
+    old = [b for b in old if b in targets]           # only those it was for
     if old:
         many = len(old) > 1
         print(f"  board{'s' if many else ''} {', '.join(map(str, old))} run{'' if many else 's'} older firmware: "
-              f"{what} needs tw_node 3.4 ({'they ignore' if many else 'it ignores'} it)")
+              f"{what} needs tw_node {need[0]}.{need[1]} ({'they ignore' if many else 'it ignores'} it)")
         targets = [b for b in targets if b not in old]
     if not targets:
         sys.exit("no board to give it to")
@@ -515,12 +527,24 @@ def board_key_args(a):
         rest = rest[:-2]
     if a[1] == "relearn" and not rest:
         return "TWSET relearn", K_RELEARN, target, "relearn", "relearn"
+    if a[1] == "detect" and rest[:1] == ["low"]:        # 3.5: steadier than quiet
+        v = rest[1] if len(rest) == 2 else None
+        if v == "off":
+            return "TWSET detect low 0", K_DETECT_LOW, target, "detect low off", "detect low", (3, 5)
+        try:
+            x = float(v)
+        except (TypeError, ValueError):
+            x = None
+        if x is None or not 0.1 <= x <= 0.9:
+            sys.exit("detect low X (0.1-0.9 times the quiet level, in steps of 0.1) or detect low off [board N|all]")
+        return f"TWSET detect low {round(x * 10)}", K_DETECT_LOW, target, f"detect low {x:.1f}x", "detect low", (3, 5)
     try:
         x = float(rest[0]) if a[1] == "detect" and len(rest) == 1 else None
     except ValueError:
         x = None
     if x is None or not 1.5 <= x <= 10:
-        sys.exit("detect X (1.5-10 times the quiet level, in steps of 0.1) [board N|all]; relearn [board N|all]")
+        sys.exit("detect X (1.5-10 times the quiet level, in steps of 0.1) [board N|all]; detect low X (0.1-0.9) "
+                 "or detect low off [board N|all]; relearn [board N|all]")
     return f"TWSET detect {round(x * 10)}", K_DETECT, target, f"detect {x:.1f}x", "detect"
 
 

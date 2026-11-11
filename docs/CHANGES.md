@@ -5,6 +5,15 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.6-next (work in progress, on the next branch)
 
+- **Computer side: `tw_setid.py PORT detect low X|off [board N|all]`**
+  (tw_node 3.5). X is 0.1 to 0.9 times the quiet level, given and confirmed
+  as `detect`. The status shows each board's low threshold ("low 0.5x") and,
+  for the board on the cable, how many steadier stretches began and how many
+  became its quiet. A board on older firmware is now named only when the
+  command was for it (`detect 4 board 2` no longer mentions an old board 3).
+  Checked against a stand-in board with one older board among them, including
+  bad values.
+
 - **Firmware (tw_node 3.5): steadier than quiet.** A link only gets stiller
   than its quiet level when something that is part of that quiet stops: a
   fan or the furnace, a compressor, a radio nearby, someone who was sitting
