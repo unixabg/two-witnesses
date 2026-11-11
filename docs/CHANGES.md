@@ -5,6 +5,21 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.6-next (work in progress, on the next branch)
 
+- **The replay shows the boards' own detections, and takes `--detect X`.**
+  On a run with tw_node 3.4 boards, each second a board marked a detection
+  on a link is a green line over that direction's row of the timeline; the
+  events they fall in are tagged "boards"; "This second" says "the boards
+  detected: 1→2, 2→1"; "About this recording" lists each board's threshold
+  (as the boards reported it) and the detections per direction, and the
+  summary printed at the end counts them and how many events have one. They
+  are the boards' measure, not the page's: the two mostly agree, not to the
+  second. `--detect X` sets one fixed event threshold for every direction (X
+  times its quiet level) instead of each direction's own from its quietest
+  hour, to compare nights by one rule or to see what a board's threshold
+  would have caught. Older runs say "not in this recording". Checked on a
+  simulated 25 minutes with a walk (the walk's event tagged, both
+  directions marked, no others; no script errors) and on an older watch run.
+
 - **Computer side: `tw_setid.py PORT detect X [board N|all]` and
   `relearn [board N|all]`** (tw_node 3.4). `detect` sets the threshold (1.5
   to 10 times the quiet level, in steps of 0.1) and `relearn` has the board(s)
