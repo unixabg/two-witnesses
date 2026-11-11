@@ -7,9 +7,16 @@ cabled to a computer prints everything (its own measurements and those relayed
 to it), so the other boards need only a power bank.
 
 ```
-abd5f1338817003602e66f2b179e26011c3a72337acb85e014457a86e9a763f4  tw_node-s3-ch11.bin
+09d9e49f3525893f0b2911e48852824e309f3872bb45fcf413989fd785dc49ac  tw_node-s3-ch11.bin
 ```
-Firmware tw_node 3.3: groups (`tw_setid.py PORT group N`, over each board's own
+Firmware tw_node 3.4: each board detects (a link at its threshold, 3x its
+quiet level unless set, for 2 s; its LED flashes white) and holds its own
+threshold (`tw_setid.py PORT detect X [board N|all]`, 1.5-10); `relearn
+[board N|all]` learns the quiet level again (and a board does after a channel
+change). The quiet level now starts from the median of the first 60 s. 3.4
+works with 3.0-3.3 boards; only 3.4 boards detect (`tw_setid.py` names the
+others). Program part only, one at a time, as below.
+3.3: groups (`tw_setid.py PORT group N`, over each board's own
 cable; 0 = the default, and every board so far). Arrays of boards near each
 other keep to themselves, each with its own board numbers; give each group its
 own channel. **Every board within reach on 3.3 before using a group other
@@ -121,7 +128,7 @@ Board on the native USB port, in download mode (hold BOOT, tap RST, release BOOT
 Tap RST. Then check who it is (it says hello every 10 s):
 ```
 ~/scratch-esp/bin/python tw_setid.py /dev/ttyACM0
-# -> board 16, factory address 30:30:f9:xx:xx:xx, firmware tw_node 3.3, PSRAM 8 MB, LED off, group 0
+# -> board 16, factory address 30:30:f9:xx:xx:xx, firmware tw_node 3.4, PSRAM 8 MB, LED off, group 0
 ```
 A new board says it is board 16 and needs a number:
 `~/scratch-esp/bin/python tw_setid.py /dev/ttyACM0 board 1` (then 2, 3, ... for the
@@ -140,7 +147,7 @@ dd if=tw_node-s3-ch11.bin of=/tmp/tw_node-app.bin bs=4096 skip=32
 ~/scratch-esp/bin/esptool --chip esp32s3 --port /dev/ttyACM0 write-flash 0x20000 /tmp/tw_node-app.bin
 ```
 (no erase-flash). Tap RST; `tw_setid.py /dev/ttyACM0` should say
-`firmware tw_node 3.3` with the board's old number (and, once all are done,
+`firmware tw_node 3.4` with the board's old number (and, once all are done,
 every board's firmware). If it says board 16, write
 the whole image as above and set the number again. `tw_setid.py` tries up to three times and
 says "done" only when the board reports the new number.

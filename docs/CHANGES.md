@@ -5,6 +5,10 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.6-next (work in progress, on the next branch)
 
+- **tw_node 3.4: version and image.** Detections, each board's threshold
+  and relearn (below) in `tw_node-s3-ch11.bin`. Program-only upgrade (its
+  first 128 KB are 3.3's); every board starts at 3x until given another.
+
 - **The replay shows the boards' own detections, and takes `--detect X`.**
   On a run with tw_node 3.4 boards, each second a board marked a detection
   on a link is a green line over that direction's row of the timeline; the
