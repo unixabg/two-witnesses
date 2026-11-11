@@ -5,6 +5,10 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.6-next (work in progress, on the next branch)
 
+- **`replay.py RUN --serve-only`** serves the page already made (after a
+  Ctrl-C, say) without reading the run again: seconds instead of minutes, a
+  new link each time; with no page yet it says how to make one.
+
 - **The replay page, rearranged for phones and big screens.** The title,
   controls and timeline stay at the top while the page scrolls. Below them the
   map and the camera sit side by side (on a phone too; tap the frame to make

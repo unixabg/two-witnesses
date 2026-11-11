@@ -139,7 +139,8 @@ writes `replay.html` into the run folder. It asks for a title (or give
 events and frames show too), `--serve` shows it on a phone or another
 computer at home (the page and its camera frames only, at a link with a random
 part, for 2 hours or until Ctrl-C; on a Chromebook allow the port once under
-Settings, Linux development environment, Port forwarding: 8000), and
+Settings, Linux development environment, Port forwarding: 8000; after a
+Ctrl-C, `--serve-only` serves the page again without making it again), and
 `--view lines` opens it with
 one line per direction instead of the beacons (a switch on the page flips
 between them). The page holds the board layout:

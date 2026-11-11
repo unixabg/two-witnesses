@@ -63,6 +63,8 @@ panel shows the frame of the second under the cursor (the camera keeps one a
 second, around its events). The frames are linked, not copied: the page shows
 them while it sits in its watch folder. To look at it from another computer
 or a phone at home: --serve (below).
+--serve-only: serve the page already made (after a Ctrl-C, say), without
+making it again; a new link each time.
 --serve [--port 8000] [--hours 2]: after writing the page, serve it (and the
 camera's frames, nothing else of the folder) to the computers at home, at an
 address with a random part, so only someone given the link opens it; until
@@ -712,8 +714,18 @@ def main():
                     help="serve the page (and its camera frames) to the computers at home, at a link with a random part")
     ap.add_argument("--port", type=int, default=8000, help="the port for --serve (default 8000)")
     ap.add_argument("--hours", type=float, default=2, help="--serve stops after this long (default 2)")
+    ap.add_argument("--serve-only", action="store_true",
+                    help="serve the page already written (RUN_FOLDER/replay.html, or --out), without making it again")
     a = ap.parse_args()
     folder = os.path.abspath(os.path.expanduser(a.folder))
+    if a.serve_only:                    # the page as it was last written: no reading of the run
+        dest = os.path.abspath(os.path.expanduser(a.out)) if a.out else os.path.join(folder, "replay.html")
+        if not os.path.isfile(dest):
+            sys.exit(f"no page to serve: {dest} (make it first: replay.py {a.folder} --serve)")
+        made = dt.datetime.fromtimestamp(os.path.getmtime(dest))
+        print(f"{dest}  (made {made:%Y-%m-%d %H:%M})")
+        serve(dest, folder, a.port, a.hours)
+        return
     title = a.title
     if title is None:
         if sys.stdin.isatty():
