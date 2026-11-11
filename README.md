@@ -56,6 +56,8 @@ without sudo). Then flash the boards: [FLASH-README.md](FLASH-README.md).
 | stop a run early | `~/tw-kit/run.sh stop` (or `watch.sh stop`, `survey.sh stop`) |
 | set up a board on the cable, step by step (flash, group, number, settings, LED, check) | `~/tw-kit/flash_board.sh` |
 | is everything right? two boards with one number, firmware, settings, weak links (30 s) | `~/scratch-esp/bin/python ~/tw-kit/tw_setid.py /dev/ttyACM0 check` |
+| how strongly a link must change, for 2 s, for a board to count a detection and flash white (tw_node 3.4; 1.5-10 times its quiet level, 3 until set) | `~/scratch-esp/bin/python ~/tw-kit/tw_setid.py /dev/ttyACM0 detect 3 board all` (or `board N`; without, the board on the cable) |
+| a board learns its links' quiet level again (tw_node 3.4; 60 s: step away; after moving a board) | `~/scratch-esp/bin/python ~/tw-kit/tw_setid.py /dev/ttyACM0 relearn board all` (or `board N`) |
 | the group of the board on the cable (tw_node 3.3; 0 = the default; it restarts) | `~/scratch-esp/bin/python ~/tw-kit/tw_setid.py /dev/ttyACM0 group 2` (over its own cable, one board at a time) |
 | the radio channel of every board: show it, or move them all (tw_node 3.2, every board; 1-11) | `~/scratch-esp/bin/python ~/tw-kit/tw_setid.py /dev/ttyACM0 channel` or `... channel 6` (not during a run) |
 | who else is on the air, per channel and board (tw_node 3.1; the network pauses about 12 s) | `~/scratch-esp/bin/python ~/tw-kit/tw_setid.py /dev/ttyACM0 survey` (saved in `~/tw-data/surveys/`; not during a run) |

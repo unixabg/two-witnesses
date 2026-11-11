@@ -4,6 +4,11 @@
 """tw_setid.py - talk to the board on the computer's USB port (tw_node firmware).
 
     ~/scratch-esp/bin/python tw_setid.py PORT                 who is it; each board's power and relaying
+    ~/scratch-esp/bin/python tw_setid.py PORT detect X [board N|all]   a board's detection threshold: a link at
+                                                          X times its quiet level (1.5-10, default 3) for 2 s
+                                                          counts; its LED flashes white (tw_node 3.4)
+    ~/scratch-esp/bin/python tw_setid.py PORT relearn [board N|all]    learn every link's quiet level again
+                                                          (60 s; after moving a board, once you step away)
     ~/scratch-esp/bin/python tw_setid.py PORT check           listen 30 s and report problems: two boards with one
                                                           number, different firmware or settings, a board
                                                           looking for its group, weak links, another group
@@ -100,6 +105,7 @@ import serial
 
 TRIES = 3
 K_PIN, K_BRIGHT, K_TEST, K_TRY, K_SURVEY = 1, 2, 3, 4, 5  # keys (docs/PROTOCOL-3.md, tw_proto.h TW_K_*)
+K_DETECT, K_RELEARN = 6, 7                       # 3.4: each board's detection threshold (x10); relearn
 SURVEY_CHANNELS = {"2.4 GHz": range(1, 12)}      # 3.1: what a survey covers (US); a band adds a row
 OUR_PAIR = (11, 7)                               # the firmware's channel: 11, its 40 MHz partner below
 CHANNELS = {"2.4 GHz (US)": range(1, 12)}        # 3.2: what "channel N" accepts; a band adds a row
@@ -198,7 +204,8 @@ def status(p, seconds):
                                        looking=int(f[28]) if len(f) >= 29 else 0,      # looking for others
                                        group=int(f[31]) if len(f) >= 34 else None,     # 3.3: its group,
                                        other=int(f[32]) if len(f) >= 34 else 0,        # other groups' frames
-                                       other_last=int(f[33]) if len(f) >= 34 else None)
+                                       other_last=int(f[33]) if len(f) >= 34 else None,
+                                       detections=int(f[35]) if len(f) >= 36 else None)  # 3.4: begun since start
             elif f[0] == "TWN" and len(f) >= 11:
                 seen[int(f[1])] = dict(cable=False, set_seq=int(f[9]), power_q=int(f[10]),
                                        relay=int(f[11]) if len(f) >= 12 else None,
@@ -256,6 +263,11 @@ def show(seen):
                 relay += f" (moving to {b['chan_key']})"
             if b.get("looking"):
                 relay += " (LOOKING FOR THE OTHERS)"
+        det = b.get("keys", {}).get(K_DETECT)       # 3.4: its detection threshold (its report)
+        if det and det[1]:
+            relay += f", detect {det[1][0] / 10:.1f}x quiet"
+            if b["cable"] and b.get("detections") is not None:
+                relay += f" ({b['detections']:,} detections since it started)"
         if b.get("led"):
             pin, br = b["led"][:2]
             relay += f", LED on GPIO {pin} (brightness {br})" if pin else ", LED off"
@@ -435,6 +447,83 @@ def check(p, seconds=30):
     return len(problems)
 
 
+def board_key(p, cmd, key, target, what, ok_word):
+    """3.4: give a board key or action (detect, relearn) to board N or all (target 0) by record,
+    and wait until they report its new generation, as led does; target None: the board on the
+    cable, over its cable"""
+    if target is None:
+        for attempt in range(1, TRIES + 1):
+            p.send(cmd)
+            for line in p.lines(4):
+                if line.startswith((f"TWOK {ok_word}", "TWERR")):
+                    print(line)
+                    sys.exit(1 if line.startswith("TWERR") else 0)
+            print(f"  no answer yet (try {attempt} of {TRIES})")
+        sys.exit("no answer: is it running tw_node 3.4, and is this its native USB port?")
+    print("listening for each board's report (every 5 s) ...")
+    st = status(p, 11)
+    known = {b: v["keys"][key][0] for b, v in st.items() if key in v.get("keys", {})}
+    old = sorted(b for b, v in st.items() if (fw_version(v.get("fw")) or (0, 0)) < (3, 4))
+    targets = sorted(st) if target == 0 else [target]
+    if old:
+        many = len(old) > 1
+        print(f"  board{'s' if many else ''} {', '.join(map(str, old))} run{'' if many else 's'} older firmware: "
+              f"{what} needs tw_node 3.4 ({'they ignore' if many else 'it ignores'} it)")
+        targets = [b for b in targets if b not in old]
+    if not targets:
+        sys.exit("no board to give it to")
+    gen = (max((known[b] for b in targets if b in known), default=0) + 1) % 256 or 1
+    done = set()
+    for attempt in range(1, TRIES + 1):
+        p.send(f"{cmd} board {target} gen {gen}")
+        for line in p.lines(3):
+            if line.startswith((f"TWOK {ok_word}", "TWERR")):
+                print(line)
+                if line.startswith("TWERR"):
+                    sys.exit(1)
+                break
+        for line in p.lines(15):
+            f = line.split(",")
+            if f[0] == "TWX":
+                for b, k, g, v in reports(f):
+                    if b in targets and k == key and g == gen:
+                        done.add(b)
+            if done >= set(targets):
+                break
+        if done >= set(targets):
+            print(f"done: {what} taken by board{'s' if len(done) > 1 else ''} "
+                  f"{', '.join(str(b) for b in sorted(done))} (generation {gen})")
+            return
+        print(f"  taken so far by {sorted(done) or 'none'} (try {attempt} of {TRIES})")
+    missing = sorted(set(targets) - done)
+    sys.exit(f"not confirmed by board {', '.join(map(str, missing))}: off or out of reach; it is passed on "
+             "for 60 s, so try again when it is up")
+
+
+def board_key_args(a):
+    """3.4: detect X [board N|all] / relearn [board N|all] -> board_key()'s arguments (target None:
+    the board on the cable)"""
+    rest, target = a[2:], None
+    if len(rest) >= 2 and rest[-2] == "board":
+        t = rest[-1]
+        if t == "all":
+            target = 0
+        elif t.isdigit() and 1 <= int(t) <= 16:
+            target = int(t)
+        else:
+            sys.exit("board N (1-16) or board all")
+        rest = rest[:-2]
+    if a[1] == "relearn" and not rest:
+        return "TWSET relearn", K_RELEARN, target, "relearn", "relearn"
+    try:
+        x = float(rest[0]) if a[1] == "detect" and len(rest) == 1 else None
+    except ValueError:
+        x = None
+    if x is None or not 1.5 <= x <= 10:
+        sys.exit("detect X (1.5-10 times the quiet level, in steps of 0.1) [board N|all]; relearn [board N|all]")
+    return f"TWSET detect {round(x * 10)}", K_DETECT, target, f"detect {x:.1f}x", "detect"
+
+
 def survey_parse(f):
     """a TWU line (3.1): (board, generation, {channel: (busy %, frames, loudest, mean, noise)})"""
     out = {}
@@ -567,13 +656,14 @@ def main():
     a = sys.argv[1:]
     if not a or len(a) > 8:
         sys.exit(__doc__)
-    words = ("check", "survey", "channel", "power", "relay", "second", "measure-second", "cap", "led", "group", "board")
+    words = ("detect", "relearn", "check", "survey", "channel", "power", "relay", "second", "measure-second", "cap", "led", "group", "board")
     if len(a) > 1 and a[1] not in words:
         sys.exit(__doc__)                   # e.g. the older "PORT N": the help shows "PORT board N"
     if len(a) > 1 and a[1] == "board" and (len(a) != 3 or not a[2].isdigit()):
         sys.exit(__doc__)
     if len(a) == 3 and a[1] == "board" and not 1 <= int(a[2]) <= 16:
         sys.exit("board number must be 1..16")
+    bk = board_key_args(a) if len(a) >= 2 and a[1] in ("detect", "relearn") else None
     p = Port(a[0])
 
     if len(a) == 2 and a[1] == "survey":
@@ -626,6 +716,10 @@ def main():
             sys.exit("second on|off|force, measure-second on|off, or cap N (1-15) | cap off")
         set_network(p, f"TWSET {a[1]} {val}", lambda b: b.get("flags") is not None and b["flags"] & mask == want,
                     f"{a[1]} {val}")
+        return
+
+    if bk:                                           # 3.4: detect / relearn
+        board_key(p, *bk)
         return
 
     if len(a) >= 2 and a[1] == "led":

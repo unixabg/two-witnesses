@@ -219,7 +219,7 @@ def main():
             say("   Then the others are off, out of reach, or on another channel: it keeps looking for them by")
             say("   itself. Check later with: tw_setid.py PORT check")
     # 6. LED
-    say("6. Its LED shows movement it measures (off when quiet).")
+    say("6. Its LED shows movement it measures (off when quiet; tw_node 3.4: a white flash is a detection).")
     if yes("   Turn its LED on (GPIO 48, the usual on these boards)?", "y"):
         setid(port, "led", "on", "48")
         setid(port, "led", "test")

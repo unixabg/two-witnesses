@@ -5,6 +5,19 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.6-next (work in progress, on the next branch)
 
+- **Computer side: `tw_setid.py PORT detect X [board N|all]` and
+  `relearn [board N|all]`** (tw_node 3.4). `detect` sets the threshold (1.5
+  to 10 times the quiet level, in steps of 0.1) and `relearn` has the board(s)
+  learn their quiet level again; without `board ...` it is the board on the
+  cable, over its cable. With `board N|all` they go as the LED settings do
+  (given by the cabled board, passed on for 60 s, confirmed when each named
+  board reports the new generation), and a board on older firmware is named
+  and left out. Wrong values are answered before the port is opened.
+  `tw_setid.py PORT` shows each board's threshold ("detect 3.0x quiet") and,
+  for the board on the cable, its detections since it started. Desk-tested
+  against a stand-in board (one board, every board, a 3.3 board among them,
+  bad values).
+
 - **Firmware (tw_node 3.4): each board detects, and holds its own
   threshold.** Until now each board scored every link it measures once a
   second (TWM) and nothing decided anything from it. Now a link at or above
