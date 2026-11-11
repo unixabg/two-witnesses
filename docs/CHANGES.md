@@ -5,6 +5,13 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.6-next (work in progress, on the next branch)
 
+- **tw_node 4.1: version and image.** The fixes since 4.0, in
+  `tw_node-s3-ch11.bin`: the board on the cable keeps an upload until it is
+  checked, and the program description names its version. The first 128 KB
+  are the same as 4.0's, so 4.0 boards take it over the air
+  (`tw_setid.py PORT update board all`). A 3.x board needs the one cable
+  flash, as for 4.0.
+
 - **The program's description names its version.** The board's "TWUP
   verified" line read "tw_node 1": ESP-IDF's program description takes its
   version from `firmware/tw_node/version.txt` (or git), and there was none,

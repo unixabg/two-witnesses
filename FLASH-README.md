@@ -7,9 +7,13 @@ cabled to a computer prints everything (its own measurements and those relayed
 to it), so the other boards need only a power bank.
 
 ```
-e0162819c3219e011765e9b4fee61b2de223ed63ef7b3a96f155a794bb5b6c9f  tw_node-s3-ch11.bin
+6b8721020685011645e2f421704f0be1532883b1323d3ae7b33167d6bf45832b  tw_node-s3-ch11.bin
 ```
-Firmware tw_node 4.0: updates over the air (`tw_setid.py PORT update board
+Firmware tw_node 4.1: from 4.0 over the air (`tw_setid.py PORT update board
+all`; its first 128 KB are 4.0's). The board on the cable keeps an upload
+until it is checked (4.0 could drop it a second after its manifest; the kit
+works around that), and the update's check names the version.
+4.0: updates over the air (`tw_setid.py PORT update board
 all`; docs/TW_NODE-4.0.md). **One last flash by cable for each board**:
 `flash_board.sh`, answer **p** ("all but its settings": it keeps its number
 and settings) and give it your update key; the first board makes the key
@@ -145,7 +149,7 @@ Board on the native USB port, in download mode (hold BOOT, tap RST, release BOOT
 Tap RST. Then check who it is (it says hello every 10 s):
 ```
 ~/scratch-esp/bin/python tw_setid.py /dev/ttyACM0
-# -> board 16, factory address 30:30:f9:xx:xx:xx, firmware tw_node 4.0, PSRAM 8 MB, LED off, group 0, program slot ota_0, no update key
+# -> board 16, factory address 30:30:f9:xx:xx:xx, firmware tw_node 4.1, PSRAM 8 MB, LED off, group 0, program slot ota_0, no update key
 ```
 A new board says it is board 16 and needs a number:
 `~/scratch-esp/bin/python tw_setid.py /dev/ttyACM0 board 1` (then 2, 3, ... for the
@@ -170,7 +174,7 @@ dd if=tw_node-s3-ch11.bin of=/tmp/tw_node-app.bin bs=4096 skip=32
 (no erase-flash; flash_board.sh does the same). Back to 3.5 the same way,
 with 3.5's image (in a clone: ``git show $(git log -1 --format=%h --grep='tw_node 3.5: version and
 image'):tw_node-s3-ch11.bin > tw_node-3.5.bin``). Tap RST; `tw_setid.py /dev/ttyACM0` should say
-`firmware tw_node 4.0` with the board's old number (and, once all are done,
+`firmware tw_node 4.1` with the board's old number (and, once all are done,
 every board's firmware). Then give it your update key:
 `tw_setid.py /dev/ttyACM0 update-key`. If it says board 16, write
 the whole image as above and set the number again. `tw_setid.py` tries up to three times and
