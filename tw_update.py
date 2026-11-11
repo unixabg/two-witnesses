@@ -147,7 +147,18 @@ def key_command(p, arg):
 
 
 def upload(p, data, man):
-    """the program and its manifest to the board on the cable; -> its 'TWUP verified' line"""
+    """the program and its manifest to the board on the cable; -> its 'TWUP verified' line (a second
+    try if the board lost it before checking it)"""
+    for attempt in (1, 2):
+        line = upload_once(p, data, man)
+        if line.startswith("TWUP verified"):
+            return line
+        if "not all there" not in line or attempt == 2:
+            sys.exit(f"the board on the cable did not accept it: {line}")
+        print(f"  the board on the cable lost it before checking it ({line}): once more")
+
+
+def upload_once(p, data, man):
     line = answer(p, f"TWUP begin {len(data)}", "TWUP ready", tries=2)
     if not line:
         sys.exit("no answer: updates need tw_node 4.0 on the board on the cable (flash_board.sh)")
@@ -195,13 +206,17 @@ def upload(p, data, man):
         if pct >= shown + 20:
             shown = pct - pct % 20
             print(f"  to the board on the cable: {pct}% ({time.time() - t0:.0f} s)")
-    line = answer(p, f"TWUP man {man.hex()}", "TWUP ok man")
-    if not line or not line.startswith("TWUP ok"):
-        sys.exit(f"the manifest: {line or 'no answer'}")
-    line = answer(p, "TWUP check", "TWUP verified", seconds=6, tries=2)
-    if not line or not line.startswith("TWUP verified"):
-        sys.exit(f"the board on the cable did not accept it: {line or 'no answer'}")
-    return line
+    # the manifest and the check in one write, so the board takes both at once: tw_node 4.0's board on
+    # the cable drops an update a second after its manifest if not checked by then (fixed in tw_proto.c)
+    p.send(f"TWUP man {man.hex()}\nTWUP check")
+    got = None
+    for line in p.lines(10):
+        if line.startswith("TWUP err manifest"):
+            sys.exit(f"the manifest: {line}")
+        if line.startswith(("TWUP verified", "TWUP err")):
+            got = line
+            break
+    return got or "no answer to the check"
 
 
 def update(p, status, target, path):

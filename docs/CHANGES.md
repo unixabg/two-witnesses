@@ -5,6 +5,11 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.6-next (work in progress, on the next branch)
 
+- **`tw_setid.py PORT update`: the manifest and the check go together.** So
+  the board takes both in one go, before 4.0's once-a-second tick can drop
+  the update in between (see below). If it is lost anyway, the upload runs
+  once more. Boards on 4.0 as flashed take updates this way, with no reflash.
+
 - **Firmware (tw_node, next version): the board on the cable no longer drops
   an update before checking it.** On 4.0, `TWUP check` answered "not all
   there (0 of 655 chunks, no manifest)" right after a complete upload. When
