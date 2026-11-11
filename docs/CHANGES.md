@@ -5,6 +5,22 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.6-next (work in progress, on the next branch)
 
+- **The replay page, rearranged for phones and big screens.** The title,
+  controls and timeline stay at the top while the page scrolls. Below them the
+  map and the camera sit side by side (on a phone too; tap the frame to make
+  it big, and again to put it back), with a new **This second** box: the event
+  under way (its number, start, length and what it was), the watch's event,
+  lasting changes and notes within half a minute, and for each link what its
+  two directions did, as an observation ("changed both ways", "changed one way
+  only: 2→1", "quiet", "no data"), with the numbers; each direction's change,
+  loss and shape fold out beneath. The events and the lasting changes follow,
+  side by side on a wide screen; the map's legend folds out ("How to read the
+  map"). On a phone the event buttons are arrows and the clock shares their
+  row (at 360 px Play is its icon); on a big screen the map and the frame keep
+  to the window's height. A missing frame no longer shows a broken image.
+  Checked at 360, 390, 820 and 1280 px, with and without a camera: no script
+  errors, no sideways scroll.
+
 - **`replay.py --serve` shows each request**, one line as it comes: when,
   from where (through a Chromebook's port forwarding, ChromeOS's inner
   address, not the device's), what (the link's random part as `<link>`) and

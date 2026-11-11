@@ -984,11 +984,39 @@ PAGE = r"""<!doctype html>
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--page); color: var(--ink);
   font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
-header { padding: 14px 16px 6px; }
-h1 { font-size: 18px; margin: 0 0 2px; font-weight: 650; }
-.sub { color: var(--ink2); font-size: 13px; }
-.wrap { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(280px, 1fr); gap: 12px; padding: 8px 16px; }
-@media (max-width: 820px) { .wrap { grid-template-columns: 1fr; } }
+header { padding: 10px 16px 4px; }
+h1 { font-size: 17px; margin: 0 0 1px; font-weight: 650; }
+.sub { color: var(--ink2); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* the time, the controls and the timeline stay at the top */
+.top { position: sticky; top: 0; z-index: 5; background: var(--page); border-bottom: 1px solid var(--grid); padding-bottom: 4px; }
+/* the map, the camera and this second side by side; the lists below */
+.stage { display: grid; gap: 12px; padding: 10px 16px 8px; grid-template-columns: minmax(0, 1.15fr) minmax(280px, 1fr);
+  grid-template-areas: "map detail"; align-items: start; }
+.stage.hascam { grid-template-areas: "map cam" "map detail"; grid-template-rows: auto 1fr; }
+#mapcard { grid-area: map; } #camcard { grid-area: cam; } #detailcard { grid-area: detail; }
+.lists { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 0 16px 8px; }
+@media (max-width: 820px) {
+  .stage { grid-template-columns: minmax(0, 1fr); grid-template-areas: "map" "detail"; gap: 10px; }
+  .stage.hascam { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-areas: "map cam" "detail detail"; }
+  .stage.hascam.cambig { grid-template-columns: minmax(0, 1fr); grid-template-areas: "cam" "map" "detail"; }
+  .lists { grid-template-columns: 1fr; }
+  .card { padding: 8px 9px; }
+  #clock { font-size: 18px; min-width: 0; }
+  .controls { gap: 6px; } .controls button, .controls select { padding: 4px 8px; }
+  .controls .w { display: none; }          /* "event" beside the arrows: the arrows say it */
+  #nowev { display: none; }                /* "This second" says it */
+}
+#camimg[hidden] { display: none; }        /* (the rule above would show a missing frame's broken image) */
+@media (min-width: 821px) { #map { max-height: calc(100vh - 300px); } #camimg { max-height: 40vh; } }
+.controls button { white-space: nowrap; }
+@media (max-width: 380px) { .controls .w2 { display: none; } #clock { font-size: 16px; } }
+#camimg { cursor: zoom-in; } .cambig #camimg { cursor: zoom-out; }
+.dline { margin: 2px 0; } .dline .m { color: var(--muted); }
+.dquiet { color: var(--muted); }
+.links { display: grid; grid-template-columns: auto auto 1fr; gap: 2px 10px; margin: 8px 0 4px; font-variant-numeric: tabular-nums; font-size: 13px; align-items: center; }
+.links .lk { font-weight: 600; } .links .v { color: var(--ink2); }
+.links .both { font-weight: 600; } .links .one { color: var(--shape); font-weight: 600; } .links .q, .links .nd { color: var(--muted); }
+details.fold { margin-top: 6px; } details.fold summary { cursor: pointer; color: var(--ink2); font-size: 13px; }
 .card { background: var(--surface); border: 1px solid var(--grid); border-radius: 10px; padding: 10px 12px; min-width: 0; }
 .card h2 { font-size: 13px; font-weight: 600; margin: 0 0 6px; color: var(--ink2); text-transform: uppercase; letter-spacing: .04em; }
 svg text { fill: var(--ink); }
@@ -1007,7 +1035,7 @@ th, td { text-align: right; padding: 3px 6px; border-bottom: 1px solid var(--gri
 th:first-child, td:first-child { text-align: left; }
 th { color: var(--muted); font-weight: 500; font-size: 12px; }
 .sw { display: inline-block; width: 14px; height: 6px; border-radius: 3px; vertical-align: middle; margin-right: 6px; }
-#evlist { max-height: 300px; overflow: auto; margin-top: 4px; }
+#evlist, #marklist { max-height: 300px; overflow: auto; margin-top: 4px; }
 .ev { display: grid; grid-template-columns: 46px 66px 50px 1fr; gap: 6px; padding: 3px 4px; border-radius: 6px;
   cursor: pointer; font-variant-numeric: tabular-nums; font-size: 13px; }
 .ev:hover { background: var(--grid); }
@@ -1034,56 +1062,64 @@ details.about td { text-align: left; }
 .cam { color: var(--cam); font-weight: 600; font-size: 11px; margin-left: 4px; }
 .os { color: var(--muted); font-size: 11px; margin-left: 6px; }
 .nr { font-weight: 600; color: var(--ink); }
-.maphead { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; }
+.maphead { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 4px 8px; margin-bottom: 6px; }
 .maphead h2 { margin: 0; }
 .seg { display: inline-flex; border: 1px solid var(--axis); border-radius: 7px; overflow: hidden; }
 .seg button { font: inherit; font-size: 12px; color: var(--ink2); background: var(--surface); border: 0; padding: 3px 10px; cursor: pointer; }
 .seg button.on { background: var(--ink); color: var(--surface); }
 body.v-waves .lg-lines, body.v-lines .lg-waves { display: none; }
+@media (max-width: 820px) { .controls { flex-wrap: nowrap; } }   /* (after .controls: one row on a phone) */
 kbd { font: 11px ui-monospace, monospace; border: 1px solid var(--axis); border-radius: 4px; padding: 0 4px; }
 </style>
 </head>
 <body>
+<div class="top">
 <header>
   <h1 id="title"></h1>
   <div class="sub" id="sub"></div>
 </header>
 <div class="controls">
-  <button id="play" aria-label="Play">&#9654; Play</button>
+  <button id="play" aria-label="Play">&#9654;<span class="w2"> Play</span></button>
   <select id="speed" aria-label="Speed">
     <option value="1">1&times;</option><option value="10">10&times;</option>
     <option value="60" selected>60&times;</option><option value="300">300&times;</option>
   </select>
-  <button id="prev" title="Previous event (p)">&#8592; event</button>
-  <button id="next" title="Next event (n)">event &#8594;</button>
+  <button id="prev" title="Previous event (p)" aria-label="Previous event">&#8592;<span class="w"> event</span></button>
+  <button id="next" title="Next event (n)" aria-label="Next event"><span class="w">event </span>&#8594;</button>
   <span id="clock">00:00:00</span>
   <span id="nowev"></span>
 </div>
 <div class="tlwrap"><canvas id="tl" aria-label="Timeline: change per link direction across the run"></canvas></div>
-<div class="wrap">
-  <div class="card">
+</div>
+<div class="stage" id="stage">
+  <div class="card" id="mapcard">
     <div class="maphead"><h2>Map</h2>
       <div class="seg" role="group" aria-label="Map view"><button id="vWaves" type="button">Waves</button><button id="vLines" type="button">Lines</button></div></div>
     <svg id="map" role="img" aria-label="The boards and their links, to scale"></svg>
+    <details class="fold"><summary>How to read the map</summary>
     <div class="legend">
       <span><span class="ramp"></span>&nbsp; change: quiet &rarr; 6&times; its quiet level or more (learned again __SETTLE__ min after a link&rsquo;s lasting change)</span>
       <span><svg width="26" height="8"><line x1="1" y1="4" x2="25" y2="4" stroke="var(--shape)" stroke-width="3" stroke-dasharray="4 3"/></svg> shape moved &ge;1.5 dB from its recent usual (something standing or parked differently; clears once it has stayed __SETTLE__ min)</span>
       <span><svg width="26" height="8"><line x1="1" y1="4" x2="25" y2="4" stroke="var(--muted)" stroke-width="3" stroke-dasharray="1 3" stroke-linecap="round"/></svg> no data that second (frames lost)</span>
       <span><svg width="26" height="14"><circle cx="13" cy="7" r="5.5" fill="none" stroke="var(--s3)" stroke-width="2"/><circle cx="13" cy="7" r="2" fill="var(--ink)"/></svg> rings around a board: everything lit touches that board and the path away from it is quiet: something near it, on any side (behind it too)</span>
-      <span><svg width="26" height="8"><line x1="2" y1="4" x2="24" y2="4" stroke="var(--s3)" stroke-width="5" stroke-linecap="round"/><line x1="2" y1="4" x2="24" y2="4" stroke="var(--surface)" stroke-width="2" stroke-linecap="round"/></svg> hollow: lit one way only, the other way quiet: more likely a board&rsquo;s own quirk than the room</span>
+      <span><svg width="26" height="8"><line x1="2" y1="4" x2="24" y2="4" stroke="var(--s3)" stroke-width="5" stroke-linecap="round"/><line x1="2" y1="4" x2="24" y2="4" stroke="var(--surface)" stroke-width="2" stroke-linecap="round"/></svg> hollow: lit one way only, the other way quiet</span>
       <span class="lg-lines">two lines per link: one per direction, arrow from the sender to the board that measures</span>
-      <span class="lg-waves">each board is a beacon: one fan per path, toward the other board, for its own signal reaching it; up to 3 arcs lit = how much it changed; echoes along the path while playing. Both ends of a path lit: something real; one end only: a board&rsquo;s own quirk</span>
-    </div>
+      <span class="lg-waves">each board is a beacon: one fan per path, toward the other board, for its own signal reaching it; up to 3 arcs lit = how much it changed; echoes along the path while playing</span>
+    </div></details>
   </div>
-  <div class="card">
-    <div id="camcard" hidden><h2>Camera</h2><img id="camimg" alt="the camera's frame at this second"><div id="camnote"></div></div>
-    <h2>Now</h2>
+  <div class="card" id="camcard" hidden><h2>Camera</h2><img id="camimg" alt="the camera's frame at this second (tap to enlarge)"><div id="camnote"></div></div>
+  <div class="card" id="detailcard">
+    <h2>This second</h2>
+    <div id="dsum"></div>
+    <div class="links" id="dlinks"></div>
+    <details class="fold" id="dmore"><summary>Each direction: change, loss, shape</summary>
     <table id="now"><thead><tr><th>direction</th><th>change &times;</th><th>loss %</th><th>shape dB</th></tr></thead><tbody></tbody></table>
-    <h2 style="margin-top:12px">Lasting changes and notes</h2>
-    <div id="marklist"></div>
-    <h2 style="margin-top:12px">Events</h2>
-    <div id="evlist"></div>
+    </details>
   </div>
+</div>
+<div class="lists">
+  <div class="card"><h2>Events</h2><div id="evlist"></div></div>
+  <div class="card"><h2>Lasting changes and notes</h2><div id="marklist"></div></div>
 </div>
 <div class="notes">
   <p><b>What this shows:</b> which links were disturbed, when, and how much. It cannot place a person: a lit link means something moved in or near that path, or (with no shape change) somewhere its signal reflects through. Orange marks on the timeline are lasting changes (a link&rsquo;s shape stepped and stayed: something parked, moved or opened); black marks are your notes; violet marks are the watch&rsquo;s events (watch runs, with or without the camera), with your label.</p>
@@ -1095,6 +1131,7 @@ kbd { font: 11px ui-monospace, monospace; border: 1px solid var(--axis); border-
 const D = __DATA__;
 document.getElementById("title").textContent = D.title;
 document.getElementById("sub").textContent = D.sub;
+document.getElementById("sub").title = D.sub;
 const NAMES = D.dirs, ND = NAMES.length;
 const N = D.size[0].length;
 const pad = n => String(n).padStart(2, "0");
@@ -1281,7 +1318,7 @@ if (!mk2.length) marklist.textContent = "none";
 
 /* ---------- timeline ---------- */
 const cv = document.getElementById("tl"), cx = cv.getContext("2d");
-const ROWH = Math.max(5, Math.min(15, Math.floor(110 / ND)));
+const ROWH = Math.max(5, Math.min(innerWidth <= 820 ? 9 : 15, Math.floor((innerWidth <= 820 ? 70 : 110) / ND)));
 const TL = { left: 54, right: 10, top: 34, gap: 22 };
 cv.style.height = (TL.top + ND * ROWH + 22) + "px";
 let tlW = 0;
@@ -1427,11 +1464,47 @@ function render() {
   const nearK = on >= 0 ? on : ITEMS.findIndex(e => e.i > cur);
   if (nearK >= 0) { const r = ITEMS[nearK].el, top = r.offsetTop - evlist.offsetTop;
     if (top < evlist.scrollTop || top > evlist.scrollTop + evlist.clientHeight - r.offsetHeight) evlist.scrollTop = top - evlist.clientHeight / 3; }
+  details(on);
   drawTL();
+}
+/* ---------- this second: what is happening, and each link's two directions ---------- */
+const dsum = document.getElementById("dsum"), dlinks = document.getElementById("dlinks");
+document.getElementById("dmore").open = innerWidth > 820;
+const PAIRS = [];                          // each link once: its two directions (a->b, b->a)
+NAMES.forEach((nm, d) => { const [a, b] = nm.split("-"), r = NAMES.indexOf(`${b}-${a}`);
+  if (r < 0 || d < r) PAIRS.push({ name: `${a}–${b}`, ab: d, ba: r, a, b }); });
+const PAIREL = PAIRS.map(P => { const e = [0, 1, 2].map(() => { const x = document.createElement("span"); dlinks.appendChild(x); return x; });
+  e[0].className = "lk"; e[0].textContent = P.name; return e; });
+function details(on) {
+  const lines = [];
+  if (on >= 0) {
+    const E = ITEMS[on];
+    lines.push(`<b>${E.name}</b> <span class="m">${clk(E.i)}, ${tOf(E.j) - tOf(E.i) + 1} s:</span> ${E.el.lastChild.innerHTML}`);
+  }
+  const ce = CAM.events.find(c => c.i - 6 <= cur && cur <= c.j + 11);
+  if (ce) lines.push(`<span style="color:var(--cam)">&#9673;</span> watch event ${ce.event}: ${ce.label || ce.kind}${ce.note ? " (" + ce.note + ")" : ""}`);
+  mk2.filter(m => m.kind !== "cam" && Math.abs(m.i - cur) <= 30).forEach(m =>
+    lines.push(`<span style="color:var(${m.kind === "change" ? "--shape" : "--note"})">${m.kind === "change" ? "&#9646;" : "&#9656;"}</span> `
+               + `${clk(m.i)} ${m.text.replace(/</g, "&lt;")}`));
+  dsum.innerHTML = lines.length ? lines.map(l => `<div class="dline">${l}</div>`).join("")
+                                : `<div class="dline dquiet">no event at this second</div>`;
+  // each link's two witnesses: what each direction did (an observation, not a verdict)
+  PAIRS.forEach((P, k) => {
+    const va = sizeAt(P.ab, cur), vb = P.ba >= 0 ? sizeAt(P.ba, cur) : -2, e = PAIREL[k];
+    const la = va >= 1.15, lb = vb >= 1.15, f = v => v < 0 ? "–" : v.toFixed(1) + "×";
+    e[1].className = "v";
+    e[1].textContent = P.ba >= 0 ? `${P.a}→${P.b} ${f(va)} · ${P.b}→${P.a} ${f(vb)}` : `${P.a}→${P.b} ${f(va)}`;
+    if (va < 0 || (P.ba >= 0 && vb < 0)) { e[2].className = "nd"; e[2].textContent = "no data (frames lost)"; }
+    else if (la && lb) { e[2].className = "both"; e[2].textContent = "changed both ways"; }
+    else if (la || lb) { e[2].className = "one"; e[2].textContent = `changed one way only: ${la ? P.a + "→" + P.b : P.b + "→" + P.a}`; }
+    else { e[2].className = "q"; e[2].textContent = "quiet"; }
+  });
 }
 function seek(i) { cur = Math.max(0, Math.min(N - 1, i)); render(); }
 const camcard = document.getElementById("camcard"), camimg = document.getElementById("camimg"), camnote = document.getElementById("camnote");
-if (CAM.frames.length) camcard.hidden = false;
+const stage = document.getElementById("stage");
+if (CAM.frames.length) { camcard.hidden = false; stage.classList.add("hascam"); }
+camimg.addEventListener("click", () => { stage.classList.toggle("cambig"); layoutTL(); });   // tap: bigger, again: back
 camimg.addEventListener("error", () => { camimg.hidden = true;
   camnote.textContent = "frame not found: open this page in its watch folder, or through a web server started there (see replay.py)"; });
 function showFrame() {
@@ -1490,7 +1563,8 @@ function setMode(m) {
 document.getElementById("vWaves").addEventListener("click", () => setMode("waves"));
 document.getElementById("vLines").addEventListener("click", () => setMode("lines"));
 const playBtn = document.getElementById("play");
-function setPlay(p) { playing = p; last = 0; acc = 0; playBtn.innerHTML = p ? "&#10073;&#10073; Pause" : "&#9654; Play"; if (p) requestAnimationFrame(tick); render(); }
+function setPlay(p) { playing = p; last = 0; acc = 0; playBtn.innerHTML = p ? "&#10073;&#10073;<span class='w2'> Pause</span>" : "&#9654;<span class='w2'> Play</span>";
+  playBtn.setAttribute("aria-label", p ? "Pause" : "Play"); if (p) requestAnimationFrame(tick); render(); }
 playBtn.addEventListener("click", () => setPlay(!playing));
 speedSel.addEventListener("change", render);
 function jumpEv(dir) {
