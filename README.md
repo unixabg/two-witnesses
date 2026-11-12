@@ -88,6 +88,23 @@ without sudo). Then flash the boards: [FLASH-README.md](FLASH-README.md).
   health line counts `2nd sent` and `rx_err` (measurements the radio flagged)
   since the dashboard opened.
 
+## What a board's LED shows
+
+With its LED on (`tw_setid.py PORT led on`), each board shows what it
+measures, once a second:
+
+| the LED | means |
+|---|---|
+| off | quiet: no link it measures has changed (below 1.2x its quiet level) |
+| blue, pale to deep | movement: the most changed link, from pale blue at about 1.2x quiet to bright deep blue at 6x and more. It comes and goes, and changes shade, second by second as the movement does (tw_node 2.4) |
+| a short white blink (0.15 s) | a detection: a link at or above the board's threshold (3x quiet unless set: `detect X`) for 2 s in a row. One blink when it begins, then one each second while it lasts, each followed by the blue (tw_node 3.4) |
+| steady green | steadier than quiet: a link at or below the low threshold (0.5x unless set: `detect low X`) for 10 s, with nothing moving. Something that is usually moving has stopped, or someone is standing still in the link's way. It goes when the link changes again, when the other board is not heard for 5 s, or after a while (no longer than the link was quiet before, 30 minutes at most), when the board learns the stillness as its quiet (tw_node 3.5; 4.2, 4.3) |
+
+When several apply, white shows over blue, and blue over green: movement
+counts more than stillness. A board just started (or updated) learns its
+quiet level for its first minute and shows nothing meanwhile. `led test`
+runs every color once.
+
 ## Boards and relaying
 
 - **How many:** up to **16** boards. Up to 6 work best: each measurement

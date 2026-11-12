@@ -5,6 +5,19 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.6-next (work in progress, on the next branch)
 
+- **README: what a board's LED shows.** A table of every LED state. It was
+  scattered over the detection and steadier rows, and FLASH-README's LED row
+  still said "movement only":
+  - off: quiet;
+  - blue, pale to deep: movement;
+  - a short white blink: a detection, once when it begins and once each
+    second while it lasts;
+  - steady green: steadier than quiet, and what ends it.
+
+  It also gives the order when several apply (white over blue over green)
+  and the blank first minute after a start. FLASH-README's LED row now says
+  the same in short.
+
 - **tw_node 4.3: version and image.** The two fixes below, in
   `tw_node-s3-ch11.bin`: the busy-start check by its own level, always on,
   and a hold that lasts only as long as the quiet before it. The first
