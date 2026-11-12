@@ -5,6 +5,11 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.6-next (work in progress, on the next branch)
 
+- **tw_node 4.3: version and image.** The two fixes below, in
+  `tw_node-s3-ch11.bin`: the busy-start check by its own level, always on,
+  and a hold that lasts only as long as the quiet before it. The first
+  128 KB are 4.0's, so 4.x boards take it over the air.
+
 - **Firmware (4.3): a hold lasts only as long as the quiet before it.** In
   4.2, a busy period longer than about 3 minutes at a board's start (boards
   switched on in an occupied room) still blinded a link. The movement
