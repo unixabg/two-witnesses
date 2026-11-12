@@ -5,6 +5,31 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.6-next (work in progress, on the next branch)
 
+- **Firmware (4.2): a busy start no longer blinds a link.** This one was
+  serious, and it was in 3.5's design.
+  - **The problem:** someone moving through a link during a board's first
+    minute leaves that link's quiet level too high, so afterwards quiet
+    scores low. 3.5 took that for "steadier than quiet" at once, then held
+    the quiet level where it was (the hold meant to keep a real still
+    stretch visible). The wrong level stayed, and the link was blind to
+    movement for many minutes. In the simulator, a walk through the start
+    left link 1-2 marked for about 15 minutes, quiet scoring 0.1x, and a
+    later walk was missed.
+  - **The fix:** a link is "armed" for steadier than quiet only once it has
+    scored near quiet (0.8-1.2x) for 120 seconds, not in a row, since its
+    quiet level started. A link that drops to the low threshold before
+    that had a busy start: that link alone learns its quiet level again,
+    counted in TWS (field 44), and is not marked.
+  - **Tested in the simulator:** after the busy start the link learns its
+    quiet level again about 10 s after the walk ends and scores 1.0x. The
+    3.5 still cases are marked as before, and the 35-minute stillness is
+    held and accepted.
+  - **The trade-off:** something usually moving that stops within about 2
+    minutes of a board starting gives a relearn, not a mark.
+  - Found in a review by another model. Its own fix (armed after 10 s near
+    quiet) did not cure it: a walk going on past the start scores near 1x
+    against the busy level and armed the link at once.
+
 - **Firmware (4.2): a board that goes quiet ends its link's "steadier" mark.**
   A second without a score left a steadier-than-quiet stretch as it was, so
   when the other board was switched off or went out of reach, the mark (and

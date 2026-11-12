@@ -218,6 +218,16 @@
 #define TW_LOW_MAX          9
 #define TW_LOW_HOLD         10
 #define TW_LOW_KEEP         1800
+/* 4.2: a busy start. Someone moving through a link in a board's first minute leaves its quiet
+   level too high, and quiet then scores low: 3.5 marked that steadier than quiet at once and held
+   the quiet level there (TW_LOW_KEEP), so the link stayed wrong and blind to movement for many
+   minutes. Now a link is "armed" for steadier than quiet only once its score has been near quiet
+   (TW_LOW_ARM_MIN..MAX, x10) for TW_LOW_ARM_S seconds (not in a row) since its quiet level
+   started; a link not armed that is at or below the low threshold for TW_LOW_HOLD seconds had a
+   busy start: that link learns its quiet level again (counted), instead of a mark */
+#define TW_LOW_ARM_MIN      8
+#define TW_LOW_ARM_MAX      12
+#define TW_LOW_ARM_S        120
 #define TW_LOW_GAP          5           /* 4.2: this many seconds in a row without a score (the board
                                            not heard: off, out of reach) end a mark; 3.5 kept it for ever */
 #define TW_KIND_EXTRA       0x20        /* flag: measured from an extra frame (TW_SET_MEASURE_EXTRA only) */
@@ -338,6 +348,8 @@ typedef struct {
     uint8_t  below;                         /* 3.5: seconds in a row at or below the low threshold */
     uint16_t low_held;                      /* 3.5: seconds its quiet level was held (up to TW_LOW_KEEP) */
     uint8_t  none;                          /* 4.2: seconds in a row without a score */
+    uint8_t  armed;                         /* 4.2: seconds near quiet since its quiet level started
+                                               (up to TW_LOW_ARM_S) */
     uint8_t  bin[TW_MAX_AMPS];              /* while learning: records with that bin above 0; then
                                                the live bins, TW_SCORE_BAND per band */
     uint16_t recs;                          /* records this second */
@@ -381,6 +393,8 @@ typedef struct {
        became the new quiet after TW_LOW_KEEP, since start */
     uint16_t low_bits;
     uint32_t low_count, low_accepted;
+    uint32_t low_relearned;                 /* 4.2: links that learned their quiet level again after a
+                                               busy start, since start */
     /* 3.3: this board's group; frames of other groups: how many, and the last group heard */
     uint8_t  group, other_group_last;
     uint32_t n_other_group;
