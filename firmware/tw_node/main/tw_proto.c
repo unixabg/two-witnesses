@@ -1301,6 +1301,7 @@ void tw_score_relearn(tw_node_t *n)
         n->score[i].low_held = 0;
         n->score[i].none = 0;
         n->score[i].armed = 0;
+        n->score[i].busy = 0;
         /* 4.2: and this second's sums so far: after a channel change they mix two channels, and
            would be the new quiet level's first value */
         memset(n->score[i].s1, 0, sizeof(n->score[i].s1));
@@ -1345,23 +1346,27 @@ const tw_rec_t *tw_aux_record(tw_node_t *n, uint32_t now)
             if (sc[i - 1] >= TW_LOW_ARM_MIN && sc[i - 1] <= TW_LOW_ARM_MAX && t->armed < TW_LOW_ARM_S) {
                 t->armed++;                         /* 4.2: seen near quiet */
             }
+            /* 4.2: a busy start: never seen at quiet, and low TW_LOW_HOLD seconds in a row: this link
+               learns its quiet level again. 4.3: by its own level, TW_BUSY_LOW, always on */
+            if (t->armed >= TW_LOW_ARM_S || t->none >= TW_LOW_GAP || (sc[i - 1] && sc[i - 1] > TW_BUSY_LOW)) {
+                t->busy = 0;
+            } else if (sc[i - 1] && ++t->busy >= TW_LOW_HOLD) {
+                t->start = 0;
+                t->busy = 0;
+                t->below = 0;
+                t->armed = 0;                       /* (the new quiet level earns it afresh) */
+                n->low_relearned++;
+            }
             /* 3.5: steadier than quiet: at or below the low threshold TW_LOW_HOLD seconds in a row;
-               a second without a score leaves it as it was */
-            if (!low || t->none >= TW_LOW_GAP || (sc[i - 1] && sc[i - 1] > low)) {
+               a second without a score leaves it as it was. 4.2: armed links only */
+            if (!low || t->armed < TW_LOW_ARM_S || t->none >= TW_LOW_GAP || (sc[i - 1] && sc[i - 1] > low)) {
                 t->below = 0;
                 t->low_held = 0;
             } else if (sc[i - 1]) {
                 if (t->below < 255) {
                     t->below++;
                 }
-                if (t->armed < TW_LOW_ARM_S) {
-                    if (t->below >= TW_LOW_HOLD) {  /* 4.2: never seen at quiet: a busy start. Again */
-                        t->start = 0;
-                        t->below = 0;
-                        t->armed = 0;               /* (the new quiet level earns it afresh) */
-                        n->low_relearned++;
-                    }
-                } else if (t->below >= TW_LOW_HOLD && t->low_held < TW_LOW_KEEP) {
+                if (t->below >= TW_LOW_HOLD && t->low_held < TW_LOW_KEEP) {
                     if (t->below == TW_LOW_HOLD) {
                         n->low_count++;             /* one more began */
                     }

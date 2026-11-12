@@ -228,6 +228,9 @@
 #define TW_LOW_ARM_MIN      8
 #define TW_LOW_ARM_MAX      12
 #define TW_LOW_ARM_S        120
+#define TW_BUSY_LOW         5           /* 4.3: the busy-start check's own level (x10) and TW_LOW_HOLD
+                                           seconds: always on, whatever the low threshold (key 8: off,
+                                           or high, it decided this in 4.2) */
 #define TW_LOW_GAP          5           /* 4.2: this many seconds in a row without a score (the board
                                            not heard: off, out of reach) end a mark; 3.5 kept it for ever */
 #define TW_KIND_EXTRA       0x20        /* flag: measured from an extra frame (TW_SET_MEASURE_EXTRA only) */
@@ -350,6 +353,7 @@ typedef struct {
     uint8_t  none;                          /* 4.2: seconds in a row without a score */
     uint8_t  armed;                         /* 4.2: seconds near quiet since its quiet level started
                                                (up to TW_LOW_ARM_S) */
+    uint8_t  busy;                          /* 4.3: seconds in a row at or below TW_BUSY_LOW, not armed */
     uint8_t  bin[TW_MAX_AMPS];              /* while learning: records with that bin above 0; then
                                                the live bins, TW_SCORE_BAND per band */
     uint16_t recs;                          /* records this second */

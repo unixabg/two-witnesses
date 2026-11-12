@@ -5,6 +5,25 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.6-next (work in progress, on the next branch)
 
+- **Firmware (4.3): the busy-start check no longer depends on the low
+  threshold.** In 4.2 the check ran inside the steadier-than-quiet logic
+  and used its threshold (key 8). Two problems came from that, both found
+  in a second review:
+  - With the low threshold off, a busy start was never caught. In the
+    simulator a link was still at 0.5x 13 minutes after one.
+  - A high threshold (0.8, 0.9) could take an ordinary quiet link that
+    hasn't armed yet for a busy start, again and again.
+
+  Now the check has its own fixed level, 0.5x for 10 s before the link is
+  armed, and it is always on. As a consequence, with key 8 below 0.5x, an
+  unarmed link at 0.4x relearns although the user's threshold would not
+  have marked it. That is intended: it is about whether the start was
+  wrong, not about what the user calls still.
+
+  In the simulator, a 90 s busy start is cured with the low threshold on or
+  off (1 relearn, then 1.0x). Thresholds of 0.7, 0.8 and 0.9 on quiet
+  boards gave no relearns over four seeds each.
+
 - **tw_node 4.2: version and image.** The four fixes below, in
   `tw_node-s3-ch11.bin`: a busy start no longer blinds a link, a board gone
   quiet ends its link's mark, a second without a score no longer breaks a
