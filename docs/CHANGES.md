@@ -5,6 +5,13 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.6-next (work in progress, on the next branch)
 
+- **tw_node 4.2: version and image.** The four fixes below, in
+  `tw_node-s3-ch11.bin`: a busy start no longer blinds a link, a board gone
+  quiet ends its link's mark, a second without a score no longer breaks a
+  detection, and a relearn starts from a clean second. The first 128 KB are
+  4.0's, so 4.x boards take it over the air (`tw_setid.py PORT update board
+  all`).
+
 - **`tw_setid.py PORT` names busy starts.** The cabled board's status line
   adds "N links learned quiet again after a busy start" when there were any
   (TWS field 44, tw_node 4.2).
