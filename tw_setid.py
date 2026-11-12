@@ -218,7 +218,8 @@ def status(p, seconds):
                                        other_last=int(f[33]) if len(f) >= 34 else None,
                                        detections=int(f[35]) if len(f) >= 36 else None,  # 3.4: begun since start
                                        lows=int(f[37]) if len(f) >= 39 else None,        # 3.5: steadier, begun,
-                                       lows_kept=int(f[38]) if len(f) >= 39 else None)   # and became the quiet
+                                       lows_kept=int(f[38]) if len(f) >= 39 else None,   # and became the quiet
+                                       relearned=int(f[44]) if len(f) >= 45 else None)   # 4.2: busy starts
             elif f[0] == "TWN" and len(f) >= 11:
                 seen[int(f[1])] = dict(cable=False, set_seq=int(f[9]), power_q=int(f[10]),
                                        relay=int(f[11]) if len(f) >= 12 else None,
@@ -285,7 +286,9 @@ def show(seen):
         if low and low[1]:
             relay += f", low {low[1][0] / 10:.1f}x" if low[1][0] else ", low off"
             if b["cable"] and b.get("lows") is not None:
-                relay += f" ({b['lows']:,} steadier since it started, {b['lows_kept']:,} became its quiet)"
+                relay += (f" ({b['lows']:,} steadier since it started, {b['lows_kept']:,} became its quiet"
+                          + (f", {b['relearned']:,} links learned quiet again after a busy start"
+                             if b.get("relearned") else "") + ")")
         if b.get("led"):
             pin, br = b["led"][:2]
             relay += f", LED on GPIO {pin} (brightness {br})" if pin else ", LED off"

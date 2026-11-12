@@ -5,6 +5,10 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.6-next (work in progress, on the next branch)
 
+- **`tw_setid.py PORT` names busy starts.** The cabled board's status line
+  adds "N links learned quiet again after a busy start" when there were any
+  (TWS field 44, tw_node 4.2).
+
 - **Firmware (4.2): a busy start no longer blinds a link.** This one was
   serious, and it was in 3.5's design.
   - **The problem:** someone moving through a link during a board's first
