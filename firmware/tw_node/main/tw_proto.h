@@ -205,6 +205,9 @@
 #define TW_DETECT_MIN       15
 #define TW_DETECT_MAX       100
 #define TW_DETECT_HOLD      2
+#define TW_DETECT_GAP       2           /* 4.2: a second without a score (too few frames: someone in
+                                           the way costs some) neither counts nor breaks a detection;
+                                           this many in a row do break it */
 /* 3.5: steadier than quiet. A link's score at or below its board's low threshold (TW_K_DETECT_LOW,
    x10; never given: TW_LOW_DEFAULT; 0: off) for TW_LOW_HOLD seconds in a row (seconds without a
    score neither count nor break it); marked in the TWM record, bit tx-1 of q[19..20], every second
@@ -332,6 +335,7 @@ typedef struct {
     uint8_t  above;                         /* 3.4: seconds in a row at or above the threshold */
     uint8_t  below;                         /* 3.5: seconds in a row at or below the low threshold */
     uint16_t low_held;                      /* 3.5: seconds its quiet level was held (up to TW_LOW_KEEP) */
+    uint8_t  none;                          /* 4.2: seconds in a row without a score */
     uint8_t  bin[TW_MAX_AMPS];              /* while learning: records with that bin above 0; then
                                                the live bins, TW_SCORE_BAND per band */
     uint16_t recs;                          /* records this second */

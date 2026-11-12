@@ -1299,6 +1299,7 @@ void tw_score_relearn(tw_node_t *n)
         n->score[i].above = 0;
         n->score[i].below = 0;
         n->score[i].low_held = 0;
+        n->score[i].none = 0;
         /* 4.2: and this second's sums so far: after a channel change they mix two channels, and
            would be the new quiet level's first value */
         memset(n->score[i].s1, 0, sizeof(n->score[i].s1));
@@ -1335,6 +1336,11 @@ const tw_rec_t *tw_aux_record(tw_node_t *n, uint32_t now)
             tw_score_t *t = &n->score[i];
             int held = low && t->below >= TW_LOW_HOLD && t->low_held < TW_LOW_KEEP;
             sc[i - 1] = i == n->id ? 0 : score_close(t, held);
+            if (sc[i - 1]) {
+                t->none = 0;
+            } else if (t->none < 255) {
+                t->none++;                          /* 4.2: seconds in a row without a score */
+            }
             /* 3.5: steadier than quiet: at or below the low threshold TW_LOW_HOLD seconds in a row;
                a second without a score leaves it as it was */
             if (!low || (sc[i - 1] && sc[i - 1] > low)) {
@@ -1369,8 +1375,8 @@ const tw_rec_t *tw_aux_record(tw_node_t *n, uint32_t now)
                         n->det_count++;             /* one more began */
                     }
                 }
-            } else {
-                s->above = 0;
+            } else if (sc[i - 1] || s->none >= TW_DETECT_GAP) {
+                s->above = 0;                       /* 4.2: not for one second without a score */
             }
         }
         memcpy(n->score_last, sc, TW_MAX_NODES);

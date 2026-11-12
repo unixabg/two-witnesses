@@ -5,6 +5,14 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.6-next (work in progress, on the next branch)
 
+- **Firmware (4.2): a second without a score no longer breaks a detection.** A
+  second with fewer than 5 records of a link has no score (frames lost:
+  someone in the way costs some). That reset the detection, so one walk could
+  count as several. Now such a second neither counts nor breaks it; two in a
+  row do. Found in a review by another model. In the simulator, a walk with
+  85% of one direction's frames blocked counted 3 detections on 4.1 and
+  counts 1 now. With fewer frames blocked nothing changes.
+
 - **Firmware (4.2): a relearn starts from a clean second.** A relearn (on
   command, or when a board changes channel) started the quiet level again,
   but kept the sums of the second it fell in. After a channel change those
