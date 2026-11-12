@@ -1336,14 +1336,14 @@ const tw_rec_t *tw_aux_record(tw_node_t *n, uint32_t now)
         uint16_t bits = 0, lbits = 0;
         for (int i = 1; i <= TW_MAX_NODES; i++) {
             tw_score_t *t = &n->score[i];
-            int held = low && t->below >= TW_LOW_HOLD && t->low_held < TW_LOW_KEEP;
+            int held = low && t->below >= TW_LOW_HOLD && t->low_held < t->low_cap;
             sc[i - 1] = i == n->id ? 0 : score_close(t, held);
             if (sc[i - 1]) {
                 t->none = 0;
             } else if (t->none < 255) {
                 t->none++;                          /* 4.2: seconds in a row without a score */
             }
-            if (sc[i - 1] >= TW_LOW_ARM_MIN && sc[i - 1] <= TW_LOW_ARM_MAX && t->armed < TW_LOW_ARM_S) {
+            if (sc[i - 1] >= TW_LOW_ARM_MIN && sc[i - 1] <= TW_LOW_ARM_MAX && t->armed < TW_LOW_KEEP) {
                 t->armed++;                         /* 4.2: seen near quiet */
             }
             /* 4.2: a busy start: never seen at quiet, and low TW_LOW_HOLD seconds in a row: this link
@@ -1366,16 +1366,20 @@ const tw_rec_t *tw_aux_record(tw_node_t *n, uint32_t now)
                 if (t->below < 255) {
                     t->below++;
                 }
-                if (t->below >= TW_LOW_HOLD && t->low_held < TW_LOW_KEEP) {
-                    if (t->below == TW_LOW_HOLD) {
-                        n->low_count++;             /* one more began */
-                    }
-                    if (++t->low_held == TW_LOW_KEEP) {
-                        n->low_accepted++;          /* held long enough: the new quiet */
-                    }
+                if (t->below == TW_LOW_HOLD) {
+                    n->low_count++;                 /* one more began: held as long as the quiet was seen */
+                    t->low_cap = t->armed < TW_LOW_KEEP ? t->armed : TW_LOW_KEEP;
+                }
+                if (t->below >= TW_LOW_HOLD && t->low_held < t->low_cap && ++t->low_held == t->low_cap) {
+                    n->low_accepted++;              /* held as long as it may: */
+                    t->start = 0;                   /* 4.3: the quiet level again, from the stillness */
+                    t->below = 0;
+                    t->low_held = 0;
+                    t->armed = 0;
+                    t->busy = 0;
                 }
             }
-            if (t->below >= TW_LOW_HOLD && t->low_held > 0 && t->low_held < TW_LOW_KEEP) {
+            if (t->below >= TW_LOW_HOLD && t->low_held > 0 && t->low_held < t->low_cap) {
                 lbits |= (uint16_t)(1u << (i - 1));
             }
             any |= sc[i - 1];

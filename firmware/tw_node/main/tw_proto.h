@@ -228,6 +228,13 @@
 #define TW_LOW_ARM_MIN      8
 #define TW_LOW_ARM_MAX      12
 #define TW_LOW_ARM_S        120
+/* 4.3: a hold is trusted only as far as the quiet before it was seen: it lasts at most as many
+   seconds as the link scored near quiet since its quiet level started (armed, counted up to
+   TW_LOW_KEEP), and when it ends the link learns its quiet level again (60 s without scores),
+   instead of the quiet level drifting down 0.2% a second (a level 10x too high took 19 minutes:
+   the link was blind meanwhile). After a long busy start, that ends the blindness minutes after the
+   room empties; after hours of quiet, a stillness is still held 30 minutes. low_accepted counts
+   every hold that ran its course, short ones too */
 #define TW_BUSY_LOW         5           /* 4.3: the busy-start check's own level (x10) and TW_LOW_HOLD
                                            seconds: always on, whatever the low threshold (key 8: off,
                                            or high, it decided this in 4.2) */
@@ -349,10 +356,11 @@ typedef struct {
     uint8_t  start;                         /* seconds into the quiet level's start */
     uint8_t  above;                         /* 3.4: seconds in a row at or above the threshold */
     uint8_t  below;                         /* 3.5: seconds in a row at or below the low threshold */
-    uint16_t low_held;                      /* 3.5: seconds its quiet level was held (up to TW_LOW_KEEP) */
+    uint16_t low_held;                      /* 3.5: seconds its quiet level was held (4.3: up to low_cap) */
     uint8_t  none;                          /* 4.2: seconds in a row without a score */
-    uint8_t  armed;                         /* 4.2: seconds near quiet since its quiet level started
-                                               (up to TW_LOW_ARM_S) */
+    uint16_t armed;                         /* 4.2: seconds near quiet since its quiet level started
+                                               (4.3: up to TW_LOW_KEEP; armed from TW_LOW_ARM_S) */
+    uint16_t low_cap;                       /* 4.3: this hold's length at most (armed when it began) */
     uint8_t  busy;                          /* 4.3: seconds in a row at or below TW_BUSY_LOW, not armed */
     uint8_t  bin[TW_MAX_AMPS];              /* while learning: records with that bin above 0; then
                                                the live bins, TW_SCORE_BAND per band */

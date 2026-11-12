@@ -12,7 +12,7 @@
  *       [--seed 7] [--realtime] [--out FILE] [--setpower 20@11[@1],40@20]
  *       [--block 2-1@10-50@0.75,...] [--setrelay 30@off,60@on] [--rxerr 0.01]
  *       [--set 0@cap=3,0@second=off,...] [--late measured] [--fix ahead,hwrx,cb]
- *       [--update T@TARGET:SIZE] [--still A-B] [--walk A-B]
+ *       [--update T@TARGET:SIZE] [--still A-B] [--walk A-B[@X-Y]]
  *
  * --update T@TARGET:SIZE (4.0): at T seconds the computer has given the first exit a program of
  * SIZE bytes (made up), and it sends it to TARGET (0: every board of its group) over the air. A
@@ -112,6 +112,7 @@ static simnode_t N_[MAXN + 1];
 static int n_nodes = 3, realtime = 0, exits[MAXN + 1];
 static double seconds = 60, p_loss = 0.05, p_rxerr = 0, t0_unix;
 static double walk_a = 30e6, walk_b = 40e6;    /* planted walk across the 1-2 link (--walk A-B seconds) */
+static int walk_x = 1, walk_y = 2;              /* 4.3: --walk A-B@X-Y: across link X-Y instead */
 static double up_t = -1;                        /* 4.0: --update T@TARGET:SIZE */
 static int up_target = 0, up_fired = 0;
 static uint32_t up_size = 0;
@@ -198,7 +199,7 @@ static void make_csi(int rx, int tx, double t, int8_t *buf)
         int live = (b >= 6 && b < 59 && b != 32) || (b >= 66 && b < 186);
         double base = live ? 20 + 12 * sin(0.37 * b + rx * 1.3 + tx * 0.7) : 0;
         double motion = 0;
-        if (t > walk_a && t < walk_b && ((rx == 1 && tx == 2) || (rx == 2 && tx == 1))) {
+        if (t > walk_a && t < walk_b && ((rx == walk_x && tx == walk_y) || (rx == walk_y && tx == walk_x))) {
             motion = 0.25 * sin(0.9 * b + t / 1e5);
         }
         if (still_a >= 0 && !(t > still_a && t < still_b) && ((rx == 1 && tx == 3) || (rx == 3 && tx == 1))) {
@@ -301,7 +302,8 @@ static int parse_args(int argc, char **argv, char *kill_spec, char *exit_spec, u
             }
         }
         else if (!strcmp(argv[i], "--walk") && i + 1 < argc) {
-            char *e; walk_a = strtod(argv[++i], &e) * 1e6; walk_b = (*e == '-' ? strtod(e + 1, NULL) : walk_a / 1e6 + 10) * 1e6;
+            char *e; walk_a = strtod(argv[++i], &e) * 1e6; walk_b = (*e == '-' ? strtod(e + 1, &e) : walk_a / 1e6 + 10) * 1e6;
+            if (*e == '@') sscanf(e + 1, "%d-%d", &walk_x, &walk_y);
         }
         else if (!strcmp(argv[i], "--update") && i + 1 < argc) {
             int tg; unsigned sz;

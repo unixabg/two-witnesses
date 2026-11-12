@@ -5,6 +5,54 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.6-next (work in progress, on the next branch)
 
+- **Firmware (4.3): a hold lasts only as long as the quiet before it.** In
+  4.2, a busy period longer than about 3 minutes at a board's start (boards
+  switched on in an occupied room) still blinded a link. The movement
+  scored near 1x against the busy level long enough to arm the link, and
+  when the room emptied the link was marked steadier and held. At the end
+  of the hold, the quiet level then drifted down at 0.2% a second: a level
+  10x too high took about 19 minutes. In the simulator, someone about for
+  260 s left link 1-2 marked for 20+ minutes.
+  - **The new rule:** a hold lasts at most as many seconds as the link
+    scored near quiet since its quiet level started, and never more than
+    30 minutes.
+  - **At the end of a hold,** the link learns its quiet level again, from
+    the stillness, instead of drifting.
+  - **Simulator, on the cases the review asked for:**
+    - Someone about for 260 s: the link was marked for about 200 s, then
+      relearned, and was normal (1.0x) about 4.5 minutes after the room
+      emptied.
+    - 150 s of quiet, then still for good: held for 150 s, then a relearn,
+      then 1.0x.
+    - 34 minutes of quiet, then a 35-minute stop: held for 1,798 s, then a
+      relearn.
+    - Someone walking across the link through the relearn after a hold:
+      the relearn learned the busy level, then the busy-start check
+      relearned once more, and the link was back at 1.0x.
+    - A shorter walk inside a relearn is ignored by the median start
+      without any help.
+    - 4.2's busy-start cure, with the low threshold on or off: no change.
+    - Normal runs: 4.2's records and scores. The timing and update cases
+      are unchanged.
+  - **Trade-offs:**
+    - Each hold that runs out now costs that link 60 s without scores. The
+      drift it replaces kept scoring, only less sensitively. For a wrong
+      level that is a clear gain. After a real stillness it means one
+      blind minute each time.
+    - Right after that relearn the stillness is the quiet level, so a fan
+      starting again reads as movement at its full ratio until the level
+      climbs. In the simulator that was about 55 s of detection (the
+      review expected 40-50 s). 4.2 had the same, only later.
+    - "Became its quiet" (TWS low_accepted) now counts every hold that ran
+      its course, short ones included.
+  - **The remaining limit:** a room that is busy for an hour or more when a
+    board starts still means up to 30 minutes of a link marked steadier
+    after it empties. On one link, an hour of a person and an hour of a fan
+    give the same signal. The replay, which takes its quiet level from the
+    whole night, does not have this limit.
+  - The simulator gains `--walk A-B@X-Y` (a walk across link X-Y).
+  - From a second review.
+
 - **Firmware (4.3): the busy-start check no longer depends on the low
   threshold.** In 4.2 the check ran inside the steadier-than-quiet logic
   and used its threshold (key 8). Two problems came from that, both found
