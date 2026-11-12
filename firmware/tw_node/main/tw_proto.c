@@ -1299,6 +1299,11 @@ void tw_score_relearn(tw_node_t *n)
         n->score[i].above = 0;
         n->score[i].below = 0;
         n->score[i].low_held = 0;
+        /* 4.2: and this second's sums so far: after a channel change they mix two channels, and
+           would be the new quiet level's first value */
+        memset(n->score[i].s1, 0, sizeof(n->score[i].s1));
+        memset(n->score[i].s2, 0, sizeof(n->score[i].s2));
+        n->score[i].recs = 0;
     }
 }
 

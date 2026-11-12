@@ -5,6 +5,14 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.6-next (work in progress, on the next branch)
 
+- **Firmware (4.2): a relearn starts from a clean second.** A relearn (on
+  command, or when a board changes channel) started the quiet level again,
+  but kept the sums of the second it fell in. After a channel change those
+  mixed two channels and became the new quiet level's first value. Now the
+  relearn clears them too. Found in a review by another model; in the
+  simulator the channel-change case now differs from 4.1 by that second, and
+  every other case is the same.
+
 - **tw_node 4.1: version and image.** The fixes since 4.0, in
   `tw_node-s3-ch11.bin`: the board on the cable keeps an upload until it is
   checked, and the program description names its version. The first 128 KB
