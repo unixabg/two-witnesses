@@ -1343,7 +1343,7 @@ const tw_rec_t *tw_aux_record(tw_node_t *n, uint32_t now)
             }
             /* 3.5: steadier than quiet: at or below the low threshold TW_LOW_HOLD seconds in a row;
                a second without a score leaves it as it was */
-            if (!low || (sc[i - 1] && sc[i - 1] > low)) {
+            if (!low || t->none >= TW_LOW_GAP || (sc[i - 1] && sc[i - 1] > low)) {
                 t->below = 0;
                 t->low_held = 0;
             } else if (sc[i - 1]) {

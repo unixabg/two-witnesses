@@ -5,6 +5,15 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.6-next (work in progress, on the next branch)
 
+- **Firmware (4.2): a board that goes quiet ends its link's "steadier" mark.**
+  A second without a score left a steadier-than-quiet stretch as it was, so
+  when the other board was switched off or went out of reach, the mark (and
+  the green LED) stayed for as long as it was gone. Now 5 seconds in a row
+  without a score end it. Found in a review by another model. In the
+  simulator, with link 1-3 still and board 3 off for 300 s, 4.1 kept the
+  mark through those 300 s; now it ends 5 s after board 3 goes, and the
+  stretch begins again when board 3 is back (the link is still still).
+
 - **Firmware (4.2): a second without a score no longer breaks a detection.** A
   second with fewer than 5 records of a link has no score (frames lost:
   someone in the way costs some). That reset the detection, so one walk could

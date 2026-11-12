@@ -218,6 +218,8 @@
 #define TW_LOW_MAX          9
 #define TW_LOW_HOLD         10
 #define TW_LOW_KEEP         1800
+#define TW_LOW_GAP          5           /* 4.2: this many seconds in a row without a score (the board
+                                           not heard: off, out of reach) end a mark; 3.5 kept it for ever */
 #define TW_KIND_EXTRA       0x20        /* flag: measured from an extra frame (TW_SET_MEASURE_EXTRA only) */
 #define TW_KIND_RXERR       0x40        /* flag: the radio reported this frame received with an error
                                            (rx_state != 0; the numbers are not documented). Kept, only
