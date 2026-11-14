@@ -3,6 +3,10 @@
 Newest first. Each entry keeps the reasoning and the desk tests behind the change;
 the README has only what you need to run the kit.
 
+## What changed in v5.7-next (work in progress, on the next branch)
+
+- Nothing yet: v5.6 is the release on main.
+
 ## What changed in v5.6 (2026-11-14): updates over the air, detections on the boards, steadier than quiet (one cable flash per board, then over the air)
 
 - **tw_node 4.4: version and image, a sanity check for US regulation.** The
