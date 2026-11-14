@@ -5,6 +5,16 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.6-next (work in progress, on the next branch)
 
+- **Firmware: the regulatory country is set (US).** `wifi_init()` now calls
+  `esp_wifi_set_country_code("US", false)` right after `esp_wifi_init()`,
+  instead of leaving the radio on ESP-IDF's default country. The chip then
+  applies the US channel and power tables itself; `tw_chan_valid()` (1-11)
+  and the 20 dBm cap stay as a second guard. It is set before any transmit
+  power, since setting a country can reset the power limit, and 802.11d is
+  off (fixed, not learned from access points). `TW_COUNTRY` in `main.c`
+  changes it for a build meant elsewhere. Not yet in an image: it goes into
+  the next firmware version with the others.
+
 - **README: what a board's LED shows.** A table of every LED state. It was
   scattered over the detection and steadier rows, and FLASH-README's LED row
   still said "movement only":

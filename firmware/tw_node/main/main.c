@@ -83,6 +83,7 @@
    keep the two the same) */
 #define FW_VERSION              "tw_node 4.3"
 #define TW_CHANNEL              11      /* 3.2: the channel of a board with nothing in its flash */
+#define TW_COUNTRY              "US"    /* the radio's regulatory country: its channels and power limits */
 #define TW_PHYMODE              WIFI_PHY_MODE_HT40
 #define TW_RATE                 WIFI_PHY_RATE_MCS0_LGI
 #define CSI_MAX                 384         /* HT40 non-STBC buffer; longer ones are cut */
@@ -385,6 +386,11 @@ static void wifi_init(void)
     ESP_ERROR_CHECK(esp_netif_init());
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+    /* the regulatory country, set rather than left to ESP-IDF's default, so the chip applies its
+       own channel and power tables (US: 1-11). Before any power is set: setting a country can reset
+       the transmit power limit, and apply_settings() sets the board's own power afterwards. Fixed,
+       not learned from access points (802.11d off): there is no access point to follow. */
+    ESP_ERROR_CHECK(esp_wifi_set_country_code(TW_COUNTRY, false));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
     ESP_ERROR_CHECK(esp_wifi_set_bandwidth(WIFI_IF_STA, WIFI_BW_HT40));
