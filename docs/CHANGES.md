@@ -5,6 +5,14 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.6-next (work in progress, on the next branch)
 
+- **tw_node 4.4: version and image, a sanity check for US regulation.** The
+  regulatory country below, in `tw_node-s3-ch11.bin`, built with ESP-IDF
+  v5.5.6. Nothing else changes. The same source as 4.3 built here gave 4.3's
+  image but for the build dates and the hashes that carry them, so the
+  difference is the country alone. The first 128 KB are 4.0's, so 4.x boards
+  take it over the air. To check on a board: `tw_setid.py PORT` says
+  `firmware tw_node 4.4`, and `power` still shows the power that was set.
+
 - **Firmware: the regulatory country is set (US).** `wifi_init()` now calls
   `esp_wifi_set_country_code("US", false)` right after `esp_wifi_init()`,
   instead of leaving the radio on ESP-IDF's default country. The chip then
@@ -12,8 +20,7 @@ the README has only what you need to run the kit.
   and the 20 dBm cap stay as a second guard. It is set before any transmit
   power, since setting a country can reset the power limit, and 802.11d is
   off (fixed, not learned from access points). `TW_COUNTRY` in `main.c`
-  changes it for a build meant elsewhere. Not yet in an image: it goes into
-  the next firmware version with the others.
+  changes it for a build meant elsewhere. In tw_node 4.4.
 
 - **README: what a board's LED shows.** A table of every LED state. It was
   scattered over the detection and steadier rows, and FLASH-README's LED row

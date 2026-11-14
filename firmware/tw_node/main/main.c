@@ -81,7 +81,7 @@
 
 /* the version: also in ../version.txt (ESP-IDF's program description, which the update's check names:
    keep the two the same) */
-#define FW_VERSION              "tw_node 4.3"
+#define FW_VERSION              "tw_node 4.4"
 #define TW_CHANNEL              11      /* 3.2: the channel of a board with nothing in its flash */
 #define TW_COUNTRY              "US"    /* the radio's regulatory country: its channels and power limits */
 #define TW_PHYMODE              WIFI_PHY_MODE_HT40

@@ -7,9 +7,14 @@ cabled to a computer prints everything (its own measurements and those relayed
 to it), so the other boards need only a power bank.
 
 ```
-599ecc75ab1165a77adc64021e83cab0a0baa81584a853082e1e80bf0a0bf4b8  tw_node-s3-ch11.bin
+650ed0de5177d19c35dace77b33b734d0f355fd62e1344e1678a83ad71ef1c54  tw_node-s3-ch11.bin
 ```
-Firmware tw_node 4.3: a second review's fixes, over the air from 4.x. The
+Firmware tw_node 4.4: a sanity check for US regulation, over the air from
+4.x. The radio's regulatory country is set to US, rather than left to
+ESP-IDF's default, so the chip applies the US channel and power tables
+itself; the kit's own limits (channels 1-11, at most 20 dBm) stay as before.
+Nothing else changes.
+4.3: a second review's fixes, over the air from 4.x. The
 busy-start check has its own level (0.5x) and is always on, whatever the low
 threshold; a steadier hold lasts at most as long as the link was quiet before
 it, then the link learns its quiet level again (a busy start of minutes, as
@@ -160,7 +165,7 @@ Board on the native USB port, in download mode (hold BOOT, tap RST, release BOOT
 Tap RST. Then check who it is (it says hello every 10 s):
 ```
 ~/scratch-esp/bin/python tw_setid.py /dev/ttyACM0
-# -> board 16, factory address 30:30:f9:xx:xx:xx, firmware tw_node 4.3, PSRAM 8 MB, LED off, group 0, program slot ota_0, no update key
+# -> board 16, factory address 30:30:f9:xx:xx:xx, firmware tw_node 4.4, PSRAM 8 MB, LED off, group 0, program slot ota_0, no update key
 ```
 A new board says it is board 16 and needs a number:
 `~/scratch-esp/bin/python tw_setid.py /dev/ttyACM0 board 1` (then 2, 3, ... for the
@@ -185,7 +190,7 @@ dd if=tw_node-s3-ch11.bin of=/tmp/tw_node-app.bin bs=4096 skip=32
 (no erase-flash; flash_board.sh does the same). Back to 3.5 the same way,
 with 3.5's image (in a clone: ``git show $(git log -1 --format=%h --grep='tw_node 3.5: version and
 image'):tw_node-s3-ch11.bin > tw_node-3.5.bin``). Tap RST; `tw_setid.py /dev/ttyACM0` should say
-`firmware tw_node 4.3` with the board's old number (and, once all are done,
+`firmware tw_node 4.4` with the board's old number (and, once all are done,
 every board's firmware). Then give it your update key:
 `tw_setid.py /dev/ttyACM0 update-key`. If it says board 16, write
 the whole image as above and set the number again. `tw_setid.py` tries up to three times and
