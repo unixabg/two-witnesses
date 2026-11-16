@@ -5,6 +5,15 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.7-next (work in progress, on the next branch)
 
+- **tw_node 4.5: version and image, CSI sensing as a module.** The module
+  below, in `tw_node-s3-ch11.bin` (`make csi_defconfig && make
+  release-bin`, ESP-IDF v5.5.6). The first 128 KB are 4.0's but for the
+  bootloader's build date and its hash, so 4.x boards take it over the air.
+  To check on boards: `tw_setid.py PORT` says `firmware tw_node 4.5` for
+  each; `detect`, `detect low`, `relearn` and `power` answer as before; the
+  LED shows movement, flashes white for a detection and green for steadier
+  than quiet; then a night against a 4.4 night in the same layout and power.
+
 - **Firmware: CSI sensing is a module** (`modules/csi/`, module 1;
   `docs/MODULES.md`, stage 3). The measurement records, the movement score,
   detections, steadier than quiet, relearning, their settings in flash, the
