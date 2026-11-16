@@ -1,0 +1,16 @@
+menu "two-witnesses module: CSI sensing (module 1)"
+
+config TW_MOD_CSI
+    bool "CSI sensing: measurement records, movement scores, detections"
+    default y
+    help
+        What the kit has always done: each board sends its CSI measurements
+        of the others (TWR records), works out a movement score for each link
+        every second, and marks detections (3.4) and links steadier than
+        quiet (3.5); its LED shows the most moving link. Senses people.
+
+        Off: the mesh as transport only. The core still measures CSI on the
+        frames it receives, for the links' health (the clock, RSSI, errors),
+        and sends none of it.
+
+endmenu

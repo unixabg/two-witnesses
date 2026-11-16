@@ -9,7 +9,7 @@
  * stderr as JSON, for check_sim.py.
  *
  *   sim --nodes 3 --seconds 60 [--loss 0.05] [--exit 1[,2]] [--kill 1@20-40]
- *       [--seed 7] [--realtime] [--out FILE] [--setpower 20@11[@1],40@20]
+ *       [--seed 7] [--realtime] [--no-csi] [--out FILE] [--setpower 20@11[@1],40@20]
  *       [--block 2-1@10-50@0.75,...] [--setrelay 30@off,60@on] [--rxerr 0.01]
  *       [--set 0@cap=3,0@second=off,...] [--late measured] [--fix ahead,hwrx,cb]
  *       [--update T@TARGET:SIZE] [--still A-B] [--walk A-B[@X-Y]]
@@ -62,6 +62,7 @@
  */
 #define _DEFAULT_SOURCE
 #include "../tw_node/main/tw_proto.h"
+#include "../../modules/csi/tw_mod_csi/csi_sense.h"     /* CSI sensing (docs/MODULES.md) */
 
 #include <math.h>
 #include <stdio.h>
@@ -110,6 +111,7 @@ typedef struct {
 
 static simnode_t N_[MAXN + 1];
 static int n_nodes = 3, realtime = 0, exits[MAXN + 1];
+static int no_csi;                      /* --no-csi: without the CSI sensing module (docs/MODULES.md) */
 static double seconds = 60, p_loss = 0.05, p_rxerr = 0, t0_unix;
 static double walk_a = 30e6, walk_b = 40e6;    /* planted walk across the 1-2 link (--walk A-B seconds) */
 static int walk_x = 1, walk_y = 2;              /* 4.3: --walk A-B@X-Y: across link X-Y instead */
@@ -258,6 +260,7 @@ static int parse_args(int argc, char **argv, char *kill_spec, char *exit_spec, u
         else if (!strcmp(argv[i], "--kill") && i + 1 < argc) strncpy(kill_spec, argv[++i], 255);
         else if (!strcmp(argv[i], "--seed") && i + 1 < argc) *seed = (unsigned)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--realtime")) realtime = 1;
+        else if (!strcmp(argv[i], "--no-csi")) no_csi = 1;     /* 5.0: the core alone (docs/MODULES.md) */
         else if (!strcmp(argv[i], "--no-hdr-set")) ;      /* 2.6's test; 3.0: always so */
         else if (!strcmp(argv[i], "--give") && i + 1 < argc) {
             for (char *p = argv[++i]; *p && n_give < MAXGIVE;) {
@@ -399,6 +402,7 @@ int main(int argc, char **argv)
         s->last_status = -1e9;
         s->up_at = -1;
         tw_init(&s->st, (uint8_t)id, (uint8_t)s->exit, seed * 31u + (unsigned)id);
+        s->st.sense = no_csi ? NULL : &tw_csi_sense;
         tw_set_info(&s->st, "sim|board");
         s->st.set_channel = 11;                          /* 3.2: the firmware's default */
         for (char *p = group_spec; *p;) {                /* 3.3: --group FROM-TO:GROUP[:CHANNEL] */
@@ -847,6 +851,7 @@ int main(int argc, char **argv)
             uint8_t grp = s->st.group;                   /* 3.3: its group is in its flash: kept */
             uint32_t done_id = s->st.up_state == TW_UP_ST_READY ? s->st.up_id : s->st.up_done_id;   /* 4.0 */
             tw_init(&s->st, (uint8_t)who, (uint8_t)was_exit, (unsigned)(t + who));
+            s->st.sense = no_csi ? NULL : &tw_csi_sense;
             s->st.group = grp;
             s->st.up_done_id = done_id;                  /* 4.0: the firmware's word, from its flash */
             tw_set_info(&s->st, "sim|board");

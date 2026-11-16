@@ -75,7 +75,8 @@ check-modules:
 	@$(PY) tools/tw_modules.py check $(if $(CONFIG),$(FW)/sdkconfig)
 
 sim:
-	gcc -O2 -o firmware/sim/sim firmware/sim/sim.c $(FW)/main/tw_proto.c -lm
+	gcc -O2 -I$(FW)/main -o firmware/sim/sim firmware/sim/sim.c $(FW)/main/tw_proto.c \
+	  modules/csi/tw_mod_csi/csi_sense.c -lm
 
 sim-check: sim
 	cd firmware/sim && ./sim --nodes 3 --seconds 60 > /tmp/tw_sim_out.txt 2> /tmp/tw_sim_truth.json && \

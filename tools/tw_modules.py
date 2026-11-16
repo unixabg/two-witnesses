@@ -77,6 +77,8 @@ def check(mods, on):
     seen = {}
     for m in mods:
         where = os.path.relpath(m["dir"], ROOT)
+        if os.path.basename(m["dir"]) != m["name"]:
+            problems.append(f"{where}: its folder must be named as the module: modules/{m['name']}/")
         if not os.path.isdir(m["component"]):
             problems.append(f"{where}: no folder tw_mod_{m['name']} (its ESP-IDF component)")
         if not 1 <= m["id"] <= 254:

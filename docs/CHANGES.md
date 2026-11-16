@@ -5,6 +5,25 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.7-next (work in progress, on the next branch)
 
+- **Firmware: CSI sensing is a module** (`modules/csi/`, module 1;
+  `docs/MODULES.md`, stage 3). The measurement records, the movement score,
+  detections, steadier than quiet, relearning, their settings in flash, the
+  `TWSET detect`/`detect low`/`relearn` commands and the LED's movement colors
+  and flashes moved, unchanged, out of `main.c` and `tw_proto.c` into
+  `modules/csi/tw_mod_csi/` (`csi_sense.c` portable, `tw_mod_csi.c` the board
+  side). The core still measures CSI on every frame it receives, for the
+  links' health (the clock, RSSI, receive errors), and calls the module
+  through `tw_module.h` and a table the build writes from the configuration:
+  no `#ifdef`. `make mesh_defconfig` builds the core alone (the mesh as
+  transport only: no CSI records, scores or detections; its `TWM` record goes
+  every second, for its uptime); not yet tried on boards. A `TWSET` line no
+  part of the build knows now gets `TWERR not in this build: ...` instead of
+  nothing. The desk simulator gives the module to its boards the same way
+  (`--no-csi`: without), and gave the same output, byte for byte, before and
+  after the move (3 boards; 6 with someone walking; a board off for 40 s with
+  10% loss; receive errors with measure-second on). To check on boards: a
+  night against a 4.4 night (the image changes, so no byte check there).
+
 - **Building with make, a first step to modules.** `docs/MODULES.md` is the
   design: the core (the mesh, the radio, CSI receiving for the links' health)
   and modules (CSI sensing first, a sound level next), chosen in a menu like

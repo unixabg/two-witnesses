@@ -369,7 +369,26 @@ typedef struct {
     float    ref[TW_SCORE_BANDS];           /* each band's quiet level */
 } tw_score_t;
 
-typedef struct {
+/* The CSI sensing module's portable part (docs/MODULES.md: modules/csi/tw_mod_csi/csi_sense.c),
+   called by the core through tw_node_t.sense; NULL: a build without it (the links' health is still
+   counted, and nothing of CSI is sent) */
+struct tw_node;
+typedef struct tw_sense {
+    /* a CSI measurement, after the core counted it (tw_add_measurement's arguments): its record,
+       queued, or NULL */
+    const tw_rec_t *(*measure)(struct tw_node *n, uint32_t now, uint8_t tx, uint32_t txseq, uint32_t rx_us,
+                               int8_t rssi, int8_t noise, uint8_t agc, int8_t fft, uint8_t phy, uint8_t kflags,
+                               const int8_t *csi, int csi_len, float gain, int compact);
+    /* once a second: TWM's fields of the module (scores sc[0..15], detections sc[17..18], steadier
+       marks sc[19..20]); nonzero if any score */
+    int      (*second)(struct tw_node *n, uint32_t now, uint8_t *sc);
+    void     (*relearn)(struct tw_node *n);               /* TW_K_RELEARN, and a channel change */
+    uint8_t  (*detect_level)(const struct tw_node *n);    /* for TWS */
+    uint8_t  (*detect_low_level)(const struct tw_node *n);
+} tw_sense_t;
+
+typedef struct tw_node {
+    const tw_sense_t *sense;        /* the CSI sensing module, or NULL (set after tw_init) */
     uint8_t  id, is_exit, boot;
     uint32_t seq, recseq;
     uint32_t heard_us[TW_MAX_NODES + 1];    /* local time last heard, per board */
@@ -579,13 +598,10 @@ int      tw_set_channel(tw_node_t *n, uint8_t ch);
    looking for the others (do not send then). A switch to home sets chan_changed (keep it in flash) */
 uint8_t  tw_chan_step(tw_node_t *n, uint32_t now, int *quiet);
 
-/* 3.4: learn every link's quiet level again (TW_K_RELEARN, and after a channel change) */
-void     tw_score_relearn(tw_node_t *n);
-/* 3.4: this board's detection threshold, x10 (its TW_K_DETECT, or TW_DETECT_DEFAULT) */
-uint8_t  tw_detect_level(const tw_node_t *n);
-/* 3.5: this board's steadier-than-quiet threshold, x10 (its TW_K_DETECT_LOW, or TW_LOW_DEFAULT;
-   0: off) */
-uint8_t  tw_detect_low_level(const tw_node_t *n);
+/* for modules (docs/MODULES.md): a queue slot for a new own record (a free one, else the oldest),
+   and a record that is not a measurement queued: its kind, and len bytes of content */
+tw_qent_t *tw_new_entry(tw_node_t *n);
+tw_rec_t *tw_queue_aux(tw_node_t *n, uint32_t now_local_us, uint8_t kind, const uint8_t *data, int len);
 
 /* 3.3: is this frame (its header peeked) of this board's group? If not, it is counted (TWS) and
    the caller drops it */
@@ -628,7 +644,8 @@ void     tw_survey_done(tw_node_t *n, uint32_t now, uint8_t gen, const uint8_t *
    print), or NULL. Call again until NULL. They take the board's ordinary record numbers, so the
    computer counts them for delivery like any record */
 const tw_rec_t *tw_aux_record(tw_node_t *n, uint32_t now_local_us);
-/* make a record from one CSI measurement and queue it (returns it, for printing). kflags: the
+/* one CSI measurement: counted for the links' health, then (with the CSI sensing module, n->sense)
+   made a record and queued (returns it, for printing; NULL without the module). kflags: the
    record flags the radio gave (TW_KIND_FWI, TW_KIND_RXERR), and TW_KIND_EXTRA if the frame was an
    extra frame: then it is only counted, and NULL returned, unless TW_SET_MEASURE_EXTRA is set */
 const tw_rec_t *tw_add_measurement(tw_node_t *n, uint32_t now_local_us, uint8_t tx, uint32_t txseq,
@@ -642,9 +659,6 @@ int      tw_format_record(const tw_rec_t *r, char *out, int max);
 int      tw_format_node(const tw_node_t *n, const tw_hdr_t *h, int8_t rssi, uint8_t heard_pct, char *out,
                         int max);
 int      tw_format_status(const tw_node_t *n, uint32_t now_local_us, char *out, int max);
-/* the L-LTF byte ranges for an ESP32/S3 CSI buffer (esp-radar's table); 0 if unknown */
-int      tw_lltf_ranges(uint8_t secondary, uint8_t sig_mode, uint8_t cwb, uint8_t stbc, int len,
-                        int ranges[4]);
 uint32_t tw_rand(tw_node_t *n);
 /* a new setting given at this board (the computer asked for it), for every board: the network
    key's next generation. Power in quarter dBm, TW_POWER_MIN_Q..TW_POWER_MAX_Q. Returns 0, or -1 if

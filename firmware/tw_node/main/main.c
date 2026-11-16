@@ -78,6 +78,7 @@
 #include "mbedtls/base64.h"
 
 #include "tw_proto.h"
+#include "tw_module.h"                 /* the modules built in (docs/MODULES.md) */
 
 /* the version: also in ../version.txt (ESP-IDF's program description, which the update's check names:
    keep the two the same) */
@@ -679,14 +680,14 @@ static void handle(ev_t *ev)
     const tw_rec_t *r = tw_add_measurement(&s_node, ev->local_us, ev->c.src, ev->c.seq, ev->c.rx_us,
                                            ev->c.rssi, ev->c.noise, ev->c.agc, ev->c.fft, ev->c.phy,
                                            ev->c.kflags, ev->c.csi, ev->c.len, ev->c.gain, compact);
-    if (!r) {
+    if ((ev->c.kflags & TW_KIND_EXTRA) && !(s_node.set_flags & TW_SET_MEASURE_EXTRA)) {
         return;                         /* an extra frame: counted only (tw_add_measurement) */
     }
     if (ev->c.kflags & TW_KIND_RXERR) {
-        s_rx_err++;
+        s_rx_err++;                     /* the link's health: with or without CSI sensing */
     }
     s_last_rssi[ev->c.src] = ev->c.rssi;
-    if (s_node.is_exit) {
+    if (r && s_node.is_exit) {
         out(line, tw_format_record(r, line, sizeof(line)));
     }
 }
@@ -782,30 +783,11 @@ static void led_load(void)
     }
     tw_setting_init(&s_node, TW_K_LED_PIN, &s_led_pin, 1, gp);
     tw_setting_init(&s_node, TW_K_LED_BRIGHT, &s_led_bright, 1, gb);
-    /* 3.4: its detection threshold (x10), never given: the default (reported as such, generation 0) */
-    uint8_t det = 0, gd = 0;
-    if (nvs_open("tw", NVS_READONLY, &h) == ESP_OK) {
-        nvs_get_u8(h, "det", &det);
-        nvs_get_u8(h, "lgd", &gd);
-        nvs_close(h);
+    for (int m = 0; m < tw_modules_n; m++) {     /* the modules' settings, from flash */
+        if (tw_modules[m]->init) {
+            tw_modules[m]->init(&s_node);
+        }
     }
-    if (det < TW_DETECT_MIN || det > TW_DETECT_MAX) {
-        det = TW_DETECT_DEFAULT;
-        gd = 0;
-    }
-    tw_setting_init(&s_node, TW_K_DETECT, &det, 1, gd);
-    /* 3.5: its steadier-than-quiet threshold (x10, 0: off), never given: the default */
-    uint8_t low = 255, gl = 0;
-    if (nvs_open("tw", NVS_READONLY, &h) == ESP_OK) {
-        nvs_get_u8(h, "dlo", &low);
-        nvs_get_u8(h, "lgl", &gl);
-        nvs_close(h);
-    }
-    if (low > TW_LOW_MAX) {
-        low = TW_LOW_DEFAULT;
-        gl = 0;
-    }
-    tw_setting_init(&s_node, TW_K_DETECT_LOW, &low, 1, gl);
 }
 
 /* what the board says about itself every 5 s (TWV): firmware and build (2.5-2.7 added its LED
@@ -1003,33 +985,10 @@ static void led_apply(void)
         s_survey_at = (uint32_t)esp_timer_get_time() + TW_SURVEY_DELAY_US;
         s_survey_due = 1;
     }
-    if (ch & (1u << TW_K_DETECT)) {     /* 3.4: its detection threshold: kept */
-        nvs_handle_t h;
-        if (nvs_open("tw", NVS_READWRITE, &h) == ESP_OK) {
-            nvs_set_u8(h, "det", tw_detect_level(&s_node));
-            nvs_set_u8(h, "lgd", s_node.set_gen[TW_K_DETECT]);
-            nvs_commit(h);
-            nvs_close(h);
+    for (int m = 0; m < tw_modules_n; m++) {     /* the modules keep theirs */
+        if (tw_modules[m]->keys_changed) {
+            tw_modules[m]->keys_changed(&s_node, ch);
         }
-        ESP_LOGW(TAG, "detection threshold %u.%u x quiet", tw_detect_level(&s_node) / 10, tw_detect_level(&s_node) % 10);
-    }
-    if (ch & (1u << TW_K_DETECT_LOW)) { /* 3.5: its steadier-than-quiet threshold: kept */
-        nvs_handle_t h;
-        uint8_t v = tw_detect_low_level(&s_node);
-        if (nvs_open("tw", NVS_READWRITE, &h) == ESP_OK) {
-            nvs_set_u8(h, "dlo", v);
-            nvs_set_u8(h, "lgl", s_node.set_gen[TW_K_DETECT_LOW]);
-            nvs_commit(h);
-            nvs_close(h);
-        }
-        if (v) {
-            ESP_LOGW(TAG, "steadier-than-quiet threshold 0.%u x quiet", v);
-        } else {
-            ESP_LOGW(TAG, "steadier-than-quiet detection off");
-        }
-    }
-    if (ch & (1u << TW_K_RELEARN)) {    /* 3.4: tw_proto.c started it again when it took the action */
-        ESP_LOGW(TAG, "learning the quiet level again (60 s)");
     }
     if ((ch & (1u << TW_K_LED_TRY)) && s_led_ch) {
         memcpy(s_led_try_rgb, s_node.set_val[TW_K_LED_TRY], 3);
@@ -1094,12 +1053,20 @@ static void led_second(void)
             tw_led_color(step < 6 ? ramp[step - 3] : 0, s_led_bright, c);
         }
     } else {
-        tw_led_color(tw_led_pick(s_node.score_last), s_led_bright, c);
-        if (!c[0] && !c[1] && !c[2] && s_node.low_bits) {
-            /* 3.5: nothing moving, and a link steadier than quiet (held): green */
-            c[1] = s_led_bright;
+        /* the modules' colors: the first that shows one (CSI sensing: the most moving link, green
+           for a link steadier than quiet), and a white flash first if any asks (a detection) */
+        int flash = 0;
+        c[0] = c[1] = c[2] = 0;
+        for (int m = 0; m < tw_modules_n; m++) {
+            uint8_t mc[3] = {0, 0, 0};
+            if (tw_modules[m]->led) {
+                flash |= tw_modules[m]->led(&s_node, s_led_bright, mc);
+                if (!c[0] && !c[1] && !c[2]) {
+                    memcpy(c, mc, 3);
+                }
+            }
         }
-        if (s_node.det_bits) {
+        if (flash) {
             /* 3.4: a detection this second (a link at or above the threshold, held): a short white
                flash, then the color as usual. While it holds, once a second */
             const uint8_t w[3] = {s_led_bright, s_led_bright, s_led_bright};
@@ -1444,6 +1411,24 @@ static int up_command(char *cmd, uint32_t now)
 
 static void hello(void);
 
+/* a cable command of a module's: answered, and its settings acted on (as the core's); 0 if none
+   of the modules knows it */
+static int module_command(char *cmd)
+{
+    for (int m = 0; m < tw_modules_n; m++) {
+        char msg[160];
+        int after = 0, k = tw_modules[m]->command ? tw_modules[m]->command(&s_node, cmd, msg, sizeof(msg), &after) : 0;
+        if (k > 0) {
+            if (after) {
+                led_apply();            /* the settings it took (named for the LED's, acts on all) */
+            }
+            out_wait(msg, k);
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static void poll_commands(void)
 {
     static char cmd[2048];              /* 4.0: an update chunk's line is about 1.7 KB */
@@ -1585,51 +1570,8 @@ static void poll_commands(void)
                 }
                 out_wait(msg, k);
                 hello();
-            } else if (n && (!strncmp(cmd, "TWSET detect ", 13) || !strncmp(cmd, "TWSET relearn", 13))) {
-                /* 3.4: "TWSET detect V" (x10 of quiet, TW_DETECT_MIN..MAX) and "TWSET relearn" (3.5: and
-                   "TWSET detect low V", 0..TW_LOW_MAX, 0: off), for
-                   this board; with " board N gen G", given to board N (0: all) by record, as led */
-                char msg[128], *bd = strstr(cmd, " board ");
-                int k, v = 0, target = -1, gen = -1, key = 0, vlen = 0;
-                uint8_t val[1] = {0};
-                if (bd) {
-                    if (sscanf(bd, " board %d gen %d", &target, &gen) != 2 || target < 0 ||
-                        target > TW_MAX_NODES || gen < 1 || gen > 255) {
-                        target = -2;
-                    }
-                    *bd = 0;
-                }
-                if (sscanf(cmd, "TWSET detect low %d", &v) == 1 && v >= 0 && v <= TW_LOW_MAX) {
-                    key = TW_K_DETECT_LOW;      /* 3.5: steadier than quiet, x10 (0: off) */
-                    val[0] = (uint8_t)v;
-                    vlen = 1;
-                } else if (sscanf(cmd, "TWSET detect %d", &v) == 1 && v >= TW_DETECT_MIN && v <= TW_DETECT_MAX) {
-                    key = TW_K_DETECT;
-                    val[0] = (uint8_t)v;
-                    vlen = 1;
-                } else if (!strcmp(cmd, "TWSET relearn")) {
-                    key = TW_K_RELEARN;
-                }
-                if (key && target == -1) {
-                    tw_setting_local(&s_node, (uint8_t)key, val, vlen);
-                    led_apply();
-                    k = key == TW_K_DETECT ? snprintf(msg, sizeof(msg), "TWOK detect %d.%d x quiet\n", v / 10, v % 10)
-                        : key == TW_K_DETECT_LOW ? (v ? snprintf(msg, sizeof(msg), "TWOK detect low 0.%d x quiet\n", v)
-                                                      : snprintf(msg, sizeof(msg), "TWOK detect low off\n"))
-                        : snprintf(msg, sizeof(msg), "TWOK relearn: the quiet level again (60 s)\n");
-                } else if (key && target >= 0) {
-                    tw_setting_give(&s_node, (uint8_t)target, (uint8_t)key, val, vlen, (uint8_t)gen);
-                    led_apply();
-                    char who[12];
-                    snprintf(who, sizeof(who), target ? "board %d" : "all boards", target);
-                    k = snprintf(msg, sizeof(msg), "TWOK %s given to %s, generation %d\n",
-                                 key == TW_K_DETECT ? "detect" : key == TW_K_DETECT_LOW ? "detect low" : "relearn",
-                                 who, gen);
-                } else {
-                    k = snprintf(msg, sizeof(msg), "TWERR detect %d..%d, detect low 0..%d (x10 of quiet; 0: off), "
-                                 "relearn [board N gen G]\n", TW_DETECT_MIN, TW_DETECT_MAX, TW_LOW_MAX);
-                }
-                out_wait(msg, k);
+            } else if (n && module_command(cmd)) {
+                /* a module's (CSI sensing: TWSET detect, detect low, relearn), answered there */
             } else if (n && sscanf(cmd, "TWSET channel %d", &id) == 1) {
                 /* 3.2: the channel, for every board: each moves TW_CHAN_SWITCH_US after taking it */
                 char msg[128];
@@ -1681,6 +1623,12 @@ static void poll_commands(void)
                 usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(200));
                 vTaskDelay(pdMS_TO_TICKS(200));
                 esp_restart();
+            } else if (n && !strncmp(cmd, "TWSET ", 6)) {
+                /* 4.5: not known to this build (another firmware's, or a module it was built without) */
+                char msg[112];
+                int k = snprintf(msg, sizeof(msg), "TWERR not in this build: %.48s (tw_setid.py PORT: its modules)\n",
+                                 cmd + 6);
+                out_wait(msg, k);
             }
             n = 0;
         } else if (n < (int)sizeof(cmd) - 1) {
@@ -1913,6 +1861,11 @@ void app_main(void)
     ESP_ERROR_CHECK(usb_serial_jtag_driver_install(&usb_cfg));
     s_id = board_id();
     tw_init(&s_node, s_id, 0, esp_random());
+    for (int m = 0; m < tw_modules_n; m++) {     /* CSI sensing's portable part, to the core */
+        if (tw_modules[m]->sense) {
+            s_node.sense = tw_modules[m]->sense;
+        }
+    }
     s_node.group = board_group();       /* 3.3: before the radio (its address carries it) */
     s_node.access_us = X_ACCESS_US;
     tw_set_info(&s_node, FW_VERSION "|" __DATE__ " " __TIME__);     /* sent to the computer every 5 s */

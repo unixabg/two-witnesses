@@ -269,7 +269,9 @@ uint8_t tw_chan_step(tw_node_t *n, uint32_t now, int *quiet)
             n->chan_home = n->chan_target = n->scan_ch;
             n->chan_wait = 0;
             n->chan_changed = 1;
-            tw_score_relearn(n);                    /* 3.4: another channel: learn quiet again */
+            if (n->sense) {
+                n->sense->relearn(n);               /* 3.4: another channel: learn quiet again */
+            }
             if (n->set_gen[TW_K_CHANNEL] == 0) {
                 /* 3.3: its own channel was never given (a new board, or one moved to this group): the
                    one it found is its channel. Else the network's never-given channel would not look
@@ -309,7 +311,9 @@ uint8_t tw_chan_step(tw_node_t *n, uint32_t now, int *quiet)
             n->chan_changed = 1;
             n->chan_switches++;
             n->last_frame_us = now;                 /* the others come within a second; if not, look */
-            tw_score_relearn(n);                    /* 3.4: another channel sees the room anew */
+            if (n->sense) {
+                n->sense->relearn(n);               /* 3.4: another channel sees the room anew */
+            }
         }
     } else {
         n->chan_wait = 0;
@@ -892,25 +896,10 @@ int tw_parse_frame(const uint8_t *buf, int len, tw_hdr_t *h, tw_rec_cb cb, void 
     return h->n_records;
 }
 
-/* ---------------- measurements ---------------- */
-int tw_lltf_ranges(uint8_t secondary, uint8_t sig_mode, uint8_t cwb, uint8_t stbc, int len, int ranges[4])
-{
-    (void)sig_mode; (void)cwb; (void)stbc;
-    /* esp-radar csi_sub_carrier_table.c (ESP32/S2/S3/C3): with no secondary channel the L-LTF
-       is bytes 76..128 then 2..54; with a secondary channel (above or below) 12..64 then 66..118 */
-    if (len < 118) {
-        return 0;
-    }
-    if (secondary == 0) {
-        ranges[0] = 76; ranges[1] = 128; ranges[2] = 2; ranges[3] = 54;
-    } else {
-        ranges[0] = 12; ranges[1] = 64; ranges[2] = 66; ranges[3] = 118;
-    }
-    return 1;
-}
-
+/* ---------------- measurements: the CSI sensing module's (modules/csi), but for the counts in
+   tw_add_measurement ---------------- */
 /* a queue slot for a new own record: a free one, else the oldest (counted as dropped if never sent) */
-static tw_qent_t *new_entry(tw_node_t *n)
+tw_qent_t *tw_new_entry(tw_node_t *n)
 {
     tw_qent_t *e = NULL, *oldest = NULL;
     for (int i = 0; i < TW_QUEUE_LEN; i++) {
@@ -945,9 +934,9 @@ void tw_set_info(tw_node_t *n, const char *text)
 }
 
 /* queue a record that is not a measurement: its kind, and len bytes of content */
-static tw_rec_t *queue_aux(tw_node_t *n, uint32_t now, uint8_t kind, const uint8_t *data, int len)
+tw_rec_t *tw_queue_aux(tw_node_t *n, uint32_t now, uint8_t kind, const uint8_t *data, int len)
 {
-    tw_qent_t *e = new_entry(n);
+    tw_qent_t *e = tw_new_entry(n);
     tw_rec_t *r = &e->rec;
     memset(r, 0, sizeof(*r));
     r->rx = n->id; r->tx = n->id; r->hop = 0; r->boot = n->boot;
@@ -1021,8 +1010,8 @@ static void setting_take(tw_node_t *n, uint8_t target, uint8_t key, const uint8_
         if (net) {
             net_apply(n);                   /* 3.0: the settings it uses (set_pending if they changed) */
         }
-        if (key == TW_K_RELEARN) {
-            tw_score_relearn(n);            /* 3.4: here, so the firmware and the simulator do the same */
+        if (key == TW_K_RELEARN && n->sense) {
+            n->sense->relearn(n);           /* 3.4: here, so the firmware and the simulator do the same */
         }
     }
 }
@@ -1196,133 +1185,7 @@ static tw_rec_t *setting_record(tw_node_t *n, uint32_t now)
             }
         }
     }
-    return len ? queue_aux(n, now, TW_KIND_CMD, q, len) : NULL;
-}
-
-/* one record into the score of board tx (a normal frame's measurement) */
-static void score_add(tw_node_t *n, uint8_t tx, const tw_rec_t *r)
-{
-    tw_score_t *s = &n->score[tx];
-    if (s->n != r->n) {                         /* first record, or its length changed: start over */
-        memset(s, 0, sizeof(*s));
-        s->n = r->n;
-    }
-    if (s->nb == 0) {                           /* learning which bins are live */
-        for (int i = 0; i < r->n; i++) {
-            s->bin[i] = (uint8_t)(s->bin[i] + (r->q[i] > 0));       /* counts, while learning */
-        }
-        if (++s->learn < TW_SCORE_LEARN) {
-            return;
-        }
-        int k = 0;
-        for (int i = 0; i < r->n; i++) {        /* the counts become the list of live bins (k <= i) */
-            if (2 * s->bin[i] > TW_SCORE_LEARN) {
-                s->bin[k++] = (uint8_t)i;
-            }
-        }
-        s->nb = (uint8_t)(k / TW_SCORE_BAND);
-        if (s->nb == 0) {
-            s->n = 0;                           /* nothing live: try again */
-        }
-        return;
-    }
-    float bm[TW_SCORE_BANDS], level = 0;
-    float step = r->step / 4.0f;
-    for (int b = 0; b < s->nb; b++) {
-        float sum = 0;
-        for (int j = 0; j < TW_SCORE_BAND; j++) {
-            sum += 20.0f * log10f(r->q[s->bin[b * TW_SCORE_BAND + j]] * step + 0.5f);
-        }
-        bm[b] = sum / TW_SCORE_BAND;
-        level += bm[b];
-    }
-    level /= s->nb;
-    for (int b = 0; b < s->nb; b++) {
-        float v = bm[b] - level;                /* the record's own level out */
-        s->s1[b] += v;
-        s->s2[b] += v * v;
-    }
-    s->recs++;
-}
-
-/* close a second of board tx's score: x10 as a byte (0: none this second) */
-static uint8_t score_close(tw_score_t *s, int hold_down)
-{
-    uint8_t out = 0;
-    if (s->nb && s->recs >= 5) {
-        float tot = 0;
-        int started = s->start >= TW_SCORE_START;
-        for (int b = 0; b < s->nb; b++) {
-            float m = s->s1[b] / s->recs;
-            float sd = sqrtf(fmaxf(s->s2[b] / s->recs - m * m, 0.0f));
-            if (!started) {
-                /* 3.4: the quiet level starts as a stepped median of 60 seconds: the first second's,
-                   then a step toward each next one, large at first and smaller each second (30% down
-                   to 4%). Only above or below counts, not by how much, so a few loud seconds (someone
-                   about) move it little: with 10 of 60 seconds busy at 4x, within 7% (the mean of
-                   30 seconds was 54% high, and took minutes to come down) */
-                if (s->start == 0) {
-                    s->ref[b] = sd;
-                } else {
-                    float a = 0.3f * 8.0f / (8.0f + (float)s->start);
-                    s->ref[b] *= sd > s->ref[b] ? 1.0f + a : 1.0f / (1.0f + a);
-                }
-            } else {
-                tot += sd / fmaxf(s->ref[b], 1e-3f);
-                /* then a running median: a small step towards each new second (0.2%: a lasting
-                   change becomes the usual in about 10-15 minutes, as the replay's settle) */
-                /* 3.5: but not down while the link is marked steadier than quiet (hold_down) */
-                if (sd > s->ref[b]) {
-                    s->ref[b] *= 1.002f;
-                } else if (!hold_down) {
-                    s->ref[b] *= 1.0f / 1.002f;
-                }
-            }
-        }
-        if (!started) {
-            s->start++;
-        } else {
-            int v = (int)lrintf(tot / s->nb * 10.0f);
-            out = (uint8_t)(v < 1 ? 1 : v > 255 ? 255 : v);
-        }
-    }
-    memset(s->s1, 0, sizeof(s->s1));
-    memset(s->s2, 0, sizeof(s->s2));
-    s->recs = 0;
-    return out;
-}
-
-void tw_score_relearn(tw_node_t *n)
-{
-    for (int i = 1; i <= TW_MAX_NODES; i++) {
-        n->score[i].start = 0;              /* the live bins stay: the quiet level starts again */
-        n->score[i].above = 0;
-        n->score[i].below = 0;
-        n->score[i].low_held = 0;
-        n->score[i].none = 0;
-        n->score[i].armed = 0;
-        n->score[i].busy = 0;
-        /* 4.2: and this second's sums so far: after a channel change they mix two channels, and
-           would be the new quiet level's first value */
-        memset(n->score[i].s1, 0, sizeof(n->score[i].s1));
-        memset(n->score[i].s2, 0, sizeof(n->score[i].s2));
-        n->score[i].recs = 0;
-    }
-}
-
-uint8_t tw_detect_level(const tw_node_t *n)
-{
-    uint8_t v = n->set_len[TW_K_DETECT] ? n->set_val[TW_K_DETECT][0] : 0;
-    return v >= TW_DETECT_MIN && v <= TW_DETECT_MAX ? v : TW_DETECT_DEFAULT;
-}
-
-uint8_t tw_detect_low_level(const tw_node_t *n)
-{
-    if (!n->set_len[TW_K_DETECT_LOW]) {
-        return TW_LOW_DEFAULT;
-    }
-    uint8_t v = n->set_val[TW_K_DETECT_LOW][0];
-    return v <= TW_LOW_MAX ? v : TW_LOW_DEFAULT;
+    return len ? tw_queue_aux(n, now, TW_KIND_CMD, q, len) : NULL;
 }
 
 const tw_rec_t *tw_aux_record(tw_node_t *n, uint32_t now)
@@ -1331,86 +1194,14 @@ const tw_rec_t *tw_aux_record(tw_node_t *n, uint32_t now)
     if (sec != n->score_sec) {                  /* once a second: close it, queue the scores */
         n->score_sec = sec;
         uint8_t sc[TW_MAX_NODES + 5];
-        int any = 0;
-        uint8_t level = tw_detect_level(n), low = tw_detect_low_level(n);
-        uint16_t bits = 0, lbits = 0;
-        for (int i = 1; i <= TW_MAX_NODES; i++) {
-            tw_score_t *t = &n->score[i];
-            int held = low && t->below >= TW_LOW_HOLD && t->low_held < t->low_cap;
-            sc[i - 1] = i == n->id ? 0 : score_close(t, held);
-            if (sc[i - 1]) {
-                t->none = 0;
-            } else if (t->none < 255) {
-                t->none++;                          /* 4.2: seconds in a row without a score */
-            }
-            if (sc[i - 1] >= TW_LOW_ARM_MIN && sc[i - 1] <= TW_LOW_ARM_MAX && t->armed < TW_LOW_KEEP) {
-                t->armed++;                         /* 4.2: seen near quiet */
-            }
-            /* 4.2: a busy start: never seen at quiet, and low TW_LOW_HOLD seconds in a row: this link
-               learns its quiet level again. 4.3: by its own level, TW_BUSY_LOW, always on */
-            if (t->armed >= TW_LOW_ARM_S || t->none >= TW_LOW_GAP || (sc[i - 1] && sc[i - 1] > TW_BUSY_LOW)) {
-                t->busy = 0;
-            } else if (sc[i - 1] && ++t->busy >= TW_LOW_HOLD) {
-                t->start = 0;
-                t->busy = 0;
-                t->below = 0;
-                t->armed = 0;                       /* (the new quiet level earns it afresh) */
-                n->low_relearned++;
-            }
-            /* 3.5: steadier than quiet: at or below the low threshold TW_LOW_HOLD seconds in a row;
-               a second without a score leaves it as it was. 4.2: armed links only */
-            if (!low || t->armed < TW_LOW_ARM_S || t->none >= TW_LOW_GAP || (sc[i - 1] && sc[i - 1] > low)) {
-                t->below = 0;
-                t->low_held = 0;
-            } else if (sc[i - 1]) {
-                if (t->below < 255) {
-                    t->below++;
-                }
-                if (t->below == TW_LOW_HOLD) {
-                    n->low_count++;                 /* one more began: held as long as the quiet was seen */
-                    t->low_cap = t->armed < TW_LOW_KEEP ? t->armed : TW_LOW_KEEP;
-                }
-                if (t->below >= TW_LOW_HOLD && t->low_held < t->low_cap && ++t->low_held == t->low_cap) {
-                    n->low_accepted++;              /* held as long as it may: */
-                    t->start = 0;                   /* 4.3: the quiet level again, from the stillness */
-                    t->below = 0;
-                    t->low_held = 0;
-                    t->armed = 0;
-                    t->busy = 0;
-                }
-            }
-            if (t->below >= TW_LOW_HOLD && t->low_held > 0 && t->low_held < t->low_cap) {
-                lbits |= (uint16_t)(1u << (i - 1));
-            }
-            any |= sc[i - 1];
-            /* 3.4: a detection: at or above the threshold TW_DETECT_HOLD seconds in a row */
-            tw_score_t *s = &n->score[i];
-            if (sc[i - 1] && sc[i - 1] >= level) {
-                if (s->above < 255) {
-                    s->above++;
-                }
-                if (s->above >= TW_DETECT_HOLD) {
-                    bits |= (uint16_t)(1u << (i - 1));
-                    if (s->above == TW_DETECT_HOLD) {
-                        n->det_count++;             /* one more began */
-                    }
-                }
-            } else if (sc[i - 1] || s->none >= TW_DETECT_GAP) {
-                s->above = 0;                       /* 4.2: not for one second without a score */
-            }
-        }
-        memcpy(n->score_last, sc, TW_MAX_NODES);
-        n->det_bits = bits;
+        memset(sc, 0, sizeof(sc));
+        /* the CSI sensing module's fields: scores, detections, steadier marks (docs/MODULES.md) */
+        int any = n->sense ? n->sense->second(n, now, sc) : 0;
         /* 2.7: and where its last second frame ended (as header byte 23, which goes in 3.0) */
         sc[TW_MAX_NODES] = n->xend_q;
-        sc[TW_MAX_NODES + 1] = (uint8_t)bits;   /* 3.4: this second's detections */
-        sc[TW_MAX_NODES + 2] = (uint8_t)(bits >> 8);
-        n->low_bits = lbits;
-        sc[TW_MAX_NODES + 3] = (uint8_t)lbits;  /* 3.5: this second's steadier-than-quiet marks */
-        sc[TW_MAX_NODES + 4] = (uint8_t)(lbits >> 8);
         any |= n->xend_q;
-        if (any) {
-            tw_rec_t *r = queue_aux(n, now, TW_KIND_SCORE, sc, TW_MAX_NODES + 5);
+        if (any || !n->sense) {                 /* without CSI sensing: every second (its uptime) */
+            tw_rec_t *r = tw_queue_aux(n, now, TW_KIND_SCORE, sc, TW_MAX_NODES + 5);
             r->txseq = sec;                     /* this board's uptime, s */
             return r;
         }
@@ -1430,14 +1221,14 @@ const tw_rec_t *tw_aux_record(tw_node_t *n, uint32_t now)
     if (n->survey_len && (uint32_t)(now - n->survey_us) < TW_SURVEY_SEND_US &&
         (uint32_t)(now - n->survey_sent_us) >= TW_INFO_EVERY_US) {    /* 3.1: the survey, every 5 s */
         n->survey_sent_us = now;
-        tw_rec_t *r = queue_aux(n, now, TW_KIND_SURVEY, n->survey, n->survey_len);
+        tw_rec_t *r = tw_queue_aux(n, now, TW_KIND_SURVEY, n->survey, n->survey_len);
         r->txseq = n->survey_gen;
         return r;
     }
     if (n->info[0] && (!n->info_sent || (uint32_t)(now - n->info_us) >= TW_INFO_EVERY_US)) {
         n->info_sent = 1;
         n->info_us = now;
-        return queue_aux(n, now, TW_KIND_INFO, (const uint8_t *)n->info, (int)strlen(n->info));
+        return tw_queue_aux(n, now, TW_KIND_INFO, (const uint8_t *)n->info, (int)strlen(n->info));
     }
     return NULL;
 }
@@ -1828,7 +1619,7 @@ static tw_rec_t *up_status_record(tw_node_t *n, uint32_t now)
     q[8] = (uint8_t)(n->up_total >> 8);
     q[9] = n->up_man_ok;
     memcpy(q + 10, n->up_bits, (size_t)nb);
-    return queue_aux(n, now, TW_KIND_UPDATE, q, 10 + nb);
+    return tw_queue_aux(n, now, TW_KIND_UPDATE, q, 10 + nb);
 }
 
 int tw_frame_ours(tw_node_t *n, const tw_hdr_t *h)
@@ -1872,71 +1663,10 @@ const tw_rec_t *tw_add_measurement(tw_node_t *n, uint32_t now, uint8_t tx, uint3
     if ((kflags & TW_KIND_RXERR) && valid_id(tx) && n->c_rxerr[tx] < 0xffff) {
         n->c_rxerr[tx]++;
     }
-    int fwi = (kflags & TW_KIND_FWI) != 0;
-    float amp[TW_MAX_AMPS];
-    int cnt = 0;
-    int ranges[4];
-    if (compact && tw_lltf_ranges((uint8_t)((phy >> 5) & 3), (uint8_t)((phy >> 3) & 3), (uint8_t)(phy & 3),
-                                  (uint8_t)((phy >> 2) & 1), csi_len, ranges)) {
-        for (int k = 0; k < 2; k++) {
-            for (int b = ranges[2 * k]; b + 1 < ranges[2 * k + 1] && cnt < TW_COMPACT_AMPS; b += 2) {
-                float i = csi[b], q = csi[b + 1];
-                amp[cnt++] = sqrtf(i * i + q * q) * gain;
-            }
-        }
-    } else {
-        compact = 0;
-        int bins = csi_len / 2;
-        if (bins > TW_MAX_AMPS) {
-            bins = TW_MAX_AMPS;
-        }
-        for (int b = 0; b < bins; b++) {
-            float i = csi[2 * b], q = csi[2 * b + 1];
-            amp[cnt++] = sqrtf(i * i + q * q) * gain;
-        }
-        if (fwi && cnt >= 2) {
-            amp[0] = amp[1] = 0;            /* first 4 bytes invalid */
-        }
-    }
-    tw_qent_t *e = new_entry(n);
-    tw_rec_t *r = &e->rec;
-    float mx = 0;
-    for (int i = 0; i < cnt; i++) {
-        if (amp[i] > mx) {
-            mx = amp[i];
-        }
-    }
-    int step = (int)ceilf(mx * 4.0f / 255.0f);
-    if (step < 1) {
-        step = 1;
-    }
-    if (step > 255) {
-        step = 255;
-    }
-    r->rx = n->id; r->tx = tx; r->hop = 0; r->boot = n->boot;
-    r->kind = (uint8_t)((compact ? TW_KIND_LLTF : TW_KIND_FULL) | (kflags & (TW_KIND_FWI | TW_KIND_RXERR | TW_KIND_EXTRA)));
-    r->recseq = ++n->recseq;
-    r->txseq = txseq;
-    r->rx_us = rx_us;
-    r->net_us = now + n->offset;
-    r->rssi = rssi; r->noise = noise; r->agc = agc; r->fft = fft;
-    r->n = (uint8_t)cnt;
-    r->step = (uint8_t)step;
-    r->phy = phy;
-    for (int i = 0; i < cnt; i++) {
-        int v = (int)lrintf(amp[i] * 4.0f / (float)step);
-        r->q[i] = (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v);
-    }
-    e->used = 1;
-    e->sent = 0;
-    e->relay = 0;                       /* the slot may have held a relayed record before */
-    e->made_us = now;
-    n->n_meas++;
-    if (!(kflags & TW_KIND_EXTRA) && valid_id(tx) && tx != n->id) {
-        score_add(n, tx, r);            /* 2.2: the movement score (normal frames only) */
-    }
-    tw_seen(n, n->id, n->boot, r->recseq);
-    return r;
+    /* the record and the movement score: the CSI sensing module's (docs/MODULES.md); without
+       it, the counts above (the links' health) and nothing sent */
+    return n->sense ? n->sense->measure(n, now, tx, txseq, rx_us, rssi, noise, agc, fft, phy, kflags,
+                                        csi, csi_len, gain, compact) : NULL;
 }
 
 /* ---------------- de-duplication: a 256-wide window per measuring board and boot ---------------- */
@@ -2156,7 +1886,8 @@ int tw_format_status(const tw_node_t *n, uint32_t now, char *out, int max)
                     (unsigned long)n->n_relay_full, n->set_flags, (unsigned long)n->n_extra_sent,
                     (unsigned long)n->n_extra_skipped, n->chan_home, n->set_channel, n->scan_on, n->chan_switches,
                     n->chan_scans, n->group, (unsigned long)n->n_other_group, n->other_group_last,
-                    tw_detect_level(n), (unsigned long)n->det_count, tw_detect_low_level(n),
+                    n->sense ? n->sense->detect_level(n) : 0, (unsigned long)n->det_count,
+                    n->sense ? n->sense->detect_low_level(n) : 0,
                     (unsigned long)n->low_count, (unsigned long)n->low_accepted, n->up_state, n->up_tx_on,
                     (unsigned long)n->up_frames, (unsigned long)n->up_bursts, up_need_count(n),
                     (unsigned long)n->low_relearned);

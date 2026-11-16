@@ -1,7 +1,8 @@
 # Modules: two-witnesses as a carrier platform
 
-Status: design, on the next branch (v5.7-next). Nothing here is in a released
-image yet; each stage below says what it changes and how it is checked.
+Status: on the next branch (v5.7-next). Stages 1-3 below are done (stage 3
+waits for its night on real boards); nothing here is in a released image yet.
+Each stage says what it changes and how it is checked.
 
 ## The idea
 
@@ -34,7 +35,8 @@ measures:
 - the radio: channel (1-11), transmit power (2-20 dBm), the regulatory
   country (US, 4.4). **Modules never touch the radio**: every build keeps
   these limits;
-- the LED's core colors (looking for its group, an update, a test);
+- the LED: its pin and brightness, the test sequence and colors to try (a
+  module gives the color it shows the rest of the time);
 - the channel survey (it needs promiscuous mode);
 - **CSI receiving, for link health.** CSI is measured on frames a board
   receives anyway: it sends nothing, so it costs no airtime and changes
@@ -46,10 +48,9 @@ measures:
     gain (AGC, FFT: a saturated link at 20 dBm, or one near its noise), and
     the radio's error flags (`rx_state`, first word invalid).
 
-  A menu option, "link health from CSI (recommended)", on by default, lets a
-  build turn it off; the clock then learns its offset from the ESP-NOW
-  callback instead (about 0.4 ms later and less steady: such a build must pass
-  the timing test below before it is offered).
+  Every build measures CSI for this; a menu option to turn it off (the clock
+  learning its offset from the ESP-NOW callback instead, about 0.4 ms later
+  and less steady) would come only with a timing test that shows it holds.
 
 What a board sends of its CSI is the CSI sensing module's: the amplitude
 records (`TWR`), which fill most of a frame, and everything worked out from
@@ -127,31 +128,52 @@ holds (the core keeps 120 bytes for its own records).
 
 ## On the board: the interface
 
+`firmware/tw_node/main/tw_module.h` (stage 3):
+
 ```c
 typedef struct tw_module {
-    uint8_t     id, version;              /* module.yml */
-    const char *name;                     /* "csi": in TWV, TWH */
-    uint8_t     senses_people;            /* module.yml: said in TWH, shown by tw_setid.py */
-    void (*init)(tw_mod_ctx_t *);
-    void (*tick)(tw_mod_ctx_t *, uint32_t now);              /* once a second, in the work task */
-    void (*on_csi)(tw_mod_ctx_t *, const tw_csi_t *);         /* a CSI measurement (the core's) */
-    void (*on_record)(tw_mod_ctx_t *, const tw_rec_t *);      /* its records, from other boards */
-    int  (*on_key)(tw_mod_ctx_t *, uint8_t key, const uint8_t *v, int len);   /* 0 taken, -1 refused */
-    void (*score_fields)(tw_mod_ctx_t *, uint8_t *q, int n);  /* kind 3's module fields (csi only) */
-    const char *(*line)(tw_mod_ctx_t *, const tw_rec_t *, char *out, int max);  /* optional: its own
-                                                                 line at the exit instead of TWZ */
+    uint8_t     id, version;            /* module.yml */
+    const char *name;                   /* "csi" */
+    uint8_t     senses_people;
+    const tw_sense_t *sense;            /* the CSI sensing module only: its portable part */
+    void (*init)(tw_node_t *n);                          /* its settings, from flash */
+    void (*keys_changed)(tw_node_t *n, uint32_t changed);    /* settings taken: keep its own */
+    int  (*command)(tw_node_t *n, char *cmd, char *reply, int max, int *after);  /* TWSET ... */
+    int  (*led)(const tw_node_t *n, uint8_t bright, uint8_t c[3]);   /* its color; 1: flash */
 } tw_module_t;
 ```
 
 - Every hook is optional, and runs in the work task (the one that owns the
   protocol state), so a module needs no locks of its own.
+- Which modules a build has: a table, `tw_modules.c`, written into the build
+  folder by `main/CMakeLists.txt` from the enabled modules
+  (`CONFIG_TW_MOD_*`). The core walks the table; it has no `#ifdef` for any
+  module. (Every module found is a requirement of the core's component, and
+  one turned off builds nothing: ESP-IDF settles requirements before it reads
+  the configuration, so only a module's sources may depend on it.)
+- A cable command no part of the build knows gets `TWERR not in this build:
+  ...` (before tw_node 4.5 a board said nothing).
+- `tw_sense_t` (`tw_proto.h`) is how the portable core calls CSI sensing
+  (`modules/csi/tw_mod_csi/csi_sense.c`): a measurement into a record, the
+  second's scores and detections into the `TWM` record, relearning. The
+  desk simulator gives it to its boards the same way (`--no-csi`: without).
+  CSI sensing's state and constants are still in `tw_proto.h`'s
+  `tw_node_t`; they move into the module in a later step.
+
+To come with the module record (stage 4), for every other module:
+
+```c
+    void (*tick)(tw_mod_ctx_t *, uint32_t now);              /* once a second */
+    void (*on_csi)(tw_mod_ctx_t *, const tw_csi_t *);         /* a CSI measurement (the core's) */
+    void (*on_record)(tw_mod_ctx_t *, const tw_rec_t *);      /* its records, from other boards */
+    int  (*on_key)(tw_mod_ctx_t *, uint8_t key, const uint8_t *v, int len);   /* key 9 */
+    const char *(*line)(tw_mod_ctx_t *, const tw_rec_t *, char *out, int max);
+```
+
 - A module sends with `tw_mod_send(ctx, subtype, bytes, len)`. The core puts
   it in a module record (kind 8, below), queues it like any record (two
   copies, relaying, de-duplication) and keeps the module within its budget.
 - `tw_mod_key_get/set` keep a module's settings in flash under its own name.
-- Which modules a build has: a table, `tw_modules.c`, generated at build time
-  from the enabled modules (`CONFIG_TW_MOD_*`). The core walks the table; it
-  has no `#ifdef` for any module.
 
 ### The module record (kind 8)
 
@@ -247,7 +269,8 @@ At the top of the kit:
 | `make sim` / `make sim-check` | the desk simulator, and its 3-board check |
 | `make clean` | the build folders |
 
-A configuration in `configs/` holds the kit's own choices only (`CONFIG_TW_*`:
+Configurations: `csi` (today's board) and `mesh` (the core alone, the mesh as
+transport only; not yet tested on boards). A configuration in `configs/` holds the kit's own choices only (`CONFIG_TW_*`:
 modules and their options); the rest of the build settings stay in
 `firmware/tw_node/sdkconfig.defaults`, under every configuration. After
 `make menuconfig`, the image is named `<config>-custom` until it is saved.
@@ -266,14 +289,18 @@ board, many times a board's share of the air).
 ## Stages, each leaving next working
 
 1. **This document.**
-2. **Building**: the `Makefile`, `configs/`, and the module checks (no
-   firmware change). Gate: `make csi_defconfig && make bin` gives 4.4's
-   image but for the build dates and the hashes that carry them (the check
-   used for 4.4).
-3. **The CSI module**: the interface, the generated table, and CSI sensing
-   moved behind it, the core keeping CSI receiving. Gate: the simulator as
-   before; then a night on real boards against a 4.4 night in the same
-   layout and power (moving code changes the image, so no byte check here).
+2. **Building** (done): the `Makefile`, `configs/`, and the module checks
+   (no firmware change). Gate, passed: `make csi_defconfig && make bin` gave
+   4.4's image but for the build dates and the hashes that carry them (the
+   check used for 4.4).
+3. **The CSI module** (done; its night to come): the interface, the
+   generated table, and CSI sensing moved behind it, the core keeping CSI
+   receiving. `configs/mesh_defconfig` builds the core alone. Gates: the
+   desk simulator gave the same output, byte for byte, before and after the
+   move (3 boards; 6 with someone walking; a board off for 40 s with 10%
+   loss; receive errors with measure-second on), and runs with `--no-csi`;
+   then a night on real boards against a 4.4 night in the same layout and
+   power (moving code changes the image, so no byte check on the image).
 4. **Module records**: kind 8, `TWZ`, key 9, the module lists in `TWV` and
    `TWH`, and `tw_setid.py` / `check` reading them. Gate: a mixed group (4.4
    and 5.0 boards) for a night; the simulator with an unknown module.

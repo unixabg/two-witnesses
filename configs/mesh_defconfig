@@ -1,0 +1,5 @@
+# mesh_defconfig: the core alone, the mesh as transport only (docs/MODULES.md).
+# Each board still measures CSI on the frames it receives, for the links' health,
+# and sends none of it: no TWR records, no movement scores, no detections.
+# Not yet tested on boards (docs/MODULES.md: the timing test before it is offered).
+CONFIG_TW_MOD_CSI=n
