@@ -11,7 +11,10 @@ another; with tw_node boards, every pair in both directions):
     how far the signal is above it
   - radio "motion" (the same measure as watch.py: how much the CSI picture
     changes from one second to the next, x its usual)
-  - scrolling sparklines of motion, RSSI and packets
+  - scrolling sparklines of motion, RSSI and packets; a second the boards
+    marked a detection on a link (tw_node 3.4+, its own threshold: tw_setid.py
+    detect) is red in that link's motion sparkline, and its motion figure is
+    red while it holds
 and below: the latest events (watch.py's events.csv), the newest lines of
 listen.log, and the computer's health (disk, mains, sleep block, clock).
 
@@ -332,6 +335,19 @@ def spark(vals, width, lo, hi, chars):
     return "".join(out).rjust(width)
 
 
+def det_columns(times, span, width, now=None):
+    """the columns of a sparkline (span seconds over width columns, newest at the right) that
+    hold a second the boards marked a detection (times: whole seconds, computer's clock)"""
+    now = int(time.time()) if now is None else now
+    step = span / width
+    cols = set()
+    for t in times:
+        age = now - t
+        if 0 <= age < span:
+            cols.add(width - 1 - int(age / step))
+    return cols
+
+
 def resample(hist, span, width):
     """Bucket the last `span` seconds into `width` columns (max per column)."""
     now = int(time.time())
@@ -547,12 +563,19 @@ class Screen:
             s2 = link.stats(2) or s10
             self.put(y, 23, f"{s2['lost']:6.1f}%", self.color(1 if s2["lost"] < 10 else 2 if s2["lost"] < 30 else 3))
             self.put(y, 31, f"{s10['rssi']:7.1f} {s10['rssi'] - s10['noise']:7.1f}")
-            self.put(y, 47, f"{xtxt:>7s}", self.color(3 if (lastx or 0) >= 10 else 2 if (lastx or 0) >= 6 else 0))
+            dets = boards.get("det", {}).get(k, ())
+            det_now = bool(dets) and now - dets[-1] <= 2      # the boards say: a detection, holding
+            self.put(y, 47, f"{xtxt:>7s}", self.color(3 if det_now or (lastx or 0) >= 10 else
+                                                     2 if (lastx or 0) >= 6 else 0))
             cx, _cr, _cp = resample(link.hist, span, sw)
             if now - link.last_rx > 5:
                 self.put(y, 56, f"NO DATA for {now - link.last_rx:.0f} s", self.color(3))
             else:
-                self.put(y, 56, spark(cx, sw, 0, 2, self.chars))
+                sp = spark(cx, sw, 0, 2, self.chars)
+                self.put(y, 56, sp)
+                for c in det_columns(dets, span, sw):   # the boards' detections: red
+                    ch = sp[c] if sp[c] != " " else self.chars[0]
+                    self.put(y, 56 + c, ch, self.color(3) | curses.A_BOLD)
             y += 1
         y += 1
         if getattr(self, "map_on", False):
@@ -921,6 +944,17 @@ def run(scr, a):
                             seen.add(dk)
                             deliv.add(*dk)
                             seen_order.append(dk)
+                            if kind == "TWM" and len(f) >= 23:
+                                # 3.4+: board,boot,record,uptime,clock,16 scores,second frame's end,
+                                # its detections (hex, bit i: board i+1 as it hears it)
+                                bits, rx = int(f[22], 16), int(f[0])
+                                det = boards.setdefault("det", {})
+                                for i in range(16):
+                                    if bits >> i & 1:
+                                        q = det.setdefault(f"{i + 1}{ARROW}{rx}",
+                                                           collections.deque(maxlen=HIST_S))
+                                        if not q or q[-1] != int(t):
+                                            q.append(int(t))
                     elif kind == "TWV":         # 2.2+: board,boot,record number,firmware,build
                         dk = (int(f[0]), int(f[1]), int(f[2]))
                         if dk not in seen:      # a record like any: counts for its board's delivery

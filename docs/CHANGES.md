@@ -5,6 +5,16 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.7-next (work in progress, on the next branch)
 
+- **Dashboard: the boards' detections in red.** A second the boards marked a
+  detection on a link (tw_node 3.4+, by their own threshold: `tw_setid.py
+  ... detect`, 3.0x quiet unless set) is red in that link's motion sparkline,
+  at every span (1, 5, 30 minutes), and the link's motion figure is red
+  while the detection holds. Read from the `TWM` records, which the
+  dashboard only counted for delivery before. Checked by feeding it a
+  simulator run with someone walking between boards 1 and 2: the red
+  covered the same stretch as those two links' motion bars, and nothing
+  else. (With modules, stage 5, this goes into the CSI module's plug-in.)
+
 - **tw_node 4.5: version and image, CSI sensing as a module.** The module
   below, in `tw_node-s3-ch11.bin` (`make csi_defconfig && make
   release-bin`, ESP-IDF v5.5.6). The first 128 KB are 4.0's but for the
