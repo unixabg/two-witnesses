@@ -5,7 +5,17 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.7-next (work in progress, on the next branch)
 
-- Nothing yet: v5.6 is the release on main.
+- **Building with make, a first step to modules.** `docs/MODULES.md` is the
+  design: the core (the mesh, the radio, CSI receiving for the links' health)
+  and modules (CSI sensing first, a sound level next), chosen in a menu like
+  the Linux kernel's (ESP-IDF's own Kconfig). At the top of the kit:
+  `make csi_defconfig`, `make menuconfig`, `make bin` (the image in `out/`),
+  `make release-bin` (copied to `tw_node-s3-ch11.bin`, at a version bump),
+  `make modules`, `make sim-check`. `tools/tw_modules.py` checks modules for
+  clashes (ids, names, kinds, keys, pins, airtime) before a build;
+  `modules/` is empty for now, so the firmware is unchanged: `make
+  csi_defconfig && make bin` gives 4.4's image but for the build dates and
+  the hashes that carry them. Build folders are in `.gitignore`.
 
 ## What changed in v5.6 (2026-11-14): updates over the air, detections on the boards, steadier than quiet (one cable flash per board, then over the air)
 

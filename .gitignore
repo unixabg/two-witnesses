@@ -2,3 +2,11 @@ __pycache__/
 *.pyc
 # notes and archives that stay on this machine (never committed, never pushed)
 /private/
+# builds (make bin, idf.py): never committed; the image the kit ships is tw_node-s3-ch11.bin
+/out/
+/firmware/tw_node/build/
+/firmware/tw_node/sdkconfig
+/firmware/tw_node/sdkconfig.old
+/firmware/tw_node/managed_components/
+/firmware/tw_node/.tw_config
+/firmware/sim/sim

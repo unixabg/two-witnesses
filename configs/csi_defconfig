@@ -1,0 +1,5 @@
+# csi_defconfig: today's board, the core and CSI sensing (tw_node-s3-ch11.bin).
+# The kit's choices only (CONFIG_TW_*); the other build settings are in
+# firmware/tw_node/sdkconfig.defaults, under every configuration.
+# Until the CSI module exists (docs/MODULES.md, stage 3), CSI sensing is part of
+# the core, and this configuration adds nothing to sdkconfig.defaults.
