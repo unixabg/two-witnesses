@@ -5,6 +5,15 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.7-next (work in progress, on the next branch)
 
+- **tw_node 4.6: version and image, a board's own power.** The own power
+  below, in `tw_node-s3-ch11.bin` (`make csi_defconfig && make
+  release-bin`, ESP-IDF v5.5.6). Its first 128 KB are 4.5's, so 4.x boards
+  take it over the air. To check on boards: `tw_setid.py PORT` says
+  `firmware tw_node 4.6` for each; `power 14 board 2`, then the status shows
+  board 2's `OWN POWER 14.00 dBm`; with board 2 on the cable its `radio
+  reports 14.00 dBm`; a restart keeps it; `power group board 2` and it is
+  back to the group's; the others never change.
+
 - **A board's own transmit power** (firmware, `tw_setid.py`, `dash.py`).
   `tw_setid.py PORT power 14 board 2` gives board 2 its own power (2-20
   dBm), which it uses before the group's (`power DBM`, every board), for it
