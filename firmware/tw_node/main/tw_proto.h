@@ -159,6 +159,10 @@
 #define TW_K_RELEARN        7           /* action (3.4): learn every link's quiet level again, no value */
 #define TW_K_DETECT_LOW     8           /* board (3.5): its steadier-than-quiet threshold, x10 of quiet,
                                            1 byte (0: off; 1..TW_LOW_MAX; never given: TW_LOW_DEFAULT) */
+/* key 9: a module's setting (docs/MODULES.md, to come) */
+#define TW_K_POWER_OWN      10          /* board (4.6): its own transmit power, 1 byte, quarter dBm
+                                           (TW_POWER_MIN_Q..MAX_Q; 0, or never given: the group's,
+                                           TW_K_POWER). Comes before the group's for this board only */
 #define TW_K_POWER          16          /* network (2.6): transmit power, 1 byte, quarter dBm (0: never set) */
 #define TW_K_RELAY          17          /* network: relaying, 1 byte (1 on, 0 off) */
 #define TW_K_SECOND         18          /* network: the second frame, 1 byte (0 on, 1 off, 2 force) */
@@ -664,6 +668,8 @@ uint32_t tw_rand(tw_node_t *n);
    key's next generation. Power in quarter dBm, TW_POWER_MIN_Q..TW_POWER_MAX_Q. Returns 0, or -1 if
    out of range */
 int      tw_set_power(tw_node_t *n, uint8_t power_q);
+/* 4.6: this board's own transmit power (TW_K_POWER_OWN), quarter dBm; 0: none (the group's) */
+uint8_t  tw_power_own(const tw_node_t *n);
 /* relaying on (1) or off (0) for every board, the same way (a new setting number) */
 void     tw_set_relay(tw_node_t *n, int on);
 /* any of the setting flags: the bits in mask become those of value (a new setting number) */

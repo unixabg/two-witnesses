@@ -65,6 +65,7 @@ without sudo). Then flash the boards: [FLASH-README.md](FLASH-README.md).
 | the radio channel of every board: show it, or move them all (tw_node 3.2, every board; 1-11) | `~/scratch-esp/bin/python ~/tw-kit/tw_setid.py /dev/ttyACM0 channel` or `... channel 6` (not during a run) |
 | who else is on the air, per channel and board (tw_node 3.1; the network pauses about 12 s) | `~/scratch-esp/bin/python ~/tw-kit/tw_setid.py /dev/ttyACM0 survey` (saved in `~/tw-data/surveys/`; not during a run) |
 | set every board's transmit power | `~/scratch-esp/bin/python ~/tw-kit/tw_setid.py /dev/ttyACM0 power 11` (`default` = 20 dBm; nothing running on the port) |
+| one board's own power (tw_node 4.6) | `... tw_setid.py /dev/ttyACM0 power 14 board 2` (before the group's, for board 2 only; `power group board 2` undoes it) |
 | relaying off / on (every board) | `~/scratch-esp/bin/python ~/tw-kit/tw_setid.py /dev/ttyACM0 relay off` (`relay on` is the default) |
 | does the boards' own movement score follow the computer's? (tw_node 2.2) | `~/scratch-esp/bin/python ~/tw-kit/score_check.py ~/tw-data/runs/<run>` |
 | how far behind the timekeeper do the boards' clocks run? (any run; 2.3 should be under 100 us) | `~/scratch-esp/bin/python ~/tw-kit/lag_check.py ~/tw-data/runs/<run>` |

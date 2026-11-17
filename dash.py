@@ -527,7 +527,8 @@ class Screen:
                    + (f" {b['rssi']} dBm" if b.get("rssi") is not None else "")
                    + (f", reports home {home:.0f}%" if home is not None else "")
                    + (f", heard {b['heard']}%" if b.get("heard") is not None and b["heard"] < 90 else "")
-                   + (f", tx {b['power_q'] / 4:g} dBm" if b.get("power_q") else "")
+                   + (f", tx {b['own_q'] / 4:g} dBm OWN" if b.get("own_q") else
+                      f", tx {b['power_q'] / 4:g} dBm" if b.get("power_q") else "")
                    + (", relay OFF" if b.get("relay") == 0 else "")
                    + (f", 2nd {b['x_s']:.0f}/s" if b.get("x_s") else "")
                    + (f", FIRMWARE {b['fw']}" if b.get("fw") and st and b["fw"] != boards.get(st["id"], {}).get("fw")
@@ -944,6 +945,12 @@ def run(scr, a):
                             seen.add(dk)
                             deliv.add(*dk)
                             seen_order.append(dk)
+                            if kind == "TWX":   # 4.6: a board's own power, from its report (key 10)
+                                for e in f[3:]:
+                                    q = e.split(":")
+                                    if len(q) == 6 and q[1] == "10" and q[2].isdigit() and int(q[2]) & 1 \
+                                            and q[0].isdigit() and int(q[0]) in boards:
+                                        boards[int(q[0])]["own_q"] = int(q[5], 16) if q[5] else 0
                             if kind == "TWM" and len(f) >= 23:
                                 # 3.4+: board,boot,record,uptime,clock,16 scores,second frame's end,
                                 # its detections (hex, bit i: board i+1 as it hears it)

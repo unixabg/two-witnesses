@@ -329,8 +329,16 @@ static void apply_settings(void)
 {
     if (s_node.set_pending) {
         s_node.set_pending = 0;
-        if (s_node.set_power && esp_wifi_set_max_tx_power((int8_t)s_node.set_power) != ESP_OK) {
-            ESP_LOGW(TAG, "could not set transmit power %u/4 dBm", s_node.set_power);
+        /* 4.6: its own power, if it has one, before the group's; never set (neither): the radio's
+           own default, as before, unless an own power was just taken away (then full power) */
+        static uint8_t s_had_own;
+        uint8_t own = tw_power_own(&s_node), use = own ? own : s_node.set_power;
+        if (!use && s_had_own) {
+            use = TW_POWER_MAX_Q;
+        }
+        s_had_own = own;
+        if (use && esp_wifi_set_max_tx_power((int8_t)use) != ESP_OK) {
+            ESP_LOGW(TAG, "could not set transmit power %u/4 dBm", use);
         }
         {                                   /* kept as 2.x kept it (pseq: the setting number) */
             nvs_handle_t h;
@@ -783,6 +791,20 @@ static void led_load(void)
     }
     tw_setting_init(&s_node, TW_K_LED_PIN, &s_led_pin, 1, gp);
     tw_setting_init(&s_node, TW_K_LED_BRIGHT, &s_led_bright, 1, gb);
+    {                                   /* 4.6: its own transmit power (0, or never given: the group's) */
+        uint8_t own = 0, go = 0;
+        if (nvs_open("tw", NVS_READONLY, &h) == ESP_OK) {
+            nvs_get_u8(h, "pwo", &own);
+            nvs_get_u8(h, "lgo", &go);
+            nvs_close(h);
+        }
+        if (own && (own < TW_POWER_MIN_Q || own > TW_POWER_MAX_Q)) {
+            own = 0;
+            go = 0;
+        }
+        tw_setting_init(&s_node, TW_K_POWER_OWN, &own, 1, go);
+        s_node.set_pending = 1;         /* the radio takes it at the first apply_settings() */
+    }
     for (int m = 0; m < tw_modules_n; m++) {     /* the modules' settings, from flash */
         if (tw_modules[m]->init) {
             tw_modules[m]->init(&s_node);
@@ -984,6 +1006,23 @@ static void led_apply(void)
         s_survey_gen = s_node.set_gen[TW_K_SURVEY];
         s_survey_at = (uint32_t)esp_timer_get_time() + TW_SURVEY_DELAY_US;
         s_survey_due = 1;
+    }
+    if (ch & (1u << TW_K_POWER_OWN)) {  /* 4.6: its own transmit power: kept, and to the radio */
+        nvs_handle_t h;
+        uint8_t own = tw_power_own(&s_node);
+        if (nvs_open("tw", NVS_READWRITE, &h) == ESP_OK) {
+            nvs_set_u8(h, "pwo", own);
+            nvs_set_u8(h, "lgo", s_node.set_gen[TW_K_POWER_OWN]);
+            nvs_commit(h);
+            nvs_close(h);
+        }
+        s_node.set_pending = 1;
+        if (own) {
+            ESP_LOGW(TAG, "own transmit power %.2f dBm (the group's: %.2f dBm)", own / 4.0,
+                     (s_node.set_power ? s_node.set_power : TW_POWER_MAX_Q) / 4.0);
+        } else {
+            ESP_LOGW(TAG, "own transmit power off: the group's");
+        }
     }
     for (int m = 0; m < tw_modules_n; m++) {     /* the modules keep theirs */
         if (tw_modules[m]->keys_changed) {
@@ -1492,11 +1531,48 @@ static void poll_commands(void)
                 int q = (int)(dbm * 4.0f + 0.5f), k;
                 if (tw_set_power(&s_node, (uint8_t)(q < 0 ? 0 : q > 255 ? 255 : q)) == 0) {
                     apply_settings();
-                    k = snprintf(msg, sizeof(msg), "TWOK power %.2f dBm, setting %u (radio reports %.2f dBm)\n",
-                                 q / 4.0, s_node.set_seq, s_node.tx_power_q / 4.0);
+                    k = snprintf(msg, sizeof(msg), "TWOK power %.2f dBm, setting %u (radio reports %.2f dBm%s)\n",
+                                 q / 4.0, s_node.set_seq, s_node.tx_power_q / 4.0,
+                                 tw_power_own(&s_node) ? ": its own power comes first" : "");
                 } else {
                     k = snprintf(msg, sizeof(msg), "TWERR power must be %d..%d dBm\n",
                                  TW_POWER_MIN_Q / 4, TW_POWER_MAX_Q / 4);
+                }
+                out_wait(msg, k);
+            } else if (n && !strncmp(cmd, "TWSET ownpower ", 15)) {
+                /* 4.6: "TWSET ownpower Q" (quarter dBm, TW_POWER_MIN_Q..MAX_Q; 0: the group's), for
+                   this board; with " board N gen G", given to board N (0: all) by record, as detect */
+                char msg[112], *bd = strstr(cmd, " board ");
+                int q = -1, target = -1, gen = -1, k;
+                if (bd) {
+                    if (sscanf(bd, " board %d gen %d", &target, &gen) != 2 || target < 0 ||
+                        target > TW_MAX_NODES || gen < 1 || gen > 255) {
+                        target = -2;
+                    }
+                    *bd = 0;
+                }
+                uint8_t v[1];
+                if (sscanf(cmd, "TWSET ownpower %d", &q) == 1 &&
+                    (q == 0 || (q >= TW_POWER_MIN_Q && q <= TW_POWER_MAX_Q)) && target != -2) {
+                    v[0] = (uint8_t)q;
+                    if (target == -1) {
+                        tw_setting_local(&s_node, TW_K_POWER_OWN, v, 1);
+                        led_apply();
+                        apply_settings();
+                        k = q ? snprintf(msg, sizeof(msg), "TWOK ownpower %.2f dBm (radio reports %.2f dBm)\n",
+                                         q / 4.0, s_node.tx_power_q / 4.0)
+                              : snprintf(msg, sizeof(msg), "TWOK ownpower off: the group's (radio reports %.2f dBm)\n",
+                                         s_node.tx_power_q / 4.0);
+                    } else {
+                        tw_setting_give(&s_node, (uint8_t)target, TW_K_POWER_OWN, v, 1, (uint8_t)gen);
+                        led_apply();
+                        char who[12];
+                        snprintf(who, sizeof(who), target ? "board %d" : "all boards", target);
+                        k = snprintf(msg, sizeof(msg), "TWOK ownpower given to %s, generation %d\n", who, gen);
+                    }
+                } else {
+                    k = snprintf(msg, sizeof(msg), "TWERR ownpower 0 (the group's) or %d..%d (quarter dBm) "
+                                 "[board N gen G]\n", TW_POWER_MIN_Q, TW_POWER_MAX_Q);
                 }
                 out_wait(msg, k);
             } else if (n && !strncmp(cmd, "TWSET led ", 10)) {

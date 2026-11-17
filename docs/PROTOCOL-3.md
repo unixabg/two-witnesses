@@ -124,6 +124,7 @@ LED fields in TWV are dropped in 3.0 (kept until then).
 | 6 | board | detect threshold (3.4), 1 byte: x10 of the quiet level, 15-100 (3.0x until given) | `detect X` [`board N\|all`] |
 | 7 | action | relearn (3.4), 0 bytes: learn every link's quiet level again (60 s) | `relearn` [`board N\|all`] |
 | 8 | board | low threshold (3.5), 1 byte: x10 of the quiet level, 1-9, 0 = off (0.5x until given) | `detect low X\|off` [`board N\|all`] |
+| 10 | board | own power (4.6), 1 byte: quarter dBm, 8-80; 0 = the group's (key 16), which it comes before, for that board only | `power DBM board N\|all`, `power group board N\|all` |
 | 16 | network | power, 1 byte (quarter dBm) | `power DBM`, `power default` |
 | 17 | network | relay, 1 byte (on/off) | `relay on\|off` |
 | 18 | network | second frame, 1 byte (on/off/force) | `second on\|off\|force` |

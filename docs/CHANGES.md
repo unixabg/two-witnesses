@@ -5,6 +5,23 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.7-next (work in progress, on the next branch)
 
+- **A board's own transmit power** (firmware, `tw_setid.py`, `dash.py`).
+  `tw_setid.py PORT power 14 board 2` gives board 2 its own power (2-20
+  dBm), which it uses before the group's (`power DBM`, every board), for it
+  alone; `power group board 2` takes it back to the group's, and `board
+  all` does every board. A board key (10, `docs/PROTOCOL-3.md`): kept in the
+  board's flash, given by record (a board that was off takes it when it is
+  back), reported every 5 s. The status shows `OWN POWER 14.00 dBm (before
+  the group's)` for such a board, and the dashboard's board list `tx 14 dBm
+  OWN`. For a board by a shared wall (sensing less next door), two boards
+  very close together, or one at the far end; the group's power is still the
+  one to change for everyone. Same limits as ever (2-20 dBm, US). Checked in
+  the desk simulator (board 2 took it within a second; "all" later reached
+  every board, the one switched off as soon as it was back; the rest of the
+  output the same but for receive times a few microseconds later, the
+  settings report being 6 bytes longer) and with `tw_setid.py` against a
+  pretend board. A 4.5 board ignores it (`tw_setid.py` says so).
+
 - **Dashboard: the boards' detections in red.** A second the boards marked a
   detection on a link (tw_node 3.4+, by their own threshold: `tw_setid.py
   ... detect`, 3.0x quiet unless set) is red in that link's motion sparkline,

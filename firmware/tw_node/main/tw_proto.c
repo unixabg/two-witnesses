@@ -210,6 +210,12 @@ void tw_net_init(tw_node_t *n, const uint8_t gen[TW_K_NET_N])
     n->set_seq = gen ? net_seq(gen) : 0;
 }
 
+uint8_t tw_power_own(const tw_node_t *n)
+{
+    uint8_t v = n->set_len[TW_K_POWER_OWN] >= 1 ? n->set_val[TW_K_POWER_OWN][0] : 0;
+    return (v >= TW_POWER_MIN_Q && v <= TW_POWER_MAX_Q) ? v : 0;
+}
+
 int tw_set_power(tw_node_t *n, uint8_t power_q)
 {
     if (power_q < TW_POWER_MIN_Q || power_q > TW_POWER_MAX_Q) {
@@ -962,6 +968,7 @@ int tw_key_class(uint8_t key)
     case TW_K_LED_BRIGHT:
     case TW_K_DETECT:
     case TW_K_DETECT_LOW:
+    case TW_K_POWER_OWN:
         return TW_KC_BOARD;
     case TW_K_LED_TEST:
     case TW_K_LED_TRY:

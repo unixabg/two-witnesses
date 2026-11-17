@@ -22,7 +22,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PAYLOAD = 1400          # TW_MAX_PAYLOAD (firmware/tw_node/main/tw_proto.h)
 CORE_KEEPS = 120        # bytes a frame the core keeps for its own records (docs/MODULES.md)
 CORE_KINDS = {2, 3, 4, 5, 6, 7, 8}      # the core's record kinds (4: gone, never reused; 8: modules)
-CORE_KEYS = set(range(1, 6)) | {9} | set(range(16, 22))   # LED, survey, module key, network keys
+CORE_KEYS = set(range(1, 6)) | {9, 10} | set(range(16, 22))   # LED, survey, module key, own power, network keys
 REQUIRED = ("id", "name", "version", "title", "senses_people", "budget")
 INT_LIST = ("kinds", "keys", "pins")
 

@@ -18,6 +18,9 @@
     ~/scratch-esp/bin/python tw_setid.py PORT board N         give it board number N (1-16), once
     ~/scratch-esp/bin/python tw_setid.py PORT power DBM       set the transmit power of EVERY board
     ~/scratch-esp/bin/python tw_setid.py PORT power default   back to full power (20 dBm)
+    ~/scratch-esp/bin/python tw_setid.py PORT power DBM board N|all   board N's OWN power (2-20 dBm): it comes
+                                                          before the group's, for that board only (tw_node 4.6)
+    ~/scratch-esp/bin/python tw_setid.py PORT power group board N|all  board N back to the group's power
     ~/scratch-esp/bin/python tw_setid.py PORT relay off       relaying off on every board (a comparison run)
     ~/scratch-esp/bin/python tw_setid.py PORT relay on        back on (the default)
     ~/scratch-esp/bin/python tw_setid.py PORT second off      no second frame in a board's slot (tw_node 2.1)
@@ -115,6 +118,7 @@ import serial
 
 TRIES = 3
 K_PIN, K_BRIGHT, K_TEST, K_TRY, K_SURVEY = 1, 2, 3, 4, 5  # keys (docs/PROTOCOL-3.md, tw_proto.h TW_K_*)
+K_POWER_OWN = 10                                  # 4.6: a board's own transmit power (quarter dBm; 0: the group's)
 K_DETECT, K_RELEARN = 6, 7                       # 3.4: each board's detection threshold (x10); relearn
 K_DETECT_LOW = 8                                 # 3.5: its steadier-than-quiet threshold (x10, 0 off)
 SURVEY_CHANNELS = {"2.4 GHz": range(1, 12)}      # 3.1: what a survey covers (US); a band adds a row
@@ -277,6 +281,10 @@ def show(seen):
                 relay += f" (moving to {b['chan_key']})"
             if b.get("looking"):
                 relay += " (LOOKING FOR THE OTHERS)"
+        own = b.get("keys", {}).get(K_POWER_OWN)    # 4.6: its own transmit power (its report)
+        own_q = own[1][0] if own and own[1] else 0
+        if own_q:
+            relay += f", OWN POWER {own_q / 4:.2f} dBm (before the group's)"
         det = b.get("keys", {}).get(K_DETECT)       # 3.4: its detection threshold (its report)
         if det and det[1]:
             relay += f", detect {det[1][0] / 10:.1f}x quiet"
@@ -740,9 +748,32 @@ def main():
         channel(p, a[2] if len(a) == 3 else None)
         return
 
+    if len(a) >= 2 and a[1] == "power" and len(a) == 5 and a[3] == "board":
+        # 4.6: board N's own power (or all boards'), by record, as detect: before the group's
+        t = a[4]
+        if t == "all":
+            target = 0
+        elif t.isdigit() and 1 <= int(t) <= 16:
+            target = int(t)
+        else:
+            sys.exit("board N (1-16) or board all")
+        if a[2] == "group":
+            q, what = 0, "own power off (the group's)"
+        else:
+            try:
+                v = float(a[2])
+            except ValueError:
+                sys.exit("power DBM board N|all (2..20 dBm), or power group board N|all")
+            if not 2 <= v <= 20:
+                sys.exit("power must be 2..20 dBm")
+            q, what = int(v * 4 + 0.5), f"own power {v:g} dBm"
+        board_key(p, f"TWSET ownpower {q}", K_POWER_OWN, target, what, "ownpower", need=(4, 6))
+        return
+
     if len(a) >= 2 and a[1] == "power":
         if len(a) != 3:
-            sys.exit("power wants a value: 2..20 (dBm) or default")
+            sys.exit("power wants a value: 2..20 (dBm) or default (every board); "
+                     "power DBM board N|all, power group board N|all (a board's own)")
         val = a[2]
         if val == "default":
             want = 80

@@ -32,8 +32,8 @@ measures:
 
 - slots, the timekeeper, hearing, relaying, de-duplication, the second frame;
 - settings and actions (keys), updates over the air (signed, with rollback);
-- the radio: channel (1-11), transmit power (2-20 dBm), the regulatory
-  country (US, 4.4). **Modules never touch the radio**: every build keeps
+- the radio: channel (1-11), transmit power (2-20 dBm: the group's, and from
+  4.6 a board's own, key 10), the regulatory country (US, 4.4). **Modules never touch the radio**: every build keeps
   these limits;
 - the LED: its pin and brightness, the test sequence and colors to try (a
   module gives the color it shows the rest of the time);
