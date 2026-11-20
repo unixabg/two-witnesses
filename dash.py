@@ -11,6 +11,9 @@ another; with tw_node boards, every pair in both directions):
     how far the signal is above it
   - radio "motion" (the same measure as watch.py: how much the CSI picture
     changes from one second to the next, x its usual)
+  - the motion figure (x times the link's usual, worked out here) bright
+    yellow from x3, red from x10; the motion sparkline from x1 to x10
+    (logarithmic; higher is full height), its columns from x3 bright yellow
   - scrolling sparklines of motion, RSSI and packets; a second the boards
     marked a detection on a link (tw_node 3.4+, its own threshold: tw_setid.py
     detect) is red in that link's motion sparkline, and its motion figure is
@@ -323,6 +326,12 @@ def events(folder, n):
 
 
 # ---------------- drawing ----------------
+# the motion figure (the computer's: x times the link's usual): bright yellow from MOVE_X, red from
+# STRONG_X (and while the boards mark a detection); the motion sparkline from x1 (bottom) to
+# SPARK_TOP_X (top, logarithmic; higher: full height), its columns from MOVE_X yellow
+MOVE_X, STRONG_X, SPARK_TOP_X = 3.0, 10.0, 10.0
+
+
 def spark(vals, width, lo, hi, chars):
     vals = list(vals)[-width:]
     out = []
@@ -444,14 +453,15 @@ class Screen:
             else:
                 mtxt = f"motion  x{lastx:5.1f} now" + (f"   max x{s600['xmax']:.1f} (10 min)" if s600 and s600['xmax'] else "")
             low = link.hist[-1][7]
-            self.put(y, 3, mtxt, self.color(3 if (lastx or 0) >= 10 else 2 if (lastx or 0) >= 6 else 0))
+            self.put(y, 3, mtxt, self.color(3) | curses.A_BOLD if (lastx or 0) >= STRONG_X else
+                     self.color(2) | curses.A_BOLD if (lastx or 0) >= MOVE_X else 0)
             if low:
                 self.put(y, 60, "LOW DATA", self.color(2) | curses.A_BOLD)
             y += 1
             sw = max(10, min(w - 16, span))          # never more columns than seconds
             cx, cr, cp = resample(link.hist, span, sw)
             lbl = {60: "1 min", 300: "5 min", 1800: "30 min"}[span]
-            self.put(y, 3, "motion  " + spark(cx, sw, 0, 2, self.chars))
+            self.put(y, 3, "motion  " + spark(cx, sw, 0, np.log10(SPARK_TOP_X), self.chars))
             self.put(y + 1, 3, "RSSI    " + spark(cr, sw, (link.rmin or -90) - 0.5, (link.rmax or -30) + 0.5, self.chars))
             pmax = max([p for p in cp if p] or [100])
             self.put(y + 2, 3, "packets " + spark(cp, sw, 0, pmax, self.chars))
@@ -566,14 +576,18 @@ class Screen:
             self.put(y, 31, f"{s10['rssi']:7.1f} {s10['rssi'] - s10['noise']:7.1f}")
             dets = boards.get("det", {}).get(k, ())
             det_now = bool(dets) and now - dets[-1] <= 2      # the boards say: a detection, holding
-            self.put(y, 47, f"{xtxt:>7s}", self.color(3 if det_now or (lastx or 0) >= 10 else
-                                                     2 if (lastx or 0) >= 6 else 0))
+            self.put(y, 47, f"{xtxt:>7s}", self.color(3) | curses.A_BOLD if det_now or (lastx or 0) >= STRONG_X
+                     else self.color(2) | curses.A_BOLD if (lastx or 0) >= MOVE_X else 0)
             cx, _cr, _cp = resample(link.hist, span, sw)
             if now - link.last_rx > 5:
                 self.put(y, 56, f"NO DATA for {now - link.last_rx:.0f} s", self.color(3))
             else:
-                sp = spark(cx, sw, 0, 2, self.chars)
+                sp = spark(cx, sw, 0, np.log10(SPARK_TOP_X), self.chars)
                 self.put(y, 56, sp)
+                move = np.log10(MOVE_X)
+                for c, v in enumerate(cx[-sw:]):         # moving (the computer's figure): bright yellow
+                    if v is not None and v >= move:
+                        self.put(y, 56 + c, sp[c], self.color(2) | curses.A_BOLD)
                 for c in det_columns(dets, span, sw):   # the boards' detections: red
                     ch = sp[c] if sp[c] != " " else self.chars[0]
                     self.put(y, 56 + c, ch, self.color(3) | curses.A_BOLD)

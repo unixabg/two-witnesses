@@ -5,6 +5,17 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.7-next (work in progress, on the next branch)
 
+- **Dashboard: motion easier to see.** The motion figure (the computer's: x
+  times the link's usual) is bright yellow (bold) from x3, where it was a
+  dim yellow from x6 that many terminals draw as brown; red from x10, or
+  while the boards mark a detection, as before. The motion sparkline runs
+  from x1 to x10 (logarithmic; higher is full height), where it ran to
+  x100, so x2-x5 no longer sit in its bottom two heights; its columns from
+  x3 are bright yellow, and the boards' detections red over them. These
+  steps are the dashboard's (`MOVE_X`, `STRONG_X`, `SPARK_TOP_X` in
+  `dash.py`), not the boards' `detect` threshold, which only decides the red
+  marks.
+
 - **tw_node 4.6: version and image, a board's own power.** The own power
   below, in `tw_node-s3-ch11.bin` (`make csi_defconfig && make
   release-bin`, ESP-IDF v5.5.6). Its first 128 KB are 4.5's, so 4.x boards
