@@ -5,6 +5,15 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.7-next (work in progress, on the next branch)
 
+- **tw_node 4.7: version and image, the detection hold.** The hold below,
+  in `tw_node-s3-ch11.bin` (`make csi_defconfig && make release-bin`,
+  ESP-IDF v5.5.6). Its first 128 KB are 4.6's but for the bootloader's
+  build date and its hash, so 4.x boards take it over the air. To check on
+  boards: `tw_setid.py PORT` says `firmware tw_node 4.7` and `hold 30 min`
+  for each; sit and work by a link for 10 minutes: its detections (red on
+  the dashboard, white on the LED) last the whole time; get up: the link is
+  back to about x1 within seconds, not far below.
+
 - **Firmware (CSI module): the detection hold** (`detect hold`, board key
   11). While a link is detecting, its quiet level no longer steps up, for up
   to the board's detection hold (30 minutes unless set; 0-240): before, the
