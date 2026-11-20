@@ -45,6 +45,18 @@ static void csi_init(tw_node_t *n)
         gl = 0;
     }
     tw_setting_init(n, TW_K_DETECT_LOW, &low, 1, gl);
+    /* 4.7: its detection hold (minutes, 0: none), never given: the default */
+    uint8_t dh = 255, gh = 0;
+    if (nvs_open("tw", NVS_READONLY, &h) == ESP_OK) {
+        nvs_get_u8(h, "dho", &dh);
+        nvs_get_u8(h, "lgh", &gh);
+        nvs_close(h);
+    }
+    if (dh > TW_DHOLD_MAX) {
+        dh = TW_DHOLD_DEFAULT;
+        gh = 0;
+    }
+    tw_setting_init(n, TW_K_DETECT_HOLD, &dh, 1, gh);
 }
 
 static void csi_keys_changed(tw_node_t *n, uint32_t ch)
@@ -74,14 +86,30 @@ static void csi_keys_changed(tw_node_t *n, uint32_t ch)
             ESP_LOGW(TAG, "steadier-than-quiet detection off");
         }
     }
+    if (ch & (1u << TW_K_DETECT_HOLD)) {    /* 4.7: its detection hold: kept */
+        nvs_handle_t h;
+        uint8_t v = (uint8_t)(tw_detect_hold_s(n) / 60);
+        if (nvs_open("tw", NVS_READWRITE, &h) == ESP_OK) {
+            nvs_set_u8(h, "dho", v);
+            nvs_set_u8(h, "lgh", n->set_gen[TW_K_DETECT_HOLD]);
+            nvs_commit(h);
+            nvs_close(h);
+        }
+        if (v) {
+            ESP_LOGW(TAG, "detection hold %u min", v);
+        } else {
+            ESP_LOGW(TAG, "detection hold off");
+        }
+    }
     if (ch & (1u << TW_K_RELEARN)) {    /* 3.4: tw_proto.c started it again when it took the action */
         ESP_LOGW(TAG, "learning the quiet level again (60 s)");
     }
 }
 
 /* 3.4: "TWSET detect V" (x10 of quiet, TW_DETECT_MIN..MAX) and "TWSET relearn" (3.5: and
-   "TWSET detect low V", 0..TW_LOW_MAX, 0: off), for this board; with " board N gen G", given to
-   board N (0: all) by record, as led */
+   "TWSET detect low V", 0..TW_LOW_MAX, 0: off; 4.7: "TWSET detect hold M", minutes,
+   0..TW_DHOLD_MAX, 0: none), for this board; with " board N gen G", given to board N (0: all) by
+   record, as led */
 static int csi_command(tw_node_t *n, char *cmd, char *msg, int max, int *after)
 {
     if (strncmp(cmd, "TWSET detect ", 13) && strncmp(cmd, "TWSET relearn", 13)) {
@@ -97,7 +125,13 @@ static int csi_command(tw_node_t *n, char *cmd, char *msg, int max, int *after)
         }
         *bd = 0;
     }
-    if (sscanf(cmd, "TWSET detect low %d", &v) == 1 && v >= 0 && v <= TW_LOW_MAX) {
+    if (!strncmp(cmd, "TWSET detect hold ", 18)) {
+        if (sscanf(cmd, "TWSET detect hold %d", &v) == 1 && v >= 0 && v <= TW_DHOLD_MAX) {
+            key = TW_K_DETECT_HOLD;     /* 4.7: the detection hold, minutes (0: none) */
+            val[0] = (uint8_t)v;
+            vlen = 1;
+        }
+    } else if (sscanf(cmd, "TWSET detect low %d", &v) == 1 && v >= 0 && v <= TW_LOW_MAX) {
         key = TW_K_DETECT_LOW;          /* 3.5: steadier than quiet, x10 (0: off) */
         val[0] = (uint8_t)v;
         vlen = 1;
@@ -111,7 +145,9 @@ static int csi_command(tw_node_t *n, char *cmd, char *msg, int max, int *after)
     if (key && target == -1) {
         tw_setting_local(n, (uint8_t)key, val, vlen);
         *after = 1;
-        k = key == TW_K_DETECT ? snprintf(msg, (size_t)max, "TWOK detect %d.%d x quiet\n", v / 10, v % 10)
+        k = key == TW_K_DETECT_HOLD ? (v ? snprintf(msg, (size_t)max, "TWOK detect hold %d min\n", v)
+                                         : snprintf(msg, (size_t)max, "TWOK detect hold off\n"))
+            : key == TW_K_DETECT ? snprintf(msg, (size_t)max, "TWOK detect %d.%d x quiet\n", v / 10, v % 10)
             : key == TW_K_DETECT_LOW ? (v ? snprintf(msg, (size_t)max, "TWOK detect low 0.%d x quiet\n", v)
                                           : snprintf(msg, (size_t)max, "TWOK detect low off\n"))
             : snprintf(msg, (size_t)max, "TWOK relearn: the quiet level again (60 s)\n");
@@ -121,11 +157,13 @@ static int csi_command(tw_node_t *n, char *cmd, char *msg, int max, int *after)
         char who[12];
         snprintf(who, sizeof(who), target ? "board %d" : "all boards", target);
         k = snprintf(msg, (size_t)max, "TWOK %s given to %s, generation %d\n",
-                     key == TW_K_DETECT ? "detect" : key == TW_K_DETECT_LOW ? "detect low" : "relearn",
+                     key == TW_K_DETECT ? "detect" : key == TW_K_DETECT_LOW ? "detect low"
+                     : key == TW_K_DETECT_HOLD ? "detect hold" : "relearn",
                      who, gen);
     } else {
         k = snprintf(msg, (size_t)max, "TWERR detect %d..%d, detect low 0..%d (x10 of quiet; 0: off), "
-                     "relearn [board N gen G]\n", TW_DETECT_MIN, TW_DETECT_MAX, TW_LOW_MAX);
+                     "detect hold 0..%d (min), relearn [board N gen G]\n", TW_DETECT_MIN, TW_DETECT_MAX,
+                     TW_LOW_MAX, TW_DHOLD_MAX);
     }
     return k > 0 && k < max ? k : 0;
 }

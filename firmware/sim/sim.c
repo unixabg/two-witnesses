@@ -12,7 +12,7 @@
  *       [--seed 7] [--realtime] [--no-csi] [--out FILE] [--setpower 20@11[@1],40@20]
  *       [--block 2-1@10-50@0.75,...] [--setrelay 30@off,60@on] [--rxerr 0.01]
  *       [--set 0@cap=3,0@second=off,...] [--late measured] [--fix ahead,hwrx,cb]
- *       [--update T@TARGET:SIZE] [--still A-B] [--walk A-B[@X-Y]]
+ *       [--update T@TARGET:SIZE] [--still A-B] [--walk A-B[@X-Y]] [--sit A-B[@X-Y][:AMP]]
  *
  * --update T@TARGET:SIZE (4.0): at T seconds the computer has given the first exit a program of
  * SIZE bytes (made up), and it sends it to TARGET (0: every board of its group) over the air. A
@@ -115,6 +115,10 @@ static int no_csi;                      /* --no-csi: without the CSI sensing mod
 static double seconds = 60, p_loss = 0.05, p_rxerr = 0, t0_unix;
 static double walk_a = 30e6, walk_b = 40e6;    /* planted walk across the 1-2 link (--walk A-B seconds) */
 static int walk_x = 1, walk_y = 2;              /* 4.3: --walk A-B@X-Y: across link X-Y instead */
+static double sit_a = -1, sit_b = -1, sit_amp = 0.3;    /* 4.7: --sit A-B[@X-Y][:AMP]: someone sits and
+                                                   works by link X-Y (1-2 if not given) from A to B s:
+                                                   a steady restlessness, smaller than a walk */
+static int sit_x = 1, sit_y = 2;
 static double up_t = -1;                        /* 4.0: --update T@TARGET:SIZE */
 static int up_target = 0, up_fired = 0;
 static uint32_t up_size = 0;
@@ -203,6 +207,9 @@ static void make_csi(int rx, int tx, double t, int8_t *buf)
         double motion = 0;
         if (t > walk_a && t < walk_b && ((rx == walk_x && tx == walk_y) || (rx == walk_y && tx == walk_x))) {
             motion = 0.25 * sin(0.9 * b + t / 1e5);
+        }
+        if (sit_a >= 0 && t > sit_a && t < sit_b && ((rx == sit_x && tx == sit_y) || (rx == sit_y && tx == sit_x))) {
+            motion = sit_amp * (urand() - 0.5);   /* 4.7: someone at work there, for minutes */
         }
         if (still_a >= 0 && !(t > still_a && t < still_b) && ((rx == 1 && tx == 3) || (rx == 3 && tx == 1))) {
             motion = 0.2 * (urand() - 0.5);   /* the fan: restless all the time, but nothing walking */
@@ -314,6 +321,11 @@ static int parse_args(int argc, char **argv, char *kill_spec, char *exit_spec, u
                 fprintf(stderr, "--update T@TARGET:SIZE (SIZE up to %u)\n", TW_UP_MAX); return -1;
             }
             up_target = tg; up_size = sz;
+        }
+        else if (!strcmp(argv[i], "--sit") && i + 1 < argc) {
+            char *e; sit_a = strtod(argv[++i], &e) * 1e6; sit_b = (*e == '-' ? strtod(e + 1, &e) : sit_a / 1e6 + 600) * 1e6;
+            if (*e == '@') { sscanf(e + 1, "%d-%d", &sit_x, &sit_y); e = strchr(e, ':') ? strchr(e, ':') : e + strlen(e); }
+            if (*e == ':') sit_amp = strtod(e + 1, NULL);
         }
         else if (!strcmp(argv[i], "--still") && i + 1 < argc) {
             char *e; still_a = strtod(argv[++i], &e) * 1e6; still_b = (*e == '-' ? strtod(e + 1, NULL) : still_a / 1e6 + 60) * 1e6;

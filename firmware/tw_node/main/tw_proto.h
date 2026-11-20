@@ -160,6 +160,8 @@
 #define TW_K_DETECT_LOW     8           /* board (3.5): its steadier-than-quiet threshold, x10 of quiet,
                                            1 byte (0: off; 1..TW_LOW_MAX; never given: TW_LOW_DEFAULT) */
 /* key 9: a module's setting (docs/MODULES.md, to come) */
+#define TW_K_DETECT_HOLD    11          /* board (4.7): the CSI module's detection hold, 1 byte, minutes
+                                           (0..TW_DHOLD_MAX; 0: none; never given: TW_DHOLD_DEFAULT) */
 #define TW_K_POWER_OWN      10          /* board (4.6): its own transmit power, 1 byte, quarter dBm
                                            (TW_POWER_MIN_Q..MAX_Q; 0, or never given: the group's,
                                            TW_K_POWER). Comes before the group's for this board only */
@@ -209,6 +211,13 @@
 #define TW_DETECT_MIN       15
 #define TW_DETECT_MAX       100
 #define TW_DETECT_HOLD      2
+/* 4.7: the detection hold. While a link is detecting, its quiet level does not step up (it would
+   follow a steady presence, someone sitting and working, and end the detections within minutes:
+   at 4x quiet in about 2.5), for up to the board's detection hold (TW_K_DETECT_HOLD, minutes; never
+   given: TW_DHOLD_DEFAULT). Past it the presence is the new usual: the quiet level follows again,
+   0.2% a second, so a lasting change (a machine left running) stops counting. 0: no hold (4.6) */
+#define TW_DHOLD_DEFAULT    30
+#define TW_DHOLD_MAX        240
 #define TW_DETECT_GAP       2           /* 4.2: a second without a score (too few frames: someone in
                                            the way costs some) neither counts nor breaks a detection;
                                            this many in a row do break it */
@@ -366,6 +375,8 @@ typedef struct {
                                                (4.3: up to TW_LOW_KEEP; armed from TW_LOW_ARM_S) */
     uint16_t low_cap;                       /* 4.3: this hold's length at most (armed when it began) */
     uint8_t  busy;                          /* 4.3: seconds in a row at or below TW_BUSY_LOW, not armed */
+    uint16_t det_held;                      /* 4.7: seconds this detection held its quiet level (up to
+                                               the board's detection hold) */
     uint8_t  bin[TW_MAX_AMPS];              /* while learning: records with that bin above 0; then
                                                the live bins, TW_SCORE_BAND per band */
     uint16_t recs;                          /* records this second */

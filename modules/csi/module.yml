@@ -5,6 +5,6 @@ version: 1
 title: CSI sensing (measurement records, movement scores, detections)
 senses_people: yes
 kinds: 0, 1            # its own record kinds (TWR), from before modules: only this module has any
-keys: 6, 7, 8          # detect, relearn, detect low (3.4, 3.5)
+keys: 6, 7, 8, 11      # detect, relearn, detect low (3.4, 3.5), detect hold (4.7)
 budget: 1200           # bytes a frame at most, of 1400 (CSI records fill most of a frame)
 pins:

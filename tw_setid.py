@@ -10,6 +10,11 @@
     ~/scratch-esp/bin/python tw_setid.py PORT detect low X|off [board N|all]   steadier than quiet: a link at or
                                                           below X times its quiet level (0.1-0.9, default 0.5)
                                                           for 10 s counts; its LED shows green (tw_node 3.5)
+    ~/scratch-esp/bin/python tw_setid.py PORT detect hold MIN|off [board N|all]   while a link detects, its quiet
+                                                          level does not rise, for up to MIN minutes (0-240,
+                                                          default 30): someone sitting and working stays
+                                                          detected; past it, a lasting change is learned
+                                                          as usual (off: as before 4.7; tw_node 4.7)
     ~/scratch-esp/bin/python tw_setid.py PORT relearn [board N|all]    learn every link's quiet level again
                                                           (60 s; after moving a board, once you step away)
     ~/scratch-esp/bin/python tw_setid.py PORT check           listen 30 s and report problems: two boards with one
@@ -120,6 +125,7 @@ TRIES = 3
 K_PIN, K_BRIGHT, K_TEST, K_TRY, K_SURVEY = 1, 2, 3, 4, 5  # keys (docs/PROTOCOL-3.md, tw_proto.h TW_K_*)
 K_POWER_OWN = 10                                  # 4.6: a board's own transmit power (quarter dBm; 0: the group's)
 K_DETECT, K_RELEARN = 6, 7                       # 3.4: each board's detection threshold (x10); relearn
+K_DETECT_HOLD = 11                                # 4.7: its detection hold (minutes, 0 none)
 K_DETECT_LOW = 8                                 # 3.5: its steadier-than-quiet threshold (x10, 0 off)
 SURVEY_CHANNELS = {"2.4 GHz": range(1, 12)}      # 3.1: what a survey covers (US); a band adds a row
 OUR_PAIR = (11, 7)                               # the firmware's channel: 11, its 40 MHz partner below
@@ -290,6 +296,9 @@ def show(seen):
             relay += f", detect {det[1][0] / 10:.1f}x quiet"
             if b["cable"] and b.get("detections") is not None:
                 relay += f" ({b['detections']:,} detections since it started)"
+        dh = b.get("keys", {}).get(K_DETECT_HOLD)   # 4.7: its detection hold
+        if dh and dh[1]:
+            relay += f", hold {dh[1][0]} min" if dh[1][0] else ", hold off"
         low = b.get("keys", {}).get(K_DETECT_LOW)   # 3.5: steadier than quiet
         if low and low[1]:
             relay += f", low {low[1][0] / 10:.1f}x" if low[1][0] else ", low off"
@@ -567,6 +576,13 @@ def board_key_args(a):
         rest = rest[:-2]
     if a[1] == "relearn" and not rest:
         return "TWSET relearn", K_RELEARN, target, "relearn", "relearn"
+    if a[1] == "detect" and rest[:1] == ["hold"]:       # 4.7: the detection hold
+        v = rest[1] if len(rest) == 2 else None
+        m = 0 if v == "off" else int(v) if v and v.isdigit() else None
+        if m is None or not 0 <= m <= 240:
+            sys.exit("detect hold MIN (0-240 minutes; 30 by default) or detect hold off [board N|all]")
+        return (f"TWSET detect hold {m}", K_DETECT_HOLD, target, f"detect hold {m} min" if m else "detect hold off",
+                "detect hold", (4, 7))
     if a[1] == "detect" and rest[:1] == ["low"]:        # 3.5: steadier than quiet
         v = rest[1] if len(rest) == 2 else None
         if v == "off":
@@ -584,7 +600,7 @@ def board_key_args(a):
         x = None
     if x is None or not 1.5 <= x <= 10:
         sys.exit("detect X (1.5-10 times the quiet level, in steps of 0.1) [board N|all]; detect low X (0.1-0.9) "
-                 "or detect low off [board N|all]; relearn [board N|all]")
+                 "or detect low off [board N|all]; detect hold MIN|off [board N|all]; relearn [board N|all]")
     return f"TWSET detect {round(x * 10)}", K_DETECT, target, f"detect {x:.1f}x", "detect"
 
 

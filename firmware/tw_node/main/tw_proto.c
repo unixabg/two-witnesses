@@ -968,6 +968,7 @@ int tw_key_class(uint8_t key)
     case TW_K_LED_BRIGHT:
     case TW_K_DETECT:
     case TW_K_DETECT_LOW:
+    case TW_K_DETECT_HOLD:
     case TW_K_POWER_OWN:
         return TW_KC_BOARD;
     case TW_K_LED_TEST:

@@ -5,6 +5,24 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.7-next (work in progress, on the next branch)
 
+- **Firmware (CSI module): the detection hold** (`detect hold`, board key
+  11). While a link is detecting, its quiet level no longer steps up, for up
+  to the board's detection hold (30 minutes unless set; 0-240): before, the
+  quiet level rose 0.2% a second with any presence, so someone sitting and
+  working by a link stopped being detected within minutes (at 4.5x quiet,
+  about 4), and read far below quiet when they left. Past the hold the
+  presence is the new usual, as before, so a lasting change (a machine left
+  running) still stops counting. `tw_setid.py PORT detect hold 45 board 3`,
+  `detect hold off board all` (as before 4.7); the status shows each
+  board's `hold N min`. The desk simulator has someone sitting and working
+  (`--sit A-B[@X-Y][:AMP]`, 4.5x quiet by default). Checked there: sitting
+  at minutes 3-20, detected every second (4.6: minutes 3-7 only), and 1.0x
+  quiet once gone (4.6: 0.2x); sitting at minutes 3-50, detected until
+  minute 37 (30 minutes of hold, then learned as usual), and quiet relearned
+  within minutes of leaving (4.3's way); `detect hold off` gave 4.6's
+  scores and detections, second by second; walks, the fan and its stillness
+  detected and marked as many seconds with the hold as without.
+
 - **Dashboard: motion easier to see.** The motion figure (the computer's: x
   times the link's usual) is bright yellow (bold) from x3, where it was a
   dim yellow from x6 that many terminals draw as brown; red from x10, or

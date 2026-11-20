@@ -11,6 +11,9 @@ extern const tw_sense_t tw_csi_sense;
 void     tw_score_relearn(tw_node_t *n);
 /* 3.4: this board's detection threshold, x10 (its TW_K_DETECT, or TW_DETECT_DEFAULT) */
 uint8_t  tw_detect_level(const tw_node_t *n);
+/* 4.7: this board's detection hold, in seconds (its TW_K_DETECT_HOLD, minutes, or TW_DHOLD_DEFAULT;
+   0: none) */
+uint16_t tw_detect_hold_s(const tw_node_t *n);
 /* 3.5: this board's steadier-than-quiet threshold, x10 (its TW_K_DETECT_LOW, or TW_LOW_DEFAULT;
    0: off) */
 uint8_t  tw_detect_low_level(const tw_node_t *n);

@@ -82,7 +82,7 @@ static void score_add(tw_node_t *n, uint8_t tx, const tw_rec_t *r)
 }
 
 /* close a second of board tx's score: x10 as a byte (0: none this second) */
-static uint8_t score_close(tw_score_t *s, int hold_down)
+static uint8_t score_close(tw_score_t *s, int hold_down, int hold_up)
 {
     uint8_t out = 0;
     if (s->nb && s->recs >= 5) {
@@ -107,9 +107,12 @@ static uint8_t score_close(tw_score_t *s, int hold_down)
                 tot += sd / fmaxf(s->ref[b], 1e-3f);
                 /* then a running median: a small step towards each new second (0.2%: a lasting
                    change becomes the usual in about 10-15 minutes, as the replay's settle) */
-                /* 3.5: but not down while the link is marked steadier than quiet (hold_down) */
+                /* 3.5: but not down while the link is marked steadier than quiet (hold_down);
+                   4.7: nor up while it is detecting, within the board's detection hold (hold_up) */
                 if (sd > s->ref[b]) {
-                    s->ref[b] *= 1.002f;
+                    if (!hold_up) {
+                        s->ref[b] *= 1.002f;
+                    }
                 } else if (!hold_down) {
                     s->ref[b] *= 1.0f / 1.002f;
                 }
@@ -138,6 +141,7 @@ void tw_score_relearn(tw_node_t *n)
         n->score[i].none = 0;
         n->score[i].armed = 0;
         n->score[i].busy = 0;
+        n->score[i].det_held = 0;
         /* 4.2: and this second's sums so far: after a channel change they mix two channels, and
            would be the new quiet level's first value */
         memset(n->score[i].s1, 0, sizeof(n->score[i].s1));
@@ -150,6 +154,15 @@ uint8_t tw_detect_level(const tw_node_t *n)
 {
     uint8_t v = n->set_len[TW_K_DETECT] ? n->set_val[TW_K_DETECT][0] : 0;
     return v >= TW_DETECT_MIN && v <= TW_DETECT_MAX ? v : TW_DETECT_DEFAULT;
+}
+
+uint16_t tw_detect_hold_s(const tw_node_t *n)
+{
+    if (!n->set_len[TW_K_DETECT_HOLD]) {
+        return TW_DHOLD_DEFAULT * 60;
+    }
+    uint8_t v = n->set_val[TW_K_DETECT_HOLD][0];
+    return (uint16_t)((v <= TW_DHOLD_MAX ? v : TW_DHOLD_DEFAULT) * 60);
 }
 
 uint8_t tw_detect_low_level(const tw_node_t *n)
@@ -169,11 +182,14 @@ static int csi_second(tw_node_t *n, uint32_t now, uint8_t *sc)
     (void)now;
     int any = 0;
     uint8_t level = tw_detect_level(n), low = tw_detect_low_level(n);
+    uint16_t hold_s = tw_detect_hold_s(n);
     uint16_t bits = 0, lbits = 0;
     for (int i = 1; i <= TW_MAX_NODES; i++) {
         tw_score_t *t = &n->score[i];
         int held = low && t->below >= TW_LOW_HOLD && t->low_held < t->low_cap;
-        sc[i - 1] = i == n->id ? 0 : score_close(t, held);
+        /* 4.7: detecting (as of the last second), and within its detection hold */
+        int held_up = hold_s && t->above >= TW_DETECT_HOLD && t->det_held < hold_s;
+        sc[i - 1] = i == n->id ? 0 : score_close(t, held, held_up);
         if (sc[i - 1]) {
             t->none = 0;
         } else if (t->none < 255) {
@@ -230,9 +246,13 @@ static int csi_second(tw_node_t *n, uint32_t now, uint8_t *sc)
                 if (s->above == TW_DETECT_HOLD) {
                     n->det_count++;             /* one more began */
                 }
+                if (s->det_held < 65535) {
+                    s->det_held++;              /* 4.7: a second of it, toward its detection hold */
+                }
             }
         } else if (sc[i - 1] || s->none >= TW_DETECT_GAP) {
             s->above = 0;                       /* 4.2: not for one second without a score */
+            s->det_held = 0;                    /* 4.7: the next detection has its hold afresh */
         }
     }
     memcpy(n->score_last, sc, TW_MAX_NODES);

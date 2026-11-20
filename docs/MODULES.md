@@ -63,7 +63,8 @@ Owns, from today's firmware:
 - the measurement records (kinds 0 and 1, `TWR`), full or compact;
 - the movement score, detections (3.4), steadier than quiet (3.5), relearning
   quiet, and the LED's white detection flash and green steadier mark;
-- the keys `detect` (6), `relearn` (7) and `detect low` (8): they keep their
+- the keys `detect` (6), `relearn` (7), `detect low` (8) and, from 4.7,
+  `detect hold` (11): the first three keep their
   numbers, now owned by module 1 in the table below.
 
 The once-a-second core record (kind 3, `TWM`) carries both core fields (the
@@ -106,7 +107,7 @@ title: CSI sensing (movement scores, detections, CSI records)
 senses_people: yes
 kinds: 0, 1            # record kinds it owns (only the CSI module has its own;
                        # every other module sends kind 8, below)
-keys: 6, 7, 8          # keys it owns (the CSI module's from 3.4/3.5; others use key 9)
+keys: 6, 7, 8, 11      # keys it owns (the CSI module's, from before modules; others use key 9)
 budget: 1200           # most bytes a frame it may fill, of TW_MAX_PAYLOAD 1400
 pins:                  # GPIOs it uses (none)
 ```
