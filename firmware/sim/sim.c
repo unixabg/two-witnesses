@@ -13,6 +13,7 @@
  *       [--block 2-1@10-50@0.75,...] [--setrelay 30@off,60@on] [--rxerr 0.01]
  *       [--set 0@cap=3,0@second=off,...] [--late measured] [--fix ahead,hwrx,cb]
  *       [--update T@TARGET:SIZE] [--still A-B] [--walk A-B[@X-Y]] [--sit A-B[@X-Y][:AMP]]
+ *       [--breathe A-B[@X-Y][:BPM[:AMP]]]
  *
  * --update T@TARGET:SIZE (4.0): at T seconds the computer has given the first exit a program of
  * SIZE bytes (made up), and it sends it to TARGET (0: every board of its group) over the air. A
@@ -119,6 +120,12 @@ static double sit_a = -1, sit_b = -1, sit_amp = 0.3;    /* 4.7: --sit A-B[@X-Y][
                                                    works by link X-Y (1-2 if not given) from A to B s:
                                                    a steady restlessness, smaller than a walk */
 static int sit_x = 1, sit_y = 2;
+static double br_a = -1, br_b = -1, br_bpm = 15, br_amp = 0.02;   /* --breathe A-B[@X-Y][:BPM[:AMP]]:
+                                                   someone sits perfectly still by link X-Y (1-2 if not
+                                                   given) from A to B s, breathing BPM a minute: the
+                                                   channel's shape across subcarriers swings with each
+                                                   breath (AMP of each subcarrier at most) */
+static int br_x = 1, br_y = 2;
 static double up_t = -1;                        /* 4.0: --update T@TARGET:SIZE */
 static int up_target = 0, up_fired = 0;
 static uint32_t up_size = 0;
@@ -210,6 +217,13 @@ static void make_csi(int rx, int tx, double t, int8_t *buf)
         }
         if (sit_a >= 0 && t > sit_a && t < sit_b && ((rx == sit_x && tx == sit_y) || (rx == sit_y && tx == sit_x))) {
             motion = sit_amp * (urand() - 0.5);   /* 4.7: someone at work there, for minutes */
+        }
+        if (br_a >= 0 && t > br_a && t < br_b && ((rx == br_x && tx == br_y) || (rx == br_y && tx == br_x))) {
+            /* a chest moving a few mm: one reflection's path changes, so the channel's shape across
+               the subcarriers swings back and forth at the breathing rate, slightly asymmetric
+               (breathing in and out are not the same) */
+            double ph = 6.283 * br_bpm / 60 * t / 1e6;
+            motion = br_amp * sin(0.9 * b + 1.7 * rx + 0.6 * tx) * (sin(ph) + 0.3 * sin(2 * ph));
         }
         if (still_a >= 0 && !(t > still_a && t < still_b) && ((rx == 1 && tx == 3) || (rx == 3 && tx == 1))) {
             motion = 0.2 * (urand() - 0.5);   /* the fan: restless all the time, but nothing walking */
@@ -326,6 +340,11 @@ static int parse_args(int argc, char **argv, char *kill_spec, char *exit_spec, u
             char *e; sit_a = strtod(argv[++i], &e) * 1e6; sit_b = (*e == '-' ? strtod(e + 1, &e) : sit_a / 1e6 + 600) * 1e6;
             if (*e == '@') { sscanf(e + 1, "%d-%d", &sit_x, &sit_y); e = strchr(e, ':') ? strchr(e, ':') : e + strlen(e); }
             if (*e == ':') sit_amp = strtod(e + 1, NULL);
+        }
+        else if (!strcmp(argv[i], "--breathe") && i + 1 < argc) {
+            char *e; br_a = strtod(argv[++i], &e) * 1e6; br_b = (*e == '-' ? strtod(e + 1, &e) : br_a / 1e6 + 600) * 1e6;
+            if (*e == '@') { sscanf(e + 1, "%d-%d", &br_x, &br_y); e = strchr(e, ':') ? strchr(e, ':') : e + strlen(e); }
+            if (*e == ':') { br_bpm = strtod(e + 1, &e); if (*e == ':') br_amp = strtod(e + 1, NULL); }
         }
         else if (!strcmp(argv[i], "--still") && i + 1 < argc) {
             char *e; still_a = strtod(argv[++i], &e) * 1e6; still_b = (*e == '-' ? strtod(e + 1, NULL) : still_a / 1e6 + 60) * 1e6;

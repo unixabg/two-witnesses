@@ -4,5 +4,6 @@ Licensed under the Apache License, Version 2.0 (see LICENSE).
 
 This project includes or builds on software by Espressif Systems
 (ESP-IDF, esp-csi, esp_csi_gain_ctrl, esp_radar_motion_dec), licensed under
-the Apache License 2.0, and Zig's compiler_rt (MIT). See
+the Apache License 2.0, and Zig's compiler_rt (MIT). vitals.py ports the
+detection method of wifisense-pi by The-Masked-Bear (Apache License 2.0). See
 THIRD-PARTY-NOTICES.md for each part.

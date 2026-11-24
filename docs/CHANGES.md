@@ -5,6 +5,23 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.7-next (work in progress, on the next branch)
 
+- **vitals.py: does a link see someone who is still?** An offline test on a
+  run folder, with wifisense-pi's method (The-Masked-Bear, Apache-2.0; ported
+  to numpy and the kit's records, THIRD-PARTY-NOTICES.md): movement (1.5-9
+  Hz, 6 s) and breathing (0.13-0.7 Hz, 30 s) in dB above the receiver's own
+  noise, from the sub-carriers' covariance, so an empty room is 0 dB and a
+  person who stays is not learned away; the breathing rate by harmonic
+  summation (45 s); each pair empty / still (breathing at 4.5 dB two steps
+  in a row) / moving (6 dB), minute by minute. The desk simulator breathes
+  (`--breathe A-B[@X-Y][:BPM[:AMP]]`). Checked there: 3 boards, breathing 15
+  a minute by link 1-2: still, 25 dB, 14.9 a minute, in every step, and the
+  other links empty; 12 a minute at swings of 2%, 0.8%, 0.4% of each
+  subcarrier (noise 3%): 25, 17, 11 dB, 12.0 a minute every step, and at
+  0.2% the edge (3-5 dB); 7 boards (compact records), a walk, 25 a minute by
+  3-5: the walk moving, 3-5 still at 24.9 a minute in all 50 steps, and no
+  step of 2,052 on the empty links called still or moving. Not yet tried on
+  real boards.
+
 - **tw_node 4.7: version and image, the detection hold.** The hold below,
   in `tw_node-s3-ch11.bin` (`make csi_defconfig && make release-bin`,
   ESP-IDF v5.5.6). Its first 128 KB are 4.6's but for the bootloader's

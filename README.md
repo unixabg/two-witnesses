@@ -154,6 +154,15 @@ Remake the views and checks of a run (for example after updating the kit):
 `~/tw-kit/after_run.sh ~/tw-data/runs/<run>`, or the views only, for a many-board run
 `~/scratch-esp/bin/python ~/tw-kit/split_links.py ~/tw-data/runs/<run> --again --view`.
 
+Does a link see a person who is still (sitting, asleep), by their breathing?
+`~/scratch-esp/bin/python ~/tw-kit/vitals.py ~/tw-data/runs/<run> --from 21:00 --to 23:00`
+prints, minute by minute and pair by pair, movement and breathing in dB above
+the receiver's own noise (not a learned quiet level: someone who stays is
+not learned away), each pair empty / still / moving, and a breathing rate
+when it finds one (`--link 2-1` one pair, `--csv FILE` every 10 s step). An
+offline test for now (wifisense-pi's method, THIRD-PARTY-NOTICES.md); it
+changes nothing in the run.
+
 Replay a many-board run on the board layout (every link, second by second,
 with a timeline, the events and the lasting changes), as one page to open in
 a browser: `~/scratch-esp/bin/python ~/tw-kit/replay.py ~/tw-data/runs/<run>`
