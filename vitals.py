@@ -6,7 +6,9 @@
 # sub-carrier covariance; the breathing rate by harmonic summation) is that of wifisense-pi,
 # Copyright The-Masked-Bear, Apache-2.0: https://github.com/The-Masked-Bear/wifisense-pi
 # (pi/wifisense/dsp/motion.py, breathing.py, csi.py). Ported here to the kit's records and to
-# numpy alone; the numbers (bands, windows, thresholds) are theirs.
+# numpy alone; the numbers (bands, windows, thresholds) are theirs. Changed here: the noise
+# reference (each component's own 12-24 Hz, at the links' native 50 Hz, not the tail
+# components at 20 Hz), and the top three components looked at, not only the first.
 """vitals.py - does a link see a person who is still? An offline test on a run folder.
 
     ~/scratch-esp/bin/python vitals.py RUN_FOLDER [--from HH:MM] [--to HH:MM] [--link 2-1]
@@ -15,19 +17,24 @@
 For each link (both directions of a pair together: "1-2" is 1->2 and 2->1), every --step
 seconds, from the kit's records (TWR) and the boards' own clock:
 
-  motion   dB above the noise floor, 1.5-9 Hz, the last 6 s: movement (walking, a hand)
-  vitals   dB above the noise floor, 0.13-0.7 Hz, the last 30 s: what a still body still
+  motion   dB above the scatter, 1.5-9 Hz, the last 6 s: movement (walking, a hand)
+  vitals   dB above the scatter, 0.13-0.7 Hz, the last 30 s: what a still body still
            does (the chest, breathing)
   breath   the breathing rate (breaths a minute) and how sure (0-1), the last 45 s, when the
            link is not swamped by movement
-  state    empty / still (vitals at presence two steps in a row, no movement) / moving
+  state    empty / still (vitals at presence two steps in a row, no movement in the last
+           30 s) / moving
 
-The reference is the receiver's own noise (the sub-carriers' independent part), not a learned
-quiet level: an empty room is 0 dB, and someone who stays there is not learned away. What
+The reference is each link's own frame-to-frame scatter (what its leading components do at
+12-24 Hz, where a body hardly moves), not a learned quiet level: an empty room is about 0 dB,
+and someone who stays there is not learned away. (wifisense-pi takes the sub-carriers'
+independent part as the floor; between two ESP32 boards most of the scatter is shared by the
+sub-carriers, and an empty room read 6-23 dB that way.) What
 counts as a person: wifisense-pi's thresholds (motion on at 6 dB, presence at 4.5 dB).
 
-Prints a line a minute for each link (the most it saw that minute), and with --csv every
-step. Nothing here changes the boards or the run.
+Prints a line a minute for each pair: what both directions saw that minute (a person changes
+both; one receiver's noise does not), and with --csv every step of each direction. Nothing
+here changes the boards or the run.
 """
 import argparse
 import collections
@@ -42,7 +49,7 @@ import zlib
 
 import numpy as np
 
-ANALYSIS_HZ = 20.0
+ANALYSIS_HZ = 50.0                  # the boards' own rate on each link (a frame each 20 ms)
 MOTION_BAND, VITAL_BAND = (1.5, 9.0), (0.13, 0.70)
 MOTION_WINDOW_S, VITAL_WINDOW_S, BREATH_WINDOW_S = 6.0, 30.0, 45.0
 BREATH_MIN_S = 20.0
@@ -50,6 +57,8 @@ MOTION_ON_DB, PRESENCE_ON_DB = 6.0, 4.5
 BREATH_LOW_HZ, BREATH_HIGH_HZ, HARMONICS = 0.13, 0.60, 7
 BREATH_VALID = 0.42                 # their confidence to report a rate
 KEEP_S = BREATH_WINDOW_S + 5
+STATES = ("empty", "still", "moving")
+RANK = {st: i for i, st in enumerate(STATES)}
 
 
 def read_lines(path):
@@ -104,58 +113,41 @@ def _welch(x, fs, nperseg):
     return freqs, (acc / max(cnt, 1)) / (fs * (w ** 2).sum())
 
 
-def _raw_band_snr(centred, band):
+REF_BAND = (12.0, 24.0)              # above any body movement, under half the 50 Hz
+TOP = 3                             # the leading components looked at
+
+
+def _components(c):
     try:
-        u, sv, _ = np.linalg.svd(centred, full_matrices=False)
+        u, sv, _ = np.linalg.svd(c, full_matrices=False)
     except np.linalg.LinAlgError:
-        return 0.0, 0.0
+        return None
     if sv.size < 8 or sv[0] <= 0:
-        return 0.0, 0.0
-    comps = u * sv
+        return None
+    return u[:, :TOP] * sv[:TOP]
+
+
+def _raw_band_snr(centred, band):
+    """the most any of the leading components has in band, over its own 12-24 Hz, dB.
+    (wifisense-pi's reference is the tail components' level; between two ESP32 boards the
+    frame-to-frame scatter is shared by the sub-carriers, so it sits in the leading components
+    and not in the tail, and an empty room read 6-23 dB. Each component's own fast part is
+    that scatter, and a body hardly moves at 12-24 Hz.)"""
+    comps = _components(centred)
+    if comps is None:
+        return None
     nperseg = min(comps.shape[0], max(64, comps.shape[0] // 2))
-    freqs, sig = _welch(comps[:, 0], ANALYSIS_HZ, nperseg)
-    lo = max(4, comps.shape[1] // 2)
-    tail = comps[:, lo:lo + 12]
-    if tail.shape[1] == 0:
-        return 0.0, 0.0
-    _, tpsd = _welch(tail, ANALYSIS_HZ, nperseg)
-    noise = float(np.median(tpsd))
-    if noise <= 0 or not np.isfinite(noise):
-        return 0.0, 0.0
-    sel = (freqs >= band[0]) & (freqs <= min(band[1], ANALYSIS_HZ / 2 * 0.95))
-    if not sel.any():
-        return 0.0, 0.0
-    return 10 * np.log10(max(float(np.mean(sig[sel, 0])) / noise, 1e-12)), noise
-
-
-_bias = {}
-
-
-def _noise_bias_db(T, K, band):
-    """what the estimator says of pure white noise of the same shape (theirs: about 7 dB),
-    measured once per shape and taken off, so an empty room reads 0 dB"""
-    key = (T, K, band)
-    if key not in _bias:
-        rng = np.random.default_rng(0xC51)
-        trials = []
-        for _ in range(7):
-            x = rng.standard_normal((T, K))
-            db, lvl = _raw_band_snr(x - x.mean(axis=0), band)
-            if lvl > 0:
-                trials.append(db)
-        _bias[key] = float(np.median(trials)) if trials else 0.0
-    return _bias[key]
-
-
-def uniform(t, rows, window_s, now):
-    """the last window_s seconds of (t, rows) on a 20 Hz grid (linear); None if under 80% covered"""
-    sel = t >= now - window_s
-    if sel.sum() < 32:
+    freqs, psd = _welch(comps, ANALYSIS_HZ, nperseg)
+    ref = np.median(psd[(freqs >= REF_BAND[0]) & (freqs <= REF_BAND[1])], axis=0)
+    sel = (freqs >= band[0]) & (freqs <= band[1])
+    if not sel.any() or not np.all(ref > 0):
         return None
-    tw, rw = t[sel], rows[sel]
-    gaps = np.diff(tw)
-    if tw[-1] - tw[0] < 0.8 * window_s or (gaps.size and gaps.max() > 1.0):
-        return None
+    ratio = psd[sel].mean(axis=0) / ref
+    best = int(np.argmax(ratio))
+    return 10 * np.log10(max(float(ratio[best]), 1e-12)), best
+
+
+def _grid(tw, rw):
     grid = np.arange(tw[0], tw[-1], 1 / ANALYSIS_HZ)
     out = np.empty((grid.size, rw.shape[1]))
     for k in range(rw.shape[1]):
@@ -163,32 +155,74 @@ def uniform(t, rows, window_s, now):
     return out
 
 
+_bias = {}
+_rng = np.random.default_rng(0xC51)
+
+
+def _noise_bias_db(tw, K, band):
+    """what the estimator says of white noise at the same moments (the same lost frames,
+    filled in the same way), taken off so an empty room reads about 0 dB. A window with no
+    lost frames is measured once per shape; one with gaps, each time."""
+    gaps = np.diff(tw) > 1.5 / ANALYSIS_HZ
+    key = (round((tw[-1] - tw[0]) * ANALYSIS_HZ), K, band) if not gaps.any() else None
+    if key in _bias:
+        return _bias[key]
+    trials = []
+    for _ in range(7 if key else 3):
+        x = _grid(tw, _rng.standard_normal((tw.size, K)))
+        r = _raw_band_snr(x - x.mean(axis=0), band)
+        if r:
+            trials.append(r[0])
+    b = float(np.median(trials)) if trials else 0.0
+    if key:
+        _bias[key] = b
+    return b
+
+
+def window(t, rows, window_s, now):
+    """the last window_s seconds of (t, rows); None if under 80% covered or a gap over 1 s"""
+    sel = t >= now - window_s
+    if sel.sum() < 32:
+        return None
+    tw, rw = t[sel], rows[sel]
+    gaps = np.diff(tw)
+    if tw[-1] - tw[0] < 0.8 * window_s or (gaps.size and gaps.max() > 1.0):
+        return None
+    return tw, rw
+
+
 def band_db(t, rows, window_s, band, now):
-    u = uniform(t, rows, window_s, now)
-    if u is None or u.shape[0] < 64 or u.shape[1] < 8:
+    w = window(t, rows, window_s, now)
+    if w is None:
         return None
-    c = u - u.mean(axis=0)
-    raw, noise = _raw_band_snr(c, band)
-    if noise <= 0:
+    tw, rw = w
+    u = _grid(tw, rw)
+    if u.shape[0] < 128 or u.shape[1] < 8:
         return None
-    return float(np.clip(raw - _noise_bias_db(c.shape[0], c.shape[1], band), -20, 60))
+    r = _raw_band_snr(u - u.mean(axis=0), band)
+    if r is None:
+        return None
+    return float(np.clip(r[0] - _noise_bias_db(tw, rw.shape[1], band), -20, 60))
 
 
 def breath_rate(t, rows, now):
     """(breaths a minute, confidence 0-1) by harmonic summation, or None"""
-    u = uniform(t, rows, BREATH_WINDOW_S, now)
-    if u is None or u.shape[0] < int(BREATH_MIN_S * ANALYSIS_HZ):
+    w = window(t, rows, BREATH_WINDOW_S, now)
+    if w is None:
+        return None
+    u = _grid(*w)
+    if u.shape[0] < int(BREATH_MIN_S * ANALYSIS_HZ):
         return None
     c = u - u.mean(axis=0)
     sens = c.std(axis=0)                                  # the sub-carriers that respond
     keep = sens > np.quantile(sens, 0.5)
     if keep.sum() >= 4:
         c = c[:, keep]
-    try:
-        uu, sv, _ = np.linalg.svd(c, full_matrices=False)
-    except np.linalg.LinAlgError:
+    r = _raw_band_snr(c, (BREATH_LOW_HZ, BREATH_HIGH_HZ))   # the component that breathes most
+    comps = _components(c)
+    if r is None or comps is None:
         return None
-    x = uu[:, 0] * sv[0]
+    x = comps[:, r[1]]
     n = x.size
     nfft = int(2 ** np.ceil(np.log2(n * 4)))
     psd = np.abs(np.fft.rfft((x - x.mean()) * np.hanning(n), n=nfft)) ** 2
@@ -220,6 +254,7 @@ class Link:
 
     def __init__(self):
         self.above = 0                                    # steps in a row with vitals at presence
+        self.moved = -1e18                                # (board clock) the last step that read moving
         self.t = collections.deque()
         self.a = collections.deque()
         self.wrap = 0
@@ -261,6 +296,11 @@ def step(link):
     if v is not None and max(m, v) >= PRESENCE_ON_DB and not (m > 18 or (m >= MOTION_ON_DB and m > v - 6)):
         br = breath_rate(t, rows, now)
     return m, v, br
+
+
+def _db(x):
+    s = f"{x:.0f}"
+    return "0" if s == "-0" else s
 
 
 def main():
@@ -393,19 +433,24 @@ def main():
                     # still: vitals at presence for two steps in a row (as their presence gate
                     # holds 2 s before it believes, so one noisy window is not a person)
                     lk.above = lk.above + 1 if v is not None and v >= PRESENCE_ON_DB else 0
-                    present = moving or lk.above >= 2
+                    now_b = lk.t[-1]
+                    if moving:
+                        lk.moved = now_b
+                    # still, too, only once the movement is out of the 30 s it looks at (a walk
+                    # that just ended fills it, and is not a person sitting)
+                    present = moving or (lk.above >= 2 and now_b - lk.moved > VITAL_WINDOW_S)
                     state = "moving" if moving else "still" if present else "empty"
                     bpm, conf = br if br and state == "still" else (None, 0.0)   # a rate only for someone still
                     rows_out.append([when.strftime("%H:%M:%S"), f"{tx}->{rx}", f"{m:.1f}",
                                      "" if v is None else f"{v:.1f}", state,
                                      "" if bpm is None or conf < BREATH_VALID else f"{bpm:.1f}", f"{conf:.2f}"])
                     mk = when.strftime("%H:%M")
-                    cur = minute[mk].get(pair)
+                    cur = minute[mk].setdefault(pair, {}).get((tx, rx))
                     if cur is None:
-                        cur = minute[mk][pair] = dict(m=m, v=v if v is not None else -99, st=set(), bpm=[])
+                        cur = minute[mk][pair][(tx, rx)] = dict(m=m, v=v if v is not None else -99, rank=0, bpm=[])
                     cur["m"] = max(cur["m"], m)
                     cur["v"] = max(cur["v"], v if v is not None else -99)
-                    cur["st"].add(state)
+                    cur["rank"] = max(cur["rank"], RANK[state])
                     if bpm is not None and conf >= BREATH_VALID:
                         cur["bpm"].append(bpm)
             except (ValueError, IndexError):
@@ -415,21 +460,26 @@ def main():
     if not minute:
         sys.exit("no link had enough records (at least 6 s of measurements) in that time")
     pairs = sorted({p for mm in minute.values() for p in mm}, key=lambda p: tuple(int(v) for v in p.split("-")))
-    print("minute by minute, each pair's most that minute: motion dB / vitals dB, state, breaths a minute,")
+    print("minute by minute, each pair (both directions must agree: the less of the two directions'")
+    print("  most that minute; ? only one direction heard): motion dB / vitals dB, state, breaths a minute,")
     print("  and [the boards' own: their highest movement score that minute, x quiet; seconds detected]")
-    print("  (dB above the receiver's own noise; a person: motion 6+ moving, else vitals 4.5+ still)")
+    print("  (dB above the link's own frame-to-frame scatter; a person: motion 6+ moving, else vitals 4.5+ still)")
     for mk in sorted(minute):
         cells = []
         for p in pairs:
-            c = minute[mk].get(p)
-            if not c:
+            ds = list(minute[mk].get(p, {}).values())
+            if not ds:
                 cells.append(f"{p}: -")
                 continue
-            st = "moving" if "moving" in c["st"] else "still" if "still" in c["st"] else "empty"
-            br = f" {np.median(c['bpm']):.0f}/min" if c["bpm"] else ""
+            # the two witnesses: a pair is only as sure as its less sure direction (a person
+            # changes both; one receiver's noise does not), when both were heard that minute
+            c = dict(m=min(d["m"] for d in ds), v=min(d["v"] for d in ds), rank=min(d["rank"] for d in ds))
+            st = STATES[c["rank"]] + ("" if len(ds) == 2 else "?")
+            bpm = [b for d in ds for b in d["bpm"]] if c["rank"] == 1 else []
+            br = f" {np.median(bpm):.0f}/min" if bpm else ""
             bd = board.get(mk, {}).get(p)
             bv = f" [x{bd[0] / 10:.1f} {bd[1]}s]" if bd else ""
-            cells.append(f"{p}: {c['m']:.0f}/{c['v']:.0f} {st}{br}{bv}")
+            cells.append(f"{p}: {_db(c['m'])}/{_db(c['v']) if c['v'] > -99 else '-'} {st}{br}{bv}")
         print(f"{mk}  " + "   ".join(cells))
     print("records used (left out: received with an error):  " + "   ".join(
         f"{tx}->{rx} {nrec[(tx, rx)]}" + (f" ({rxerr[(tx, rx)]})" if rxerr[(tx, rx)] else "")

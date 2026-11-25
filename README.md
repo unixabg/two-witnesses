@@ -157,8 +157,9 @@ Remake the views and checks of a run (for example after updating the kit):
 Does a link see a person who is still (sitting, asleep), by their breathing?
 `~/scratch-esp/bin/python ~/tw-kit/vitals.py ~/tw-data/runs/<run> --from 21:00 --to 23:00`
 prints, minute by minute and pair by pair, movement and breathing in dB above
-the receiver's own noise (not a learned quiet level: someone who stays is
-not learned away), each pair empty / still / moving, and a breathing rate
+the link's own frame-to-frame scatter (not a learned quiet level: someone who
+stays is not learned away), each pair empty / still / moving (both directions
+must agree), and a breathing rate
 when it finds one (`--link 2-1` one pair, `--csv FILE` every 10 s step). An
 offline test for now (wifisense-pi's method, THIRD-PARTY-NOTICES.md); it
 changes nothing in the run.

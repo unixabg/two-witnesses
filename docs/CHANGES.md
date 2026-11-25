@@ -33,6 +33,33 @@ the README has only what you need to run the kit.
   a secondary channel, and each minute shows the boards' own verdict beside
   it, `[x2.1 3s]` (their highest movement score that minute, and seconds
   detected), to tell a busy room from a wrong reference.
+  Then the second real sample (4 boards, 6 minutes from 00:00, nobody near
+  but perhaps 15 ft behind board 3; 196,620 full records, HT40): every link
+  read 6-23 dB "moving" in an empty room, and the cause is the reference,
+  not the room. Between two ESP32 boards the frame-to-frame scatter of the
+  channel's shape is shared by the sub-carriers (the leading component is
+  6-200 times the median one, and over half its power is at 9-25 Hz, flat,
+  where a body hardly moves), so it sits in the leading components, not in
+  the tail that wifisense-pi takes as the floor; the leading component
+  always stood far above the tail. Now: each of the three leading components
+  against its own 12-24 Hz, at the links' native 50 Hz (not resampled to
+  20), and the most of the three; the white-noise bias measured at the same
+  moments (a link that loses frames is filled in the same way); a pair is
+  only as sure as its less sure direction (a person changes both; one
+  receiver's noise does not), `?` when only one was heard; and still only
+  once no movement is in the 30 s it looks at (a walk that just ended is not
+  a person sitting). The same sample: 391 of 396 steps empty by direction
+  (from none), every pair empty every minute, motion -1 to 1 dB at the median
+  (from 6-23). Breathing planted into those real records (a shape swinging at
+  15 a minute): seen at swings of 0.2-0.4 of each link's own frame-to-frame
+  scatter, so how much a real chest moves the shape decides it; that needs
+  someone sitting still by a pair. The simulator: empty links 0-2 dB, never
+  called still; breathing at 2%, 1%, 0.5% of each subcarrier: 28, 22, 16 dB,
+  still, 15 a minute; a walk: 36-38 dB moving, and the minute after it empty
+  (it was "still" before). The simulator's `--sit` (a fresh random value each
+  frame) is now not seen by vitals.py, being the same kind as the scatter; a
+  real restless body moves slower than 12 Hz. 6 minutes of 4 boards: 12 s
+  here (about 2 minutes an hour).
 
 - **tw_node 4.7: version and image, the detection hold.** The hold below,
   in `tw_node-s3-ch11.bin` (`make csi_defconfig && make release-bin`,
