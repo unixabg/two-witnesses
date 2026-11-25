@@ -20,7 +20,12 @@ the README has only what you need to run the kit.
   0.2% the edge (3-5 dB); 7 boards (compact records), a walk, 25 a minute by
   3-5: the walk moving, 3-5 still at 24.9 a minute in all 50 steps, and no
   step of 2,052 on the empty links called still or moving. Not yet tried on
-  real boards.
+  real boards. `--from`/`--to` are the next such time from the run's start
+  (a run from 23:00 and `--from 04:00`: the next morning), whole hourly files
+  outside the time are not read, the 50 s before `--from` warm the measures
+  up unshown, and a rate shows only for a pair called still. 5 boards, 15
+  minutes: 22 s here (about 1.5 minutes an hour of records; a Chromebook's
+  Linux, likely 2-4 times that).
 
 - **tw_node 4.7: version and image, the detection hold.** The hold below,
   in `tw_node-s3-ch11.bin` (`make csi_defconfig && make release-bin`,

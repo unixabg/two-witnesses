@@ -36,6 +36,7 @@ import datetime as dt
 import glob
 import gzip
 import os
+import re
 import sys
 import zlib
 
@@ -276,12 +277,46 @@ def main():
         x, y = (int(v) for v in a.link.split("-"))
         want = {(x, y), (y, x)}
 
-    def clock(hhmm, day):
-        h, m = (int(v) for v in hhmm.split(":"))
-        return day.replace(hour=h, minute=m, second=0, microsecond=0)
+    def file_start(path):
+        """when a file begins, from its name (listen.py: csi-YYYYMMDD-HH[MM][.partN].csv.gz)"""
+        m = re.match(r"csi-(\d{8})-(\d{2})(\d{2})?", os.path.basename(path))
+        if not m:
+            return None
+        return dt.datetime.strptime(m.group(1) + m.group(2) + (m.group(3) or "00"), "%Y%m%d%H%M")
+
+    def after(hhmm, start):
+        """the first HH:MM at or after start (a run from 23:00 and --from 04:00: the next morning)"""
+        try:
+            h, m = (int(v) for v in hhmm.split(":"))
+            t = start.replace(hour=h, minute=m, second=0, microsecond=0)
+        except ValueError:
+            sys.exit(f"time HH:MM, not {hhmm}")
+        return t if t >= start.replace(second=0, microsecond=0) else t + dt.timedelta(days=1)
 
     links, due, rows_out, minute = {}, {}, [], collections.defaultdict(dict)
     t_from = t_to = None
+    starts = [file_start(f) for f in files]
+    if a.t_from or a.t_to:
+        run_start = next((s0 for s0 in starts if s0), None)
+        if run_start is None:                             # names not as listen.py writes: the first line
+            for line in read_lines(files[0]):
+                if line[:1].isdigit():
+                    run_start = dt.datetime.fromtimestamp(int(line.split(",", 1)[0]) / 1e9)
+                    break
+        if run_start is None:
+            sys.exit("could not tell when the run began")
+        t_from = after(a.t_from, run_start) if a.t_from else run_start
+        t_to = after(a.t_to, t_from) if a.t_to else None
+        # skip whole files outside the time: a file ends where the next begins
+        if all(starts):
+            keep = []
+            for i, f in enumerate(files):
+                end = starts[i + 1] if i + 1 < len(files) and starts[i + 1] > starts[i] else None
+                if (end is None or end > t_from - dt.timedelta(seconds=KEEP_S)) and (t_to is None or starts[i] <= t_to):
+                    keep.append(f)
+            files = keep
+        print(f"from {t_from:%Y-%m-%d %H:%M}" + (f" to {t_to:%Y-%m-%d %H:%M}" if t_to else "")
+              + f": {len(files)} file{'s' if len(files) != 1 else ''}", file=sys.stderr)
     seen = set()
     done = False
     for path in files:
@@ -303,13 +338,8 @@ def main():
                 if want and (tx, rx) not in want:
                     continue
                 when = dt.datetime.fromtimestamp(host)
-                if a.t_from and t_from is None:
-                    t_from = clock(a.t_from, when)
-                    t_to = clock(a.t_to, when) if a.t_to else None
-                    if t_to and t_to <= t_from:
-                        t_to += dt.timedelta(days=1)
-                if t_from and when < t_from:
-                    continue
+                if t_from and when < t_from - dt.timedelta(seconds=KEEP_S):
+                    continue                              # (the last KEEP_S before it: to warm up)
                 if t_to and when > t_to:
                     done = True
                     break
@@ -320,6 +350,8 @@ def main():
                 pair = f"{min(rx, tx)}-{max(rx, tx)}"
                 lk = links.setdefault((tx, rx), Link())
                 lk.add(int(f[9]), amp)
+                if t_from and when < t_from:
+                    continue                              # warming up: measured, not yet shown
                 if host >= due.get((tx, rx), 0):
                     due[(tx, rx)] = host + a.step
                     r = step(lk)
@@ -332,7 +364,7 @@ def main():
                     lk.above = lk.above + 1 if v is not None and v >= PRESENCE_ON_DB else 0
                     present = moving or lk.above >= 2
                     state = "moving" if moving else "still" if present else "empty"
-                    bpm, conf = br if br else (None, 0.0)
+                    bpm, conf = br if br and state == "still" else (None, 0.0)   # a rate only for someone still
                     rows_out.append([when.strftime("%H:%M:%S"), f"{tx}->{rx}", f"{m:.1f}",
                                      "" if v is None else f"{v:.1f}", state,
                                      "" if bpm is None or conf < BREATH_VALID else f"{bpm:.1f}", f"{conf:.2f}"])
