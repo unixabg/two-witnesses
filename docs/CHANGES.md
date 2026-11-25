@@ -25,7 +25,14 @@ the README has only what you need to run the kit.
   outside the time are not read, the 50 s before `--from` warm the measures
   up unshown, and a rate shows only for a pair called still. 5 boards, 15
   minutes: 22 s here (about 1.5 minutes an hour of records; a Chromebook's
-  Linux, likely 2-4 times that).
+  Linux, likely 2-4 times that). After the first real hour (04:00-05:00, 4
+  boards: every pair "moving" at 6-24 dB, rates jumping 8-34 a minute, so
+  the method does not yet hold on real records): records the radio received
+  with an error are left out (and counted), the sub-carrier of the buffer's
+  first word (sometimes marked invalid) is left out of every record without
+  a secondary channel, and each minute shows the boards' own verdict beside
+  it, `[x2.1 3s]` (their highest movement score that minute, and seconds
+  detected), to tell a busy room from a wrong reference.
 
 - **tw_node 4.7: version and image, the detection hold.** The hold below,
   in `tw_node-s3-ch11.bin` (`make csi_defconfig && make release-bin`,

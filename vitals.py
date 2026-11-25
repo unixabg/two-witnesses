@@ -64,15 +64,18 @@ def read_lines(path):
 
 
 def lltf(amp, n, phy):
+    # (without a secondary channel the L-LTF takes bin 1, the first word of the buffer, which the
+    # radio sometimes marks invalid; its sub-carrier, the 27th of the 52, is left out every time,
+    # so every record of a link has the same 51)
     """the 52 L-LTF sub-carriers of a record: a compact record has only those; a full one has
     the whole buffer (esp-radar's table, as tw_lltf_ranges in the firmware)"""
     if n == 52:
-        return amp
+        return amp if (phy >> 5) & 3 else np.delete(amp, 26)
     if n < 59:
         return None
     if (phy >> 5) & 3:                  # a secondary channel (above or below)
         return np.concatenate([amp[6:32], amp[33:59]])
-    return np.concatenate([amp[38:64], amp[1:27]])
+    return np.concatenate([amp[38:64], amp[2:27]])
 
 
 # ---------------- the estimator (wifisense-pi's, in numpy) ----------------
@@ -319,9 +322,33 @@ def main():
               + f": {len(files)} file{'s' if len(files) != 1 else ''}", file=sys.stderr)
     seen = set()
     done = False
+    rxerr = collections.Counter()
+    nrec = collections.Counter()
+    board = collections.defaultdict(dict)                 # minute -> pair -> [max score x10, detection s]
     for path in files:
         for line in read_lines(path):
             f = line.rstrip("\n").split(",")
+            if len(f) >= 26 and f[1] == "TWM":           # the boards' own verdict, each second
+                try:
+                    when = dt.datetime.fromtimestamp(int(f[0]) / 1e9)
+                    if (t_from and when < t_from) or (t_to and when > t_to):
+                        continue
+                    key = ("M", int(f[2]), int(f[3]), int(f[4]))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    rx, det = int(f[2]), int(f[24], 16)
+                    mk = when.strftime("%H:%M")
+                    for tx in range(1, 17):
+                        sc = int(f[6 + tx])
+                        if tx == rx or not sc or (want and (tx, rx) not in want):
+                            continue
+                        b = board[mk].setdefault(f"{min(rx, tx)}-{max(rx, tx)}", [0, 0])
+                        b[0] = max(b[0], sc)
+                        b[1] += det >> (tx - 1) & 1
+                except (ValueError, IndexError):
+                    pass
+                continue
             if len(f) != 19 or f[1] != "TWR":
                 continue
             try:
@@ -329,6 +356,9 @@ def main():
                 rx, tx, kind, n, stp = int(f[2]), int(f[3]), int(f[15]), int(f[16]), int(f[17])
                 if (kind & 0x0F) > 1 or (kind & 0x20) or len(f[18]) != 2 * n:
                     continue                              # not a measurement, or a second frame's
+                if kind & 0x40:                           # the radio received it with an error: its
+                    rxerr[(tx, rx)] += 1                  # CSI may be garbage, so it is left out
+                    continue
                 key = (rx, int(f[7]), int(f[6]))
                 if key in seen:
                     continue
@@ -348,6 +378,7 @@ def main():
                 if amp is None:
                     continue
                 pair = f"{min(rx, tx)}-{max(rx, tx)}"
+                nrec[(tx, rx)] += 1
                 lk = links.setdefault((tx, rx), Link())
                 lk.add(int(f[9]), amp)
                 if t_from and when < t_from:
@@ -384,7 +415,8 @@ def main():
     if not minute:
         sys.exit("no link had enough records (at least 6 s of measurements) in that time")
     pairs = sorted({p for mm in minute.values() for p in mm}, key=lambda p: tuple(int(v) for v in p.split("-")))
-    print("minute by minute, each pair's most that minute: motion dB / vitals dB, state, breaths a minute")
+    print("minute by minute, each pair's most that minute: motion dB / vitals dB, state, breaths a minute,")
+    print("  and [the boards' own: their highest movement score that minute, x quiet; seconds detected]")
     print("  (dB above the receiver's own noise; a person: motion 6+ moving, else vitals 4.5+ still)")
     for mk in sorted(minute):
         cells = []
@@ -395,8 +427,13 @@ def main():
                 continue
             st = "moving" if "moving" in c["st"] else "still" if "still" in c["st"] else "empty"
             br = f" {np.median(c['bpm']):.0f}/min" if c["bpm"] else ""
-            cells.append(f"{p}: {c['m']:.0f}/{c['v']:.0f} {st}{br}")
+            bd = board.get(mk, {}).get(p)
+            bv = f" [x{bd[0] / 10:.1f} {bd[1]}s]" if bd else ""
+            cells.append(f"{p}: {c['m']:.0f}/{c['v']:.0f} {st}{br}{bv}")
         print(f"{mk}  " + "   ".join(cells))
+    print("records used (left out: received with an error):  " + "   ".join(
+        f"{tx}->{rx} {nrec[(tx, rx)]}" + (f" ({rxerr[(tx, rx)]})" if rxerr[(tx, rx)] else "")
+        for tx, rx in sorted(set(nrec) | set(rxerr))))
     if a.csv:
         with open(a.csv, "w", newline="") as fh:
             w = csv.writer(fh)
