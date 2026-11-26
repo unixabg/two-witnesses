@@ -162,20 +162,25 @@ def _grid(tw, rw):
 
 
 _bias = {}
-_rng = np.random.default_rng(0xC51)
+BIAS_TRIALS = 7
 
 
 def _noise_bias_db(tw, K, band):
     """what the estimator says of white noise at the same moments (the same lost frames,
     filled in the same way), taken off so an empty room reads about 0 dB. A window with no
-    lost frames is measured once per shape; one with gaps, each time."""
+    lost frames is measured once per shape; one with gaps, each time. The noise is drawn from
+    the window itself (its moments, its band), so the same window gives the same answer
+    whichever links or times are asked for alongside it."""
     gaps = np.diff(tw) > 1.5 / ANALYSIS_HZ
     key = (round((tw[-1] - tw[0]) * ANALYSIS_HZ), K, band) if not gaps.any() else None
     if key in _bias:
         return _bias[key]
+    seed = zlib.crc32(np.round((tw - tw[0]) * ANALYSIS_HZ).astype(np.int32).tobytes()
+                      + repr((K, band)).encode())
+    rng = np.random.default_rng(seed)
     trials = []
-    for _ in range(7 if key else 3):
-        x = _grid(tw, _rng.standard_normal((tw.size, K)))
+    for _ in range(BIAS_TRIALS):
+        x = _grid(tw, rng.standard_normal((tw.size, K)))
         r = _raw_band_snr(x - x.mean(axis=0), band)
         if r:
             trials.append(r[0])

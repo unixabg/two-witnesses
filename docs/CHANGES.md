@@ -75,6 +75,14 @@ the README has only what you need to run the kit.
   steady one. The simulator, breathing at 0.5% of each subcarrier: 15 and
   12 a minute still shown on 1-2 every minute; empty links and a walk as
   before.
+  And a window's white-noise correction no longer depends on what else is
+  asked for: for a link that loses frames it was 3 draws from one random
+  stream shared by every link, so `--link 2-4` and a run of every pair could
+  differ by a dB near a threshold (still in one, moving in the other). Now
+  7 draws seeded by the window itself (its moments, its band): a link reads
+  the same alone or with the others (checked: the 4-board sample, one pair
+  alone and all pairs, every step the same). About 1.7 times slower (6
+  minutes of 4 boards: 21 s here, about 3.5 minutes an hour).
 
 - **tw_node 4.7: version and image, the detection hold.** The hold below,
   in `tw_node-s3-ch11.bin` (`make csi_defconfig && make release-bin`,
