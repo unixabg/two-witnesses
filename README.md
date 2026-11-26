@@ -159,9 +159,9 @@ Does a link see a person who is still (sitting, asleep), by their breathing?
 prints, minute by minute and pair by pair, movement and breathing in dB above
 the link's own frame-to-frame scatter (not a learned quiet level: someone who
 stays is not learned away), each pair empty / still / moving (both directions
-must agree), and a breathing rate
-when it finds one (`--link 2-1` one pair, `--csv FILE` every 10 s step). An
-offline test for now (wifisense-pi's method, THIRD-PARTY-NOTICES.md); it
+must agree), and a breathing rate only when both directions hold the same
+steady one (`--link 2-1` one pair, `--csv FILE` every 10 s step). An offline
+test for now (wifisense-pi's method, THIRD-PARTY-NOTICES.md); it
 changes nothing in the run.
 
 Replay a many-board run on the board layout (every link, second by second,

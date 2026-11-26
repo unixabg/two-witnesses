@@ -21,7 +21,10 @@ seconds, from the kit's records (TWR) and the boards' own clock:
   vitals   dB above the scatter, 0.13-0.7 Hz, the last 30 s: what a still body still
            does (the chest, breathing)
   breath   the breathing rate (breaths a minute) and how sure (0-1), the last 45 s, when the
-           link is not swamped by movement
+           link is not swamped by movement. Shown only once it is steady (3 steps in a row
+           within 3 a minute) and not at an end of the band (under 9 or over 35 a minute is
+           drift), and for a pair only when both directions hold a steady rate and agree
+           within 3 a minute: two witnesses before a breath is claimed
   state    empty / still (vitals at presence two steps in a row, no movement in the last
            30 s) / moving
 
@@ -56,6 +59,9 @@ BREATH_MIN_S = 20.0
 MOTION_ON_DB, PRESENCE_ON_DB = 6.0, 4.5
 BREATH_LOW_HZ, BREATH_HIGH_HZ, HARMONICS = 0.13, 0.60, 7
 BREATH_VALID = 0.42                 # their confidence to report a rate
+BREATH_EDGE_HZ = 0.02               # a peak this near either end of the band is drift, not a breath
+STEADY_STEPS, STEADY_BPM = 3, 3.0   # a rate stands after 3 steps in a row within 3 a minute
+AGREE_BPM = 3.0                     # and a pair's two directions within 3 a minute of each other
 KEEP_S = BREATH_WINDOW_S + 5
 STATES = ("empty", "still", "moving")
 RANK = {st: i for i, st in enumerate(STATES)}
@@ -244,6 +250,9 @@ def breath_rate(t, rows, now):
     conf = float(np.clip(np.log10(max(bpsd[pk] / floor, 1.0)) / 1.7, 0, 1))
     share = float(bpsd[np.abs(bfreq - bfreq[pk]) < 0.04].sum() / (bpsd.sum() or 1e-12))
     conf *= float(np.clip(share * 3.0, 0.3, 1.0))
+    if bfreq[pk] < BREATH_LOW_HZ + BREATH_EDGE_HZ or bfreq[pk] > BREATH_HIGH_HZ - BREATH_EDGE_HZ:
+        conf = 0.0                                        # at an end of the band: slow drift (the
+                                                          # 8 a minute), not a breath
     return float(bfreq[pk] * 60), conf
 
 
@@ -254,6 +263,7 @@ class Link:
 
     def __init__(self):
         self.above = 0                                    # steps in a row with vitals at presence
+        self.rates = collections.deque(maxlen=STEADY_STEPS)   # the last steps' rates, in a row
         self.moved = -1e18                                # (board clock) the last step that read moving
         self.t = collections.deque()
         self.a = collections.deque()
@@ -441,9 +451,18 @@ def main():
                     present = moving or (lk.above >= 2 and now_b - lk.moved > VITAL_WINDOW_S)
                     state = "moving" if moving else "still" if present else "empty"
                     bpm, conf = br if br and state == "still" else (None, 0.0)   # a rate only for someone still
+                    raw = bpm if bpm is not None and conf >= BREATH_VALID else None
+                    # a rate stands only once it has held: 3 steps in a row, within 3 a minute
+                    if raw is None:
+                        lk.rates.clear()
+                    else:
+                        lk.rates.append(raw)
+                    steady = (float(np.median(lk.rates)) if len(lk.rates) == STEADY_STEPS
+                              and max(lk.rates) - min(lk.rates) <= STEADY_BPM else None)
                     rows_out.append([when.strftime("%H:%M:%S"), f"{tx}->{rx}", f"{m:.1f}",
                                      "" if v is None else f"{v:.1f}", state,
-                                     "" if bpm is None or conf < BREATH_VALID else f"{bpm:.1f}", f"{conf:.2f}"])
+                                     "" if steady is None else f"{steady:.1f}",
+                                     "" if raw is None else f"{raw:.1f}", f"{conf:.2f}"])
                     mk = when.strftime("%H:%M")
                     cur = minute[mk].setdefault(pair, {}).get((tx, rx))
                     if cur is None:
@@ -451,8 +470,8 @@ def main():
                     cur["m"] = max(cur["m"], m)
                     cur["v"] = max(cur["v"], v if v is not None else -99)
                     cur["rank"] = max(cur["rank"], RANK[state])
-                    if bpm is not None and conf >= BREATH_VALID:
-                        cur["bpm"].append(bpm)
+                    if steady is not None:
+                        cur["bpm"].append(steady)
             except (ValueError, IndexError):
                 continue                                  # a garbled line (bytes lost on the cable)
         if done:
@@ -462,6 +481,7 @@ def main():
     pairs = sorted({p for mm in minute.values() for p in mm}, key=lambda p: tuple(int(v) for v in p.split("-")))
     print("minute by minute, each pair (both directions must agree: the less of the two directions'")
     print("  most that minute; ? only one direction heard): motion dB / vitals dB, state, breaths a minute,")
+    print("  (a rate: both directions steady and agreeing)")
     print("  and [the boards' own: their highest movement score that minute, x quiet; seconds detected]")
     print("  (dB above the link's own frame-to-frame scatter; a person: motion 6+ moving, else vitals 4.5+ still)")
     for mk in sorted(minute):
@@ -475,8 +495,13 @@ def main():
             # changes both; one receiver's noise does not), when both were heard that minute
             c = dict(m=min(d["m"] for d in ds), v=min(d["v"] for d in ds), rank=min(d["rank"] for d in ds))
             st = STATES[c["rank"]] + ("" if len(ds) == 2 else "?")
-            bpm = [b for d in ds for b in d["bpm"]] if c["rank"] == 1 else []
-            br = f" {np.median(bpm):.0f}/min" if bpm else ""
+            # a breathing rate: two witnesses too. Both directions held a steady rate that
+            # minute, and the two agree; one direction alone is not shown
+            br = ""
+            if c["rank"] == 1 and len(ds) == 2 and all(d["bpm"] for d in ds):
+                r1, r2 = (float(np.median(d["bpm"])) for d in ds)
+                if abs(r1 - r2) <= AGREE_BPM:
+                    br = f" {(r1 + r2) / 2:.0f}/min"
             bd = board.get(mk, {}).get(p)
             bv = f" [x{bd[0] / 10:.1f} {bd[1]}s]" if bd else ""
             cells.append(f"{p}: {_db(c['m'])}/{_db(c['v']) if c['v'] > -99 else '-'} {st}{br}{bv}")
@@ -487,7 +512,8 @@ def main():
     if a.csv:
         with open(a.csv, "w", newline="") as fh:
             w = csv.writer(fh)
-            w.writerow(["time", "link", "motion_db", "vitals_db", "state", "breaths_min", "confidence"])
+            w.writerow(["time", "link", "motion_db", "vitals_db", "state", "breaths_min", "raw_breaths_min",
+                        "confidence"])
             w.writerows(rows_out)
         print(f"every step: {a.csv} ({len(rows_out)} rows)")
 

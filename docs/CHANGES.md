@@ -25,7 +25,7 @@ the README has only what you need to run the kit.
   outside the time are not read, the 50 s before `--from` warm the measures
   up unshown, and a rate shows only for a pair called still. 5 boards, 15
   minutes: 22 s here (about 1.5 minutes an hour of records; a Chromebook's
-  Linux, likely 2-4 times that). After the first real hour (04:00-05:00, 4
+  Linux, likely 2-4 times that). After the first real hour (4
   boards: every pair "moving" at 6-24 dB, rates jumping 8-34 a minute, so
   the method does not yet hold on real records): records the radio received
   with an error are left out (and counted), the sub-carrier of the buffer's
@@ -33,8 +33,8 @@ the README has only what you need to run the kit.
   a secondary channel, and each minute shows the boards' own verdict beside
   it, `[x2.1 3s]` (their highest movement score that minute, and seconds
   detected), to tell a busy room from a wrong reference.
-  Then the second real sample (4 boards, 6 minutes from 00:00, nobody near
-  but perhaps 15 ft behind board 3; 196,620 full records, HT40): every link
+  Then the second real sample (4 boards, 6 minutes, nobody on or near the
+  lines between boards; 196,620 full records, HT40): every link
   read 6-23 dB "moving" in an empty room, and the cause is the reference,
   not the room. Between two ESP32 boards the frame-to-frame scatter of the
   channel's shape is shared by the sub-carriers (the leading component is
@@ -60,6 +60,21 @@ the README has only what you need to run the kit.
   frame) is now not seen by vitals.py, being the same kind as the scatter; a
   real restless body moves slower than 12 Hz. 6 minutes of 4 boards: 12 s
   here (about 2 minutes an hour).
+  Then two real stretches with the new reference. A busy hour (people
+  moving about): busy and quiet minutes cleanly apart, walks seen on several
+  pairs together, but most rates 8 a minute, the very bottom of the band:
+  slow drift from small movements, not a breath. A quiet 90 minutes (people
+  still, well off the lines between boards, about 15 ft from the nearest):
+  the nearest board's pairs as flat as the far ones but for four shared
+  jumps on two of them (most likely a change of position); no breathing. So a rate now needs two
+  witnesses: a peak within 0.02 Hz of either end of the band (under 9 or
+  over 35 a minute) is drift and not shown; a direction's rate stands only
+  after 3 steps in a row within 3 a minute; and a pair shows one only when
+  both directions hold a steady rate that minute and agree within 3 a
+  minute. The CSV keeps each step's raw rate (`raw_breaths_min`) beside the
+  steady one. The simulator, breathing at 0.5% of each subcarrier: 15 and
+  12 a minute still shown on 1-2 every minute; empty links and a walk as
+  before.
 
 - **tw_node 4.7: version and image, the detection hold.** The hold below,
   in `tw_node-s3-ch11.bin` (`make csi_defconfig && make release-bin`,
