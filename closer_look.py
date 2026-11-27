@@ -9,31 +9,39 @@
 # numpy alone; the numbers (bands, windows, thresholds) are theirs. Changed here: the noise
 # reference (each component's own 12-24 Hz, at the links' native 50 Hz, not the tail
 # components at 20 Hz), and the top three components looked at, not only the first.
-"""vitals.py - does a link see a person who is still? An offline test on a run folder.
+"""closer_look.py - a second, slower look at a run: who stays at a link? Offline, on a run folder.
 
-    ~/scratch-esp/bin/python vitals.py RUN_FOLDER [--from HH:MM] [--to HH:MM] [--link 2-1]
-                                                  [--csv FILE] [--step 10]
+    ~/scratch-esp/bin/python closer_look.py RUN_FOLDER [--from HH:MM] [--to HH:MM] [--link 2-1]
+                                                       [--csv FILE] [--step 10]
+
+The same records the boards and the dashboard use, read on a slower time scale. The boards'
+score asks how much a link changed from one second to the next; this also asks what it did
+over the last 30 s, where the small movements of someone sitting at a desk (typing, a cup, a
+phone) add up. On the kit's boards it sees those where the boards' own detector often stays
+under its threshold. It does not see a person who is truly still, nor breathing: tried in
+three ways (here, the boards' per-second score, and each sub-carrier on its own), sitting
+still on a link's line and holding the breath changed nothing (docs/CHANGES.md).
 
 For each link (both directions of a pair together: "1-2" is 1->2 and 2->1), every --step
 seconds, from the kit's records (TWR) and the boards' own clock:
 
   motion   dB above the scatter, 1.5-9 Hz, the last 6 s: movement (walking, a hand)
-  vitals   dB above the scatter, 0.13-0.7 Hz, the last 30 s: what a still body still
-           does (the chest, breathing)
-  breath   the breathing rate (breaths a minute) and how sure (0-1), the last 45 s, when the
-           link is not swamped by movement. Shown only once it is steady (3 steps in a row
-           within 3 a minute) and not at an end of the band (under 9 or over 35 a minute is
-           drift), and for a pair only when both directions hold a steady rate and agree
-           within 3 a minute: two witnesses before a breath is claimed
-  state    empty / still (vitals at presence two steps in a row, no movement in the last
-           30 s) / moving
+  slow     dB above the scatter, 0.13-0.7 Hz, the last 30 s: the small, slow movements of
+           someone who stays
+  rhythm   a steady rhythm in that band (a minute's count) and how sure (0-1), the last 45 s,
+           when the link is not swamped by movement: what breathing would give. Shown only
+           once it is steady (3 steps in a row within 3 a minute), not at an end of the band
+           (under 9 or over 35 a minute is drift), and for a pair only when both directions
+           hold one and agree within 3 a minute. On the kit's boards: none believed so far
+  state    empty / here (slow at 4.5 dB two steps in a row, no movement in the last 30 s) /
+           moving
 
 The reference is each link's own frame-to-frame scatter (what its leading components do at
 12-24 Hz, where a body hardly moves), not a learned quiet level: an empty room is about 0 dB,
 and someone who stays there is not learned away. (wifisense-pi takes the sub-carriers'
 independent part as the floor; between two ESP32 boards most of the scatter is shared by the
 sub-carriers, and an empty room read 6-23 dB that way.) What
-counts as a person: wifisense-pi's thresholds (motion on at 6 dB, presence at 4.5 dB).
+counts as a person: wifisense-pi's thresholds (motion on at 6 dB, here at 4.5 dB).
 
 Prints a line a minute for each pair: what both directions saw that minute (a person changes
 both; one receiver's noise does not), and with --csv every step of each direction. Nothing
@@ -63,7 +71,7 @@ BREATH_EDGE_HZ = 0.02               # a peak this near either end of the band is
 STEADY_STEPS, STEADY_BPM = 3, 3.0   # a rate stands after 3 steps in a row within 3 a minute
 AGREE_BPM = 3.0                     # and a pair's two directions within 3 a minute of each other
 KEEP_S = BREATH_WINDOW_S + 5
-STATES = ("empty", "still", "moving")
+STATES = ("empty", "here", "moving")
 RANK = {st: i for i, st in enumerate(STATES)}
 
 
@@ -267,7 +275,7 @@ class Link:
     """one direction's records: (board clock seconds, 52 gain-normalised amplitudes)"""
 
     def __init__(self):
-        self.above = 0                                    # steps in a row with vitals at presence
+        self.above = 0                                    # steps in a row with slow at 4.5 dB
         self.rates = collections.deque(maxlen=STEADY_STEPS)   # the last steps' rates, in a row
         self.moved = -1e18                                # (board clock) the last step that read moving
         self.t = collections.deque()
@@ -445,17 +453,17 @@ def main():
                         continue
                     m, v, br = r
                     moving = m >= MOTION_ON_DB
-                    # still: vitals at presence for two steps in a row (as their presence gate
+                    # here: slow at 4.5 dB for two steps in a row (as their presence gate
                     # holds 2 s before it believes, so one noisy window is not a person)
                     lk.above = lk.above + 1 if v is not None and v >= PRESENCE_ON_DB else 0
                     now_b = lk.t[-1]
                     if moving:
                         lk.moved = now_b
-                    # still, too, only once the movement is out of the 30 s it looks at (a walk
+                    # here, too, only once the movement is out of the 30 s it looks at (a walk
                     # that just ended fills it, and is not a person sitting)
                     present = moving or (lk.above >= 2 and now_b - lk.moved > VITAL_WINDOW_S)
-                    state = "moving" if moving else "still" if present else "empty"
-                    bpm, conf = br if br and state == "still" else (None, 0.0)   # a rate only for someone still
+                    state = "moving" if moving else "here" if present else "empty"
+                    bpm, conf = br if br and state == "here" else (None, 0.0)   # a rhythm only for someone here, not moving
                     raw = bpm if bpm is not None and conf >= BREATH_VALID else None
                     # a rate stands only once it has held: 3 steps in a row, within 3 a minute
                     if raw is None:
@@ -485,10 +493,10 @@ def main():
         sys.exit("no link had enough records (at least 6 s of measurements) in that time")
     pairs = sorted({p for mm in minute.values() for p in mm}, key=lambda p: tuple(int(v) for v in p.split("-")))
     print("minute by minute, each pair (both directions must agree: the less of the two directions'")
-    print("  most that minute; ? only one direction heard): motion dB / vitals dB, state, breaths a minute,")
-    print("  (a rate: both directions steady and agreeing)")
+    print("  most that minute; ? only one direction heard): motion dB / slow dB, state, a rhythm a minute")
+    print("  (a rhythm: both directions steady and agreeing)")
     print("  and [the boards' own: their highest movement score that minute, x quiet; seconds detected]")
-    print("  (dB above the link's own frame-to-frame scatter; a person: motion 6+ moving, else vitals 4.5+ still)")
+    print("  (dB above the link's own frame-to-frame scatter; a person: motion 6+ moving, else slow 4.5+ here)")
     for mk in sorted(minute):
         cells = []
         for p in pairs:
@@ -517,7 +525,7 @@ def main():
     if a.csv:
         with open(a.csv, "w", newline="") as fh:
             w = csv.writer(fh)
-            w.writerow(["time", "link", "motion_db", "vitals_db", "state", "breaths_min", "raw_breaths_min",
+            w.writerow(["time", "link", "motion_db", "slow_db", "state", "rhythm_min", "raw_rhythm_min",
                         "confidence"])
             w.writerows(rows_out)
         print(f"every step: {a.csv} ({len(rows_out)} rows)")

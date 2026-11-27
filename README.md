@@ -154,15 +154,18 @@ Remake the views and checks of a run (for example after updating the kit):
 `~/tw-kit/after_run.sh ~/tw-data/runs/<run>`, or the views only, for a many-board run
 `~/scratch-esp/bin/python ~/tw-kit/split_links.py ~/tw-data/runs/<run> --again --view`.
 
-Does a link see a person who is still (sitting, asleep), by their breathing?
-`~/scratch-esp/bin/python ~/tw-kit/vitals.py ~/tw-data/runs/<run> --from 21:00 --to 23:00`
-prints, minute by minute and pair by pair, movement and breathing in dB above
-the link's own frame-to-frame scatter (not a learned quiet level: someone who
-stays is not learned away), each pair empty / still / moving (both directions
-must agree), and a breathing rate only when both directions hold the same
-steady one (`--link 2-1` one pair, `--csv FILE` every 10 s step). An offline
-test for now (wifisense-pi's method, THIRD-PARTY-NOTICES.md); it
-changes nothing in the run.
+A second, slower look at a run: who stayed at a link?
+`~/scratch-esp/bin/python ~/tw-kit/closer_look.py ~/tw-data/runs/<run> --from 21:00 --to 23:00`
+prints, minute by minute and pair by pair, movement (the last 6 s) and slow
+change (the last 30 s) in dB above the link's own frame-to-frame scatter, and
+each pair empty / here / moving (both directions must agree). The same
+records, on a slower time scale: someone sitting at a desk and making small
+movements (typing, a cup, a phone) shows as "here" where the boards' own
+detector often stays under its threshold. A person who is truly still is not
+seen, and these boards do not see breathing (tried three ways:
+docs/CHANGES.md). `--link 2-1` one pair, `--csv FILE` every 10 s step; it
+changes nothing in the run (wifisense-pi's method, adapted:
+THIRD-PARTY-NOTICES.md).
 
 Replay a many-board run on the board layout (every link, second by second,
 with a timeline, the events and the lasting changes), as one page to open in

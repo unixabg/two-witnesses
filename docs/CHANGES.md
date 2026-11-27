@@ -5,6 +5,26 @@ the README has only what you need to run the kit.
 
 ## What changed in v5.7-next (work in progress, on the next branch)
 
+- **vitals.py is now closer_look.py, and says what it does.** Three sitting
+  tests settled it. Someone at a desk making small movements (typing, a cup,
+  a phone) read "here" on the pair whose line they were on, for most of the
+  time, where the boards' own score stayed at x1.2-2.8 and under its
+  threshold: the same records, read over 30 s rather than second by second.
+  But someone sitting as still as they could on a pair's line for 15 minutes
+  read empty, 0-6 dB, with no rhythm; and a minute-by-minute run of
+  breathing, holding the breath (twice, 30 s) and deep breaths on that line
+  showed no difference in three ways: here; in the boards' own per-second
+  scores (a board's LED blinking every 3-5 s came from a noisy link of its
+  own, as often with nobody there); and sub-carrier by sub-carrier, smoothed
+  over a second (a few edge sub-carriers drift 0.3-0.8 dB at a breath-like
+  pace whether the breath is held or not). So these boards do not see
+  breathing or a person who is truly still; this sees movement, and the
+  small movements of someone who stays. The state "still" is now "here",
+  "vitals" is now "slow" (the CSV's `slow_db`), and a breathing rate is now
+  "a rhythm" (`rhythm_min`, `raw_rhythm_min`), kept and as strict as before
+  (two directions, steady, agreeing), not believed so far. The method and
+  its credit (wifisense-pi) unchanged.
+
 - **vitals.py: does a link see someone who is still?** An offline test on a
   run folder, with wifisense-pi's method (The-Masked-Bear, Apache-2.0; ported
   to numpy and the kit's records, THIRD-PARTY-NOTICES.md): movement (1.5-9
